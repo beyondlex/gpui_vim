@@ -1128,3 +1128,75 @@ fn grapheme_motions_and_deletes() {
     f.feed(["l"]);
     assert_eq!(f.cursor(), 1); // on 'o'
 }
+
+// ---- Visual Block C-v (ROADMAP task 5) -----------------------------------------
+
+#[test]
+fn block_visual_delete() {
+    let mut f = Fixture::at("abcd\nefgh\nijkl\n", 0, 0);
+    f.feed(["<C-v>", "j", "l", "d"]); // 2x2 block (cols 0..1) on lines 0-1
+    assert_eq!(f.text(), "cd\ngh\nijkl\n");
+    assert_eq!(f.cursor(), 0); // at the block start
+}
+
+#[test]
+fn block_visual_yank_and_blockwise_put() {
+    let mut f = Fixture::at("abcd\nefgh\nijkl\nmnop\n", 0, 0);
+    f.feed(["<C-v>", "j", "l", "y"]); // yank block "ab"/"ef" (2 rows)
+    f.feed(["G", "0"]); // last line
+    f.feed(["<C-v>", "k", "l", "p"]); // replace cols 0..1 of lines 2-3
+    // register rows ("ab","ef") align with the block rows: "ij"->"ab", "mn"->"ef"
+    assert_eq!(f.text(), "abcd\nefgh\nabkl\nefop\n");
+}
+
+#[test]
+fn block_visual_insert_replicates_and_single_undo() {
+    let mut f = Fixture::at("one\ntwo\nthree\n", 0, 0);
+    f.feed(["<C-v>", "j", "I"]);
+    f.type_text("X");
+    f.feed(["<Esc>"]);
+    assert_eq!(f.text(), "Xone\nXtwo\nthree\n");
+    // one `u` restores everything
+    f.feed(["u"]);
+    assert_eq!(f.text(), "one\ntwo\nthree\n");
+}
+
+#[test]
+fn block_visual_append_and_change() {
+    let mut f = Fixture::at("ab\ncd\n", 0, 0);
+    f.feed(["<C-v>", "j", "l", "A"]); // append after col 1 on both rows
+    f.type_text("!");
+    f.feed(["<Esc>"]);
+    assert_eq!(f.text(), "ab!\ncd!\n");
+
+    // c: delete the block, typed text replicates
+    let mut f = Fixture::at("abcd\nefgh\n", 0, 0);
+    f.feed(["<C-v>", "j", "l", "c"]);
+    f.type_text("X");
+    f.feed(["<Esc>"]);
+    // cols 0..1 ("ab"/"ef") deleted, X typed on row 0 and replicated
+    assert_eq!(f.text(), "Xcd\nXgh\n");
+}
+
+#[test]
+fn block_columns_align_across_wide_chars() {
+    // 文 spans display cols 2..4 on line 0; the block at display col 2
+    // deletes 文 on line 0 and 'g' (col 2) on line 1
+    let mut f = Fixture::at("中文ab\nefg\n", 0, 0);
+    f.feed(["3", "|"]); // display column 3: lands on 文 (its start)
+    f.feed(["<C-v>", "j", "l", "d"]);
+    assert_eq!(f.text(), "中ab\nef\n");
+}
+
+#[test]
+fn block_toggle_kinds_and_mode_indicator() {
+    let mut f = Fixture::at("abc\n", 0, 0);
+    f.feed(["<C-v>"]);
+    assert_eq!(f.vim.mode(), vim_core::Mode::Visual { kind: vim_core::VisualKind::Block });
+    f.feed(["v"]); // toggle to charwise
+    assert_eq!(f.vim.mode(), vim_core::Mode::Visual { kind: vim_core::VisualKind::Char });
+    f.feed(["<C-v>"]); // and back
+    assert_eq!(f.vim.mode(), vim_core::Mode::Visual { kind: vim_core::VisualKind::Block });
+    f.feed(["<Esc>"]);
+    assert_eq!(f.vim.mode(), vim_core::Mode::Normal);
+}

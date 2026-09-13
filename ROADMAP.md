@@ -214,7 +214,15 @@ enum LastChange {
 **陷阱**：`u`/`C-r`/`:` 本身不更新 LastChange；undo 后 `.` 重放的仍是最后的
 变更。回放期间禁止再触发映射展开（`map_depth` 语义不变即可）。
 
-### 任务 5：Visual Block（`C-v`）
+### 任务 5：Visual Block（`C-v`）✅ 已完成
+> 实现：`BlockSpan`（显示列空间 + 逐行字节区间，`block_row_range` 按「列跨度
+> 相交」选字符，宽字符跨边界整字符入选）。算子：`d`（自底向上删）、`y`
+> （块宽补空格、Blockwise 寄存器、光标到块首）、`c`（删块 + 光标行输入 +
+> 退出时复制到其余行）；`I`/`A` 块缘插入同样复制；短行插入到行尾。多行插入
+> 的偏移做了两层修正：删除按**上方**前缀和调整（初版方向反了），复制时
+> **光标行打出的文本长度**只补偿光标行之下的行。单 undo 组（会话组覆盖复
+> 制）。`p`/`P`：Blockwise 寄存器逐行对齐替换，其他寄存器文本逐行复制。
+> 不支持：`$` 延伸到行尾的块、大写寄存器追加、`C-v` 下的 `o` 换角。
 
 **现状**：`VisualKind::Block` 与 `RegisterKind::Blockwise` 只是 enum 占位；
 无进入命令、无块级 span、无块级 put。
@@ -321,7 +329,10 @@ fn next_grapheme_offset(&self, offset: usize) -> Option<usize>;
 （纯表，无传递依赖问题）或内置精简表并文档化差异。**所有**受影响测试要先
 写「宽字符回归」用例再改实现。
 
-### 任务 9：soft wrap 与真实 `gj`/`gk`
+### 任务 9：soft wrap 与真实 `gj`/`gk` ✅ 已降级关闭（v1 明确不支持）
+> 按本任务预留的降级选项处理：引擎与 demo 均按「无 soft wrap」实现，
+> `gj`/`gk` 保持为 `j`/`k` 别名。若未来引入 wrap，需要 host 提供行→显示行
+> 映射契约并依赖任务 8 的显示列，届时再开。
 
 **现状**：`gj`/`gk` 注册为 `Motion::Down/Up` 的别名（tables.rs 注明 "no soft
 wrap in v1"）。需要 host 报告「显示行 ↔ 逻辑行/列」映射：`VimHost` 增加

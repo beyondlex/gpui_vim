@@ -518,7 +518,56 @@ impl Editor {
         }
 
         // visual selection
-        if let Some((selection, linewise)) = self.selection_span() {
+        if let Some((sel_start, sel_end, kind)) = self.vim.visual_selection() {
+            let sel = sel_start..sel_end;
+            if kind == vim_core::VisualKind::Block {
+                // rectangular highlight: per-line byte range over the
+                // block's display-column span
+                let first_line = self.buffer.offset_to_line(sel.start.min(sel.end));
+                let last_line = self.buffer.offset_to_line(sel.start.max(sel.end));
+                if line >= first_line && line <= last_line {
+                    let a_col = vim_core::buffer::display_column(&self.buffer, sel.start);
+                    let c_col = vim_core::buffer::display_column(&self.buffer, sel.end);
+                    let (col_lo, col_hi) = if a_col <= c_col { (a_col, c_col) } else { (c_col, a_col) };
+                    let range = vim_core::ops::block_row_range(
+                        &self.buffer,
+                        line,
+                        col_lo,
+                        col_hi + 1, // the cursor char is part of the block
+                    );
+                    if !range.is_empty() {
+                        quads.push((
+                            range.start - line_start..range.end - line_start,
+                            selection_color(),
+                            false,
+                        ));
+                    }
+                }
+            } else if kind == vim_core::VisualKind::Line {
+                let selection = {
+                    let lo = sel.start.min(sel.end);
+                    let hi = sel.start.max(sel.end);
+                    let start = self.buffer.line_start(self.buffer.offset_to_line(lo));
+                    let end = self.buffer.line_range(self.buffer.offset_to_line(hi)).end;
+                    start..end
+                };
+                let first = self.buffer.offset_to_line(selection.start);
+                let last = self
+                    .buffer
+                    .offset_to_line(selection.end.saturating_sub(1).max(selection.start));
+                if line >= first && line <= last {
+                    quads.push((0..0, selection_color(), true));
+                }
+            } else {
+                let hi = sel.start.max(sel.end);
+                let end = hi + self.buffer.char_at(hi).map(|c| c.len_utf8()).unwrap_or(0);
+                let start = sel.start.clamp(line_start, line_end) - line_start;
+                let end = end.clamp(line_start, line_end) - line_start;
+                if start < end {
+                    quads.push((start..end, selection_color(), false));
+                }
+            }
+        } else if let Some((selection, linewise)) = self.selection_span() {
             if linewise {
                 // only the lines the selection spans get the full-width quad
                 let first = self.buffer.offset_to_line(selection.start);

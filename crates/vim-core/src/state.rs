@@ -56,6 +56,20 @@ pub enum InsertKind {
     Replace,            // R: overwrite instead of insert
 }
 
+/// Pending multi-row insert of a visual-block `I`/`A`/`c`: on exit the
+/// typed text is replicated onto every other row (single undo group).
+#[derive(Debug)]
+struct BlockInsert {
+    /// (adjusted offset, raw row start) for the non-cursor rows. Adjusted
+    /// accounts for the block deletion; raw is the position in the original
+    /// buffer, used to know which rows sit below the cursor's row.
+    rows: Vec<(usize, usize)>,
+    /// Raw start of the cursor's row: rows after it shift with the typed
+    /// text.
+    cursor_raw: usize,
+    text: String,
+}
+
 /// Synthetic pending-key marker for a recorded [`RecordedStep::Text`]: when
 /// the `.` replay reaches it, the stashed text is applied through
 /// `insert_text_at_cursor` instead of the key pipeline. Not producible by
@@ -153,6 +167,11 @@ pub struct VimState {
     /// Last register executed with `@` (for `@@`).
     last_macro_played: Option<char>,
 
+    /// Visual-block `I`/`A`/`c`: the rows (insert offsets, descending) that
+    /// receive the typed text when the session exits, and the text typed on
+    /// the cursor row so far.
+    block_insert: Option<BlockInsert>,
+
     /// Jumplist (`C-o`/`C-i`): visited positions, `jump_pos` = index of the
     /// current entry. Jump motions and search execution append the origin
     /// and destination; forward entries are truncated on a new jump.
@@ -216,6 +235,7 @@ impl VimState {
             macros: HashMap::new(),
             macro_capture: None,
             last_macro_played: None,
+            block_insert: None,
             jumps: Vec::new(),
             jump_pos: 0,
             insert_session: None,
@@ -685,6 +705,24 @@ impl VimState {
         }
         self.marks.last_insert_exit = Some(self.cursor.offset);
         self.marks.set('^', self.cursor.offset);
+        // visual-block I/A/c: replicate the typed text onto the other rows
+        // while the session's undo group is still open (one `u` restores
+        // all). Rows below the cursor's row shift by the typed byte length.
+        if let Some(block) = self.block_insert.take() {
+            if !block.text.is_empty() {
+                let mut rows: Vec<usize> = block
+                    .rows
+                    .into_iter()
+                    .map(|(adjusted, raw)| {
+                        adjusted + if raw > block.cursor_raw { block.text.len() } else { 0 }
+                    })
+                    .collect();
+                rows.sort_unstable_by(|a, b| b.cmp(a)); // bottom-up inserts
+                for offset in rows {
+                    self.edit_insert(ctx, offset, &block.text);
+                }
+            }
+        }
         self.commit_change_record();
         self.insert_session = None;
         self.end_edit();
@@ -730,6 +768,9 @@ impl VimState {
             self.edit_insert(ctx, at, &expanded);
         }
         self.cursor.offset = at + expanded.len();
+        if let Some(block) = &mut self.block_insert {
+            block.text.push_str(text);
+        }
         if self.insert_session.is_some()
             && !self.replaying
             && !self.recording_suppressed
@@ -755,6 +796,9 @@ impl VimState {
     /// Replace an arbitrary range (IME committed composition text).
     pub fn replace_range(&mut self, ctx: &mut Ctx, range: Range<usize>, text: &str) {
         // an IME commit during an insert session is recorded as typed text
+        if let Some(block) = &mut self.block_insert {
+            block.text.push_str(text);
+        }
         if self.insert_session.is_some()
             && !self.replaying
             && !self.recording_suppressed
@@ -825,6 +869,138 @@ impl VimState {
     }
 
     /// Restore the cursor to a visual range start (used after visual ops).
+    /// Row-wise application of an operator over a visual block. Only
+    /// Delete / Yank / Change are supported in v1 (other operators bell).
+    fn apply_block_operator(&mut self, ctx: &mut Ctx, op: Operator) {
+        let Some(block) = ops::span_from_visual_block(self, ctx.buf) else {
+            ctx.host.bell();
+            return;
+        };
+        match op {
+            Operator::Delete => {
+                self.begin_edit(ctx);
+                let adjusted = self.delete_block_rows(ctx, &block.rows);
+                self.end_edit();
+                self.bump(ctx);
+                self.reset_pending();
+                self.cursor.offset =
+                    clamp_to_line_end(ctx.buf, adjusted.first().copied().unwrap_or(0));
+                self.cursor.desired_col = None;
+                self.finish_visual_op(ctx);
+            }
+            Operator::Yank => {
+                let width = block.col_hi.saturating_sub(block.col_lo);
+                let mut texts = Vec::new();
+                for range in &block.rows {
+                    let mut text = ctx.buf.slice(range.clone());
+                    // pad rows to the block width so blockwise put keeps
+                    // its rectangle
+                    let mut w: usize = text
+                        .chars()
+                        .map(crate::buffer::char_display_width)
+                        .sum();
+                    while w < width {
+                        text.push(' ');
+                        w += 1;
+                    }
+                    texts.push(text);
+                }
+                self.registers.store_yank(
+                    self.register,
+                    texts.join("\n"),
+                    crate::registers::RegisterKind::Blockwise,
+                );
+                self.cursor.offset = clamp_to_line_end(
+                    ctx.buf,
+                    block.rows.first().map(|r| r.start).unwrap_or(0),
+                );
+                self.cursor.desired_col = None;
+                self.finish_visual_op(ctx);
+            }
+            Operator::Change => {
+                self.begin_edit(ctx);
+                let adjusted = self.delete_block_rows(ctx, &block.rows);
+                self.bump(ctx);
+                self.reset_pending();
+                self.cursor.offset = clamp_to_line_end(ctx.buf, adjusted[0]);
+                self.block_insert = Some(BlockInsert {
+                    rows: adjusted[1..].iter().copied().zip(block.rows[1..].iter().map(|r| r.start)).collect(),
+                    cursor_raw: block.rows[0].start,
+                    text: String::new(),
+                });
+                self.begin_insert(ctx, InsertKind::Insert);
+                self.discard_change_record();
+            }
+            _ => ctx.host.bell(),
+        }
+    }
+
+    /// Delete every block row bottom-up; returns each row's insertion
+    /// offset ADJUSTED for the deletions below it (valid after all rows
+    /// are gone). Empty rows contribute no shift.
+    fn delete_block_rows(&mut self, ctx: &mut Ctx, rows: &[std::ops::Range<usize>]) -> Vec<usize> {
+        // a row's final offset shifts by the deletions ABOVE it: prefix-sum
+        // top-down first, then delete bottom-up (keeps later offsets valid)
+        let mut adjusted = vec![0usize; rows.len()];
+        let mut shift = 0usize;
+        for i in 0..rows.len() {
+            adjusted[i] = rows[i].start.saturating_sub(shift);
+            if !rows[i].is_empty() {
+                shift += rows[i].len();
+            }
+        }
+        for range in rows.iter().rev() {
+            if !range.is_empty() {
+                self.edit_delete(ctx, range.clone());
+            }
+        }
+        adjusted
+    }
+
+    /// Visual-block `I` (insert at the left edge) and `A` (append at the
+    /// right edge): typing lands on the cursor row, the rest replicate on
+    /// exit. Short rows insert at their line end, like vim.
+    fn begin_block_insert(&mut self, ctx: &mut Ctx, append: bool) {
+        let Some(block) = ops::span_from_visual_block(self, ctx.buf) else {
+            ctx.host.bell();
+            return;
+        };
+        let cursor_line = ctx.buf.offset_to_line(self.cursor.offset);
+        let mut rows = Vec::new();
+        let mut typing_offset = None;
+        let mut typing_raw = 0usize;
+        for (i, range) in block.rows.iter().enumerate() {
+            let line = block.first_line + i;
+            let (offset, raw) = if append {
+                let end = if range.is_empty() { ctx.buf.line_end(line) } else { range.end };
+                (end, end)
+            } else if range.is_empty() {
+                (ctx.buf.line_end(line), range.start)
+            } else {
+                (range.start, range.start)
+            };
+            if line == cursor_line {
+                typing_offset = Some(offset);
+                typing_raw = raw;
+            } else {
+                rows.push((offset, raw));
+            }
+        }
+        let Some(typing_offset) = typing_offset else {
+            ctx.host.bell();
+            return;
+        };
+        self.cursor.offset = typing_offset;
+        self.cursor.desired_col = None;
+        self.block_insert = Some(BlockInsert {
+            rows,
+            cursor_raw: typing_raw,
+            text: String::new(),
+        });
+        self.begin_insert(ctx, InsertKind::Insert);
+        self.discard_change_record();
+    }
+
     pub(crate) fn finish_visual_op(&mut self, ctx: &mut Ctx) {
         self.discard_change_record();
         if let Some((anchor, cursor, kind)) = self.visual_selection() {
@@ -1112,6 +1288,16 @@ impl VimState {
             self.register_pending = true;
             return ProcessOutcome::Consumed;
         }
+        // visual-block I/A: insert at the block edge on every row
+        if matches!(self.mode, Mode::Visual { kind: crate::mode::VisualKind::Block }) {
+            if let (KeyKind::Char(c), true) = (&key.kind, key.modifiers.is_plain()) {
+                if *c == 'I' || *c == 'A' {
+                    self.begin_block_insert(ctx, *c == 'A');
+                    return ProcessOutcome::Consumed;
+                }
+            }
+        }
+
         if let Some(outcome) = self.navigation_key(ctx, &key) {
             return outcome;
         }
@@ -1265,6 +1451,10 @@ impl VimState {
     fn apply_visual_operator(&mut self, ctx: &mut Ctx, op: Operator) {
         // visual-mode changes are not `.`-repeatable in v1
         self.recording_blocked = true;
+        if matches!(self.mode, Mode::Visual { kind: crate::mode::VisualKind::Block }) {
+            self.apply_block_operator(ctx, op);
+            return;
+        }
         let Some(span) = ops::span_from_visual(self, ctx.buf) else {
             ctx.host.bell();
             return;
@@ -1592,6 +1782,52 @@ impl VimState {
         }
     }
 
+    /// Visual-block `p`/`P`: a blockwise register replaces the block row by
+    /// row; any other register's text is replicated onto every row.
+    fn block_put_replace(&mut self, ctx: &mut Ctx) {
+        let register = self.register.unwrap_or(crate::registers::UNNAMED);
+        let Some(block) = ops::span_from_visual_block(self, ctx.buf) else {
+            ctx.host.bell();
+            return;
+        };
+        let Some(data) = self.registers.get_for_paste(register, ctx.host) else {
+            ctx.host.bell();
+            return;
+        };
+        self.recording_blocked = true;
+        self.begin_edit(ctx);
+        let cursor_to = block.rows.first().map(|r| r.start).unwrap_or(0);
+        match data.kind {
+            crate::registers::RegisterKind::Blockwise => {
+                let rows: Vec<&str> = data.text.trim_end_matches('\n').split('\n').collect();
+                for (i, range) in block.rows.iter().enumerate().rev() {
+                    if range.is_empty() {
+                        continue;
+                    }
+                    let text = rows.get(i).or_else(|| rows.last()).copied().unwrap_or("");
+                    self.edit_delete(ctx, range.clone());
+                    if !text.is_empty() {
+                        self.edit_insert(ctx, range.start, text);
+                    }
+                }
+            }
+            _ => {
+                let adjusted = self.delete_block_rows(ctx, &block.rows);
+                let text = data.text.trim_end_matches('\n');
+                if !text.is_empty() {
+                    for &offset in adjusted.iter().rev() {
+                        self.edit_insert(ctx, offset, text);
+                    }
+                }
+            }
+        }
+        self.cursor.offset = clamp_to_line_end(ctx.buf, cursor_to);
+        self.cursor.desired_col = None;
+        self.end_edit();
+        self.bump(ctx);
+        self.finish_visual_op(ctx);
+    }
+
     pub(crate) fn execute_visual_cmd(&mut self, ctx: &mut Ctx, cmd: VisualCmd) {
         match cmd {
             VisualCmd::Exit => {
@@ -1604,7 +1840,8 @@ impl VimState {
                 };
                 let target = match to {
                     'v' => VisualKind::Char,
-                    _ => VisualKind::Line,
+                    'V' => VisualKind::Line,
+                    _ => VisualKind::Block,
                 };
                 if current == target {
                     self.exit_visual(ctx);
@@ -1620,6 +1857,10 @@ impl VimState {
                 }
             }
             VisualCmd::PutReplace => {
+                if matches!(self.mode, Mode::Visual { kind: crate::mode::VisualKind::Block }) {
+                    self.block_put_replace(ctx);
+                    return;
+                }
                 let register = self.register.unwrap_or(crate::registers::UNNAMED);
                 let Some(span) = ops::span_from_visual(self, ctx.buf) else {
                     return;

@@ -309,10 +309,12 @@ fn build_rows() -> Vec<(Vec<Key>, Phase, CmdKind)> {
     // ---- entering visual ---------------------------------------------------
     b.normal(&["v"], CmdKind::EnterVisual(crate::mode::VisualKind::Char));
     b.normal(&["V"], CmdKind::EnterVisual(crate::mode::VisualKind::Line));
+    b.normal(&["<C-v>"], CmdKind::EnterVisual(crate::mode::VisualKind::Block));
 
     // ---- visual mode -------------------------------------------------------
     b.visual(&["v"], CmdKind::Visual(VisualCmd::ToggleKind { to: 'v' }));
     b.visual(&["V"], CmdKind::Visual(VisualCmd::ToggleKind { to: 'V' }));
+    b.visual(&["<C-v>"], CmdKind::Visual(VisualCmd::ToggleKind { to: 'b' }));
     b.visual(&["o"], CmdKind::Visual(VisualCmd::SwapEnds));
     b.visual(&["d"], CmdKind::Operator(Operator::Delete));
     b.visual(&["x"], CmdKind::Operator(Operator::Delete));

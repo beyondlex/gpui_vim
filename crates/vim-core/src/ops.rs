@@ -13,6 +13,7 @@ use crate::objects::{self, ObjectRange};
 use crate::registers::RegisterKind;
 use crate::state::{Ctx, InsertKind, VimState};
 use crate::word;
+use std::ops::Range;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Operator {
@@ -178,6 +179,80 @@ pub fn delete_span(vim: &mut VimState, ctx: &mut Ctx, span: &OpSpan, register: O
         clamp_to_line_end(ctx.buf, span.start)
     };
     vim.cursor.desired_col = None;
+}
+
+/// A rectangular selection in DISPLAY-column space with per-line byte
+/// ranges (Visual Block). Rows run top to bottom over the selected lines;
+/// lines shorter than the block yield empty ranges.
+#[derive(Debug)]
+pub struct BlockSpan {
+    /// First display column (inclusive).
+    pub col_lo: usize,
+    /// End display column (exclusive).
+    pub col_hi: usize,
+    pub first_line: usize,
+    /// One byte range per selected line, in line order.
+    pub rows: Vec<Range<usize>>,
+}
+
+/// The block's byte range on ONE line: every char whose display-column
+/// span intersects `[col_lo, col_hi)`. Empty range when the line ends
+/// before `col_lo`.
+pub fn block_row_range(
+    buf: &dyn crate::buffer::VimBuffer,
+    line: usize,
+    col_lo: usize,
+    col_hi: usize,
+) -> Range<usize> {
+    use crate::buffer::char_display_width;
+    let start = buf.line_start(line);
+    let end = buf.line_end(line);
+    let mut o = start;
+    let mut col = 0usize;
+    let mut lo: Option<usize> = None;
+    let mut hi = start;
+    while o < end {
+        let Some(c) = buf.char_at(o) else { break };
+        let w = char_display_width(c);
+        if col >= col_hi {
+            break;
+        }
+        if col + w > col_lo {
+            if lo.is_none() {
+                lo = Some(o);
+            }
+            hi = o + c.len_utf8();
+        }
+        col += w;
+        o += c.len_utf8();
+    }
+    match lo {
+        Some(lo) => lo..hi,
+        None => start..start,
+    }
+}
+
+/// The block span of the current visual-block selection.
+pub fn span_from_visual_block(vim: &VimState, buf: &dyn crate::buffer::VimBuffer) -> Option<BlockSpan> {
+    let (anchor, cursor, kind) = vim.visual_selection()?;
+    if kind != crate::mode::VisualKind::Block {
+        return None;
+    }
+    let a_col = crate::buffer::display_column(buf, anchor);
+    let c_col = crate::buffer::display_column(buf, cursor);
+    let (col_lo, col_hi) = if a_col <= c_col { (a_col, c_col) } else { (c_col, a_col) };
+    let first_line = buf.offset_to_line(anchor.min(cursor));
+    let last_line = buf.offset_to_line(anchor.max(cursor));
+    // the cursor char is part of the block: exclusive end = corner col + 1
+    let rows = (first_line..=last_line)
+        .map(|line| block_row_range(buf, line, col_lo, col_hi + 1))
+        .collect();
+    Some(BlockSpan {
+        col_lo,
+        col_hi: col_hi + 1,
+        first_line,
+        rows,
+    })
 }
 
 /// Yank the span into the register.
