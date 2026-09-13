@@ -47,4 +47,17 @@ pub trait VimHost {
     /// `:q` — close the editor. The host decides whether that is allowed
     /// (e.g. prompting about unsaved changes is the host's call).
     fn request_close(&mut self) {}
+
+    /// Non-fatal feedback text for the status UI: `E486: Pattern not found`,
+    /// substitution counts, unknown Ex commands. Optional (default no-op);
+    /// errors that need a decision still go through `bell`.
+    fn status_message(&mut self, message: &str) {
+        let _ = message;
+    }
+
+    /// The buffer's name for status UI (v1; `%` register support comes with
+    /// expression registers). Optional.
+    fn buffer_name(&self) -> &str {
+        ""
+    }
 }

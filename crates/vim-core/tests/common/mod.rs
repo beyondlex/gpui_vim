@@ -103,6 +103,8 @@ pub struct HostView {
     pub saved: usize,
     /// `:q` flag (Ex command tests).
     pub close_requested: bool,
+    /// status_message texts (Ex feedback tests).
+    pub statuses: Vec<String>,
     undo_stack: Vec<(String, usize)>,
     redo_stack: Vec<(String, usize)>,
     open_group: Option<u64>,
@@ -133,6 +135,14 @@ impl VimHost for HostView {
 
     fn request_close(&mut self) {
         self.close_requested = true;
+    }
+
+    fn status_message(&mut self, message: &str) {
+        self.statuses.push(message.to_owned());
+    }
+
+    fn buffer_name(&self) -> &str {
+        "test-buffer"
     }
 
     fn begin_undo_group(&mut self, id: u64, cursor: usize) {
@@ -181,6 +191,7 @@ impl Fixture {
                 group_count: 0,
                 saved: 0,
                 close_requested: false,
+                statuses: Vec::new(),
                 undo_stack: Vec::new(),
                 redo_stack: Vec::new(),
                 open_group: None,

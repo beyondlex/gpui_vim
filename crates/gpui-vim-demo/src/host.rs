@@ -105,13 +105,22 @@ impl VimHost for HostState {
 
     fn changed(&mut self) {}
 
+    fn status_message(&mut self, message: &str) {
+        self.pending_status = Some(message.to_owned());
+    }
+
+    fn buffer_name(&self) -> &str {
+        "untitled"
+    }
+
     fn save(&mut self) {
         let (lines, bytes) = {
             let rope = self.rope.borrow();
             (rope.len_lines().saturating_sub(1), rope.len_bytes())
         };
         self.pending_status = Some(format!(
-            "\"untitled\" {lines}L, {bytes}B written (demo: not persisted)"
+            "\"{}\" {lines}L, {bytes}B written (demo: not persisted)",
+            self.buffer_name()
         ));
     }
 

@@ -238,6 +238,8 @@ impl VimState {
         if self.ex_substitute(ctx, line) {
             return;
         }
+        ctx.host
+            .status_message(&format!("E492: Not an editor command: {line}"));
         ctx.host.bell();
     }
 
@@ -382,6 +384,8 @@ impl VimState {
         }
 
         if total == 0 {
+            ctx.host
+                .status_message(&format!("E486: Pattern not found: {pattern}"));
             ctx.host.bell();
             return true;
         }
@@ -395,6 +399,8 @@ impl VimState {
             self.cursor.offset = crate::buffer::clamp_to_line_end(ctx.buf, offset);
             self.cursor.desired_col = None;
         }
+        ctx.host
+            .status_message(&format!("{total} substitutions"));
         // `.` repeats the substitution at the cursor's line
         self.commit_change_record();
         true

@@ -1200,3 +1200,22 @@ fn block_toggle_kinds_and_mode_indicator() {
     f.feed(["<Esc>"]);
     assert_eq!(f.vim.mode(), vim_core::Mode::Normal);
 }
+
+#[test]
+fn ex_feedback_goes_through_status_channel() {
+    // no match: E486
+    let mut f = Fixture::at("foo\n", 0, 0);
+    f.feed([":", "%", "s", "/", "z", "z", "/", "y", "/", "<CR>"]);
+    assert_eq!(f.host.statuses.last().map(String::as_str), Some("E486: Pattern not found: zz"));
+
+    // success: substitution count
+    let mut f = Fixture::at("foo bar foo\n", 0, 0);
+    f.feed([":", "%", "s", "/", "f", "o", "o", "/", "q", "u", "x", "/", "g", "<CR>"]);
+    assert_eq!(f.host.statuses.last().map(String::as_str), Some("2 substitutions"));
+
+    // unknown command: E492
+    let mut f = Fixture::at("foo\n", 0, 0);
+    f.feed([":", "f", "o", "o", "<CR>"]);
+    assert_eq!(f.host.statuses.last().map(String::as_str), Some("E492: Not an editor command: foo"));
+    assert_eq!(f.vim.mode(), vim_core::Mode::Normal);
+}
