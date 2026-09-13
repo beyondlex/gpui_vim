@@ -36,7 +36,28 @@ fn main() {
                 // The Subscription MUST be kept alive — it unsubscribes on
                 // drop — so store it on the view instead of a local.
                 let subscription = gpui_vim::attach(&editor, cx);
-                editor.update(cx, |editor, _cx| editor.set_vim_subscription(subscription));
+                editor.update(cx, |editor, _cx| {
+                    editor.set_vim_subscription(subscription);
+                    // load the user's rc file when it exists
+                    if let Some(path) = gpui_vim::config::default_config_path() {
+                        if path.exists() {
+                            match gpui_vim::config::load_config_file(editor, &path) {
+                                Ok(stats) => {
+                                    editor.status_message = Some(format!(
+                                        "loaded {} mappings, {} options from {}",
+                                        stats.mappings,
+                                        stats.options,
+                                        path.display()
+                                    ));
+                                }
+                                Err(error) => {
+                                    editor.status_message =
+                                        Some(format!("E: {}: {error}", path.display()));
+                                }
+                            }
+                        }
+                    }
+                });
                 schedule_smoke_test(&editor, cx);
                 editor
             },

@@ -91,7 +91,7 @@ pub struct Editor {
     dragging: Cell<bool>,
     /// Caret blink state (library helper; the engine owns no timers).
     caret_blinker: std::rc::Rc<gpui_vim::render::CaretBlinker>,
-    status_message: Option<String>,
+    pub status_message: Option<String>,
     /// Keeps the keystroke interceptor alive. `gpui::Subscription` detaches
     /// on drop, so it must outlive the engine's use — storing it in the view
     /// (instead of a local in `main`) is what makes the engine keep working
