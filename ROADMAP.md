@@ -358,7 +358,13 @@ buffer）。
 
 ## P3 — gpui 集成产品化
 
-### 任务 11：渲染组件化
+### 任务 11：渲染组件化 ✅ 已完成
+> 实现：新模块 `gpui_vim::render`——`compute_line_overlays`（纯计算：搜索高
+> 亮/IME 标记/三种可视选区/光标，headless 可测）、`paint_vim_line`（反色光
+> 标 run 拆分 + 形状化 + quad 绘制，返回 shaped line 供宿主做鼠标/IME 反
+> 查）、`CaretBlinker`（500ms 闪烁，输入复位相位，`Rc` + 泛型 spawn）。demo
+> 全部改调库 API，本地 overlay 结构与绘制 guts 已删除。overlay 计算有
+> headless 测试。
 
 **现状**：光标/选区/搜索高亮/行号/闪烁全在 demo `editor.rs`（约 800 行），
 注释自称 "the file to copy"。本计划修过的渲染 bug（V-line 0 宽 canvas、块光标
@@ -377,7 +383,10 @@ buffer）。
 **验收**：demo 行为不变（截图对比）；`cargo test` 全绿；README 增加最小集成
 示例 <100 行。
 
-### 任务 12：跨平台按键路径验证
+### 任务 12：跨平台按键路径验证 ✅ 已文档化（本仓库只在 macOS 验证）
+> macOS 已逐事件验证（gpui 0.2.2 源码级 + 实测探针）。Linux(X11/Wayland)/
+> Windows 未经真机验证——**集成方在其它平台接入时必须先跑
+> `GPUI_VIM_DEBUG_KEYS=1` 冒烟**，差异收敛进 `to_core_key`/`dispatch_text`。
 
 **现状**：`attach()` 的 interceptor → keymap → IME 顺序分析全部基于 gpui
 0.2.2 macOS 源码；`pending_unknown_char` 机制（insert 模式 interceptor 退回
@@ -389,7 +398,11 @@ buffer）。
 真键盘路径）；问题集中处把差异收敛进 `to_core_key`/`dispatch_text`，不要让
 demo 感知平台。
 
-### 任务 13：`VimHost` 契约扩展
+### 任务 13：`VimHost` 契约扩展 ✅ 已完成（随任务 3/11 交付）
+> 已交付：`status_message`（E486/E492/替换计数走状态 UI，demo 状态栏显示）、
+> `buffer_name`（demo 为 "untitled"，`:w` 消息引用）、`save`/`request_close`
+> （随 `:w`/`:q` 交付）。**未交付**：viewport 升级为含列信息（任务 5 用
+> 显示列绕过）、多 buffer 模型——留待有真实多 buffer 宿主时再设计。
 
 - `fn status_message(&mut self, msg: &str) {}`（E 级错误提示通道：`E37`、
   `:q` 未保存、搜索无匹配替代裸 bell）；
