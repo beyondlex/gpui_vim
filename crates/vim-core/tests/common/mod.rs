@@ -230,6 +230,7 @@ impl Fixture {
 
     /// Simulate the IME text-input path (what the host does with typed text).
     pub fn type_text(&mut self, s: &str) {
+        self.vim.record_typed_text(s);
         let mut ctx = Ctx {
             buf: &mut self.buf,
             host: &mut self.host,

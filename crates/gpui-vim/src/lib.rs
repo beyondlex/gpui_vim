@@ -130,6 +130,7 @@ pub fn dispatch_text<E: VimEditor>(editor: &mut E, text: &str) {
 
 fn place_text<E: VimEditor>(editor: &mut E, text: &str) {
     let (vim, buf, host) = editor.vim_parts();
+    vim.record_typed_text(text);
     let mut ctx = Ctx { buf, host };
     vim.insert_text_at_cursor(&mut ctx, text);
 }

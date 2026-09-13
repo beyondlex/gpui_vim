@@ -702,6 +702,7 @@ impl gpui::EntityInputHandler for Editor {
         if committing {
             let marked = self.marked_range.take().unwrap();
             let (vim, buf, host) = gpui_vim::VimEditor::vim_parts(self);
+            vim.record_typed_text(text);
             let mut ctx = Ctx { buf, host };
             vim.replace_range(&mut ctx, marked, text);
         } else if let Some(range) = explicit_range {

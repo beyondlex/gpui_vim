@@ -1219,3 +1219,56 @@ fn ex_feedback_goes_through_status_channel() {
     assert_eq!(f.host.statuses.last().map(String::as_str), Some("E492: Not an editor command: foo"));
     assert_eq!(f.vim.mode(), vim_core::Mode::Normal);
 }
+
+// ---- regression: insert-session recording (single capture) ----------------------
+
+#[test]
+fn repro_atat_replay_of_insert_macro() {
+    // user repro: qa, I, "123", Enter, Esc, q — each @a/@@ inserts exactly
+    // one "123" line and returns to normal mode
+    let mut f = Fixture::at("hello\n", 0, 0);
+    f.feed(["q", "a", "I"]);
+    f.type_text("123");
+    f.feed(["<CR>", "<Esc>", "q"]);
+    assert_eq!(f.text(), "123\nhello\n");
+    f.feed(["@", "a"]);
+    assert_eq!(f.text(), "123\n123\nhello\n");
+    assert_eq!(f.vim.mode(), vim_core::Mode::Normal);
+    f.feed(["@", "@"]);
+    assert_eq!(f.text(), "123\n123\n123\nhello\n");
+    assert_eq!(f.vim.mode(), vim_core::Mode::Normal);
+    f.feed(["@", "@"]);
+    assert_eq!(f.text(), "123\n123\n123\n123\nhello\n");
+    assert_eq!(f.vim.mode(), vim_core::Mode::Normal);
+}
+
+#[test]
+fn repro_dot_after_open_line_middle() {
+    let mut f = Fixture::at("1\n2\n", 0, 0);
+    f.feed(["o"]);
+    f.type_text("abc");
+    f.feed(["<Esc>"]);
+    assert_eq!(f.text(), "1\nabc\n2\n");
+    f.feed(["."]);
+    assert_eq!(f.text(), "1\nabc\nabc\n2\n");
+}
+
+#[test]
+fn insert_typing_records_text_exactly_once() {
+    // macOS double delivery: the pipeline declines the key (Unknown) and
+    // the host places the text afterwards via record_typed_text. The
+    // recording must contain the typed text exactly ONCE, so `.` inserts
+    // it exactly once.
+    let mut f = Fixture::at("ab\n", 0, 0);
+    f.feed(["o"]);
+    let declined = f.feed_raw(vim_core::key::Key::char('x'));
+    assert_eq!(declined, vim_core::KeyResult::Unknown);
+    f.type_text("x"); // the host records + places the text
+    f.feed(["<Esc>"]);
+    assert_eq!(f.text(), "ab\nx\n");
+    f.feed(["."]);
+    assert_eq!(f.text(), "ab\nx\nx\n");
+    // two undos: one for the o-session, one for the dot replay
+    f.feed(["u", "u"]);
+    assert_eq!(f.text(), "ab\n");
+}

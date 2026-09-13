@@ -443,13 +443,25 @@ impl VimState {
                 }
                 continue;
             }
+            // record the key optimistically; keys the engine DECLINES
+            // (insert-mode printables on macOS: the host places that text
+            // itself) are popped again below — the text placement records
+            // the Text step instead, exactly once. Otherwise every typed
+            // char would replay twice.
             if !self.replaying {
                 self.recording.push(RecordedStep::Key(front.clone()));
                 if let Some((_, keys)) = &mut self.macro_capture {
                     keys.push(RecordedStep::Key(front.clone()));
                 }
             }
-            match self.process_key(ctx, front) {
+            let outcome = self.process_key(ctx, front);
+            if !self.replaying && outcome == ProcessOutcome::Unknown {
+                self.recording.pop();
+                if let Some((_, keys)) = &mut self.macro_capture {
+                    keys.pop();
+                }
+            }
+            match outcome {
                 ProcessOutcome::Consumed => {}
                 ProcessOutcome::Unknown => any_unknown = true,
                 ProcessOutcome::Feed(keys) => {
@@ -768,14 +780,21 @@ impl VimState {
             self.edit_insert(ctx, at, &expanded);
         }
         self.cursor.offset = at + expanded.len();
+        ctx.host.changed();
+    }
+
+    /// Host-side entry for typed/composed text (the IME placement path).
+    /// Records the text as ONE Text step for `.`/macro replay — the key
+    /// pipeline declines these chars, so recording them as keys too would
+    /// double every typed character on replay.
+    pub fn record_typed_text(&mut self, text: &str) {
+        if text.is_empty() || self.replaying || self.recording_suppressed {
+            return;
+        }
         if let Some(block) = &mut self.block_insert {
             block.text.push_str(text);
         }
-        if self.insert_session.is_some()
-            && !self.replaying
-            && !self.recording_suppressed
-            && !text.is_empty()
-        {
+        if self.insert_session.is_some() {
             match self.recording.last_mut() {
                 Some(RecordedStep::Text(existing)) => existing.push_str(text),
                 _ => self.recording.push(RecordedStep::Text(text.to_owned())),
@@ -784,7 +803,6 @@ impl VimState {
                 keys.push(RecordedStep::Text(text.to_owned()));
             }
         }
-        ctx.host.changed();
     }
 
     fn current_line_indent(&self, ctx: &Ctx) -> usize {
@@ -795,23 +813,6 @@ impl VimState {
 
     /// Replace an arbitrary range (IME committed composition text).
     pub fn replace_range(&mut self, ctx: &mut Ctx, range: Range<usize>, text: &str) {
-        // an IME commit during an insert session is recorded as typed text
-        if let Some(block) = &mut self.block_insert {
-            block.text.push_str(text);
-        }
-        if self.insert_session.is_some()
-            && !self.replaying
-            && !self.recording_suppressed
-            && !text.is_empty()
-        {
-            match self.recording.last_mut() {
-                Some(RecordedStep::Text(existing)) => existing.push_str(text),
-                _ => self.recording.push(RecordedStep::Text(text.to_owned())),
-            }
-            if let Some((_, keys)) = &mut self.macro_capture {
-                keys.push(RecordedStep::Text(text.to_owned()));
-            }
-        }
         self.begin_edit(ctx);
         self.edit_replace(ctx, range.clone(), text);
         // place the cursor at the end of the replacement when it touches it
@@ -1030,6 +1031,7 @@ fn op_keys(op: Operator) -> &'static str {
     }
 }
 
+#[derive(Clone, PartialEq, Eq)]
 pub(crate) enum ProcessOutcome {
     Consumed,
     Unknown,
@@ -2010,9 +2012,11 @@ impl VimState {
             }
             CharArgCmd::MacroPlay => {
                 let reg = if c == '@' { self.last_macro_played } else { Some(c) };
-                match reg.and_then(|r| self.macros.get(&r).cloned()) {
-                    Some(keys) => {
-                        self.last_macro_played = Some(c);
+                match reg.and_then(|r| self.macros.get(&r).map(|keys| (r, keys.clone()))) {
+                    Some((r, keys)) => {
+                        // remember the RESOLVED register: for `@@` the pressed
+                        // key is '@' itself, which is not a stored macro
+                        self.last_macro_played = Some(r);
                         let count = self.take_total_count().max(1);
                         // replay through the pipeline with `.` recording
                         // suppressed; the key guard handles recursive macros
