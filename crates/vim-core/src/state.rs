@@ -153,6 +153,12 @@ pub struct VimState {
     /// Last register executed with `@` (for `@@`).
     last_macro_played: Option<char>,
 
+    /// Jumplist (`C-o`/`C-i`): visited positions, `jump_pos` = index of the
+    /// current entry. Jump motions and search execution append the origin
+    /// and destination; forward entries are truncated on a new jump.
+    jumps: Vec<usize>,
+    jump_pos: usize,
+
     pub(crate) insert_session: Option<InsertSession>,
     pub(crate) insert_register_pending: bool,
 
@@ -210,6 +216,8 @@ impl VimState {
             macros: HashMap::new(),
             macro_capture: None,
             last_macro_played: None,
+            jumps: Vec::new(),
+            jump_pos: 0,
             insert_session: None,
             insert_register_pending: false,
             options: Options::default(),
@@ -600,12 +608,34 @@ impl VimState {
     }
 
     pub(crate) fn goto_motion(&mut self, ctx: &mut Ctx, motion: Motion, count: usize) -> bool {
+        let origin = self.cursor.offset;
         let result = motion.target(self, ctx, count);
         if !result.moved {
             return false;
         }
         self.apply_motion_result(ctx, motion, result);
+        if motion.is_jump() {
+            self.record_jump(origin, self.cursor.offset);
+        }
         true
+    }
+
+    /// Append a jump (origin -> dest) to the jumplist, discarding any
+    /// forward entries (like stepping back then jumping anew in a browser).
+    pub(crate) fn record_jump(&mut self, origin: usize, dest: usize) {
+        if self.jump_pos + 1 < self.jumps.len() {
+            self.jumps.truncate(self.jump_pos + 1);
+        }
+        if self.jumps.last() != Some(&origin) {
+            self.jumps.push(origin);
+        }
+        if self.jumps.last() != Some(&dest) {
+            self.jumps.push(dest);
+        }
+        while self.jumps.len() > 100 {
+            self.jumps.remove(0);
+        }
+        self.jump_pos = self.jumps.len() - 1;
     }
 
     // ---- insert sessions -------------------------------------------------------
@@ -1518,6 +1548,35 @@ impl VimState {
                     }
                 }
             }
+            NormalCmd::JumpBackward | NormalCmd::JumpForward => {
+                let backward = cmd == NormalCmd::JumpBackward;
+                let count = self.take_total_count().max(1);
+                for _ in 0..count {
+                    let moved = if backward {
+                        if self.jump_pos == 0 {
+                            false
+                        } else {
+                            self.jump_pos -= 1;
+                            true
+                        }
+                    } else if self.jump_pos + 1 < self.jumps.len() {
+                        self.jump_pos += 1;
+                        true
+                    } else {
+                        false
+                    };
+                    if !moved {
+                        ctx.host.bell();
+                        break;
+                    }
+                    self.cursor.offset =
+                        clamp_to_line_end(ctx.buf, self.jumps[self.jump_pos]);
+                    self.cursor.desired_col = None;
+                    ctx.host
+                        .scroll_to_line(ctx.buf.offset_to_line(self.cursor.offset));
+                }
+                ctx.host.changed();
+            }
             NormalCmd::RestoreVisual => {
                 if let Some((lo, hi, kind)) = self.last_visual {
                     self.visual_anchor = Some(lo);
@@ -1730,6 +1789,7 @@ impl VimState {
             CharArgCmd::JumpMark { linewise } => {
                 match self.marks.resolve(c) {
                     Some(offset) => {
+                        let origin = self.cursor.offset;
                         let offset = offset.min(ctx.buf.len());
                         if linewise {
                             let line = ctx.buf.offset_to_line(offset);
@@ -1742,6 +1802,7 @@ impl VimState {
                             self.cursor.desired_col = None;
                             ctx.host.scroll_to_line(ctx.buf.offset_to_line(offset));
                         }
+                        self.record_jump(origin, self.cursor.offset);
                     }
                     None => ctx.host.bell(),
                 }

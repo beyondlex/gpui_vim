@@ -47,6 +47,8 @@ pub enum NormalCmd {
     ScrollBottom,        // zb
     RestoreVisual,       // gv
     RepeatChange,        // .
+    JumpBackward,        // C-o
+    JumpForward,         // C-i
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -104,6 +106,8 @@ impl CmdKind {
                     | NormalCmd::Undo
                     | NormalCmd::Redo
                     | NormalCmd::RepeatChange
+                    | NormalCmd::JumpBackward
+                    | NormalCmd::JumpForward
             ),
             CmdKind::Visual(cmd) => !matches!(
                 cmd,
@@ -284,6 +288,8 @@ fn build_rows() -> Vec<(Vec<Key>, Phase, CmdKind)> {
     b.normal(&["m"], CmdKind::Normal(NormalCmd::MarkSet));
     b.normal(&["."], CmdKind::Normal(NormalCmd::RepeatChange));
     b.normal(&["q"], CmdKind::Normal(NormalCmd::RecordMacro));
+    b.normal(&["<C-o>"], CmdKind::Normal(NormalCmd::JumpBackward));
+    b.normal(&["<C-i>"], CmdKind::Normal(NormalCmd::JumpForward));
     b.normal(&["@"], CmdKind::Normal(NormalCmd::PlayMacro));
     b.normal(&["z", "z"], CmdKind::Normal(NormalCmd::ScrollCenter));
     b.normal(&["z", "t"], CmdKind::Normal(NormalCmd::ScrollTop));

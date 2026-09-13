@@ -1036,3 +1036,53 @@ fn macro_stop_key_not_captured() {
     f.feed(["0", "@", "a"]);
     assert_eq!(f.text(), "cdef\n"); // exactly one x ran on replay
 }
+
+// ---- jumplist C-o / C-i (ROADMAP task 10) ---------------------------------------
+
+#[test]
+fn jumplist_walks_back_and_forward() {
+    let mut f = Fixture::at(MULTI, 0, 0); // alpha\nbeta\ngamma\ndelta\n
+    f.feed(["G"]); // jump to last line
+    f.feed(["g", "g"]); // jump back to first
+    assert_eq!(f.line(), 0);
+    f.feed(["<C-o>"]); // back: to the pre-gg position
+    assert_eq!(f.line(), 3);
+    f.feed(["<C-i>"]); // forward again
+    assert_eq!(f.line(), 0);
+    // forward past the end rings the bell and stays
+    f.feed(["<C-i>"]);
+    assert_eq!(f.line(), 0);
+}
+
+#[test]
+fn jumplist_search_and_marks_are_jumps() {
+    let mut f = Fixture::at("alpha\nbeta foo\ngamma\n", 0, 0);
+    f.feed(["m", "a"]);
+    f.feed(["/", "f", "o", "o", "<CR>"]); // jump to "foo" on line 1
+    assert_eq!(f.line(), 1);
+    f.feed(["G"]); // last line
+    f.feed(["`", "a"]); // back to the mark on line 0
+    assert_eq!(f.line(), 0);
+    f.feed(["<C-o>"]); // -> the G position (line 2)
+    assert_eq!(f.line(), 2);
+    f.feed(["<C-o>"]); // -> the search match (line 1)
+    assert_eq!(f.line(), 1);
+    f.feed(["<C-i>"]); // -> line 2 again
+    assert_eq!(f.line(), 2);
+}
+
+#[test]
+fn jumplist_ignores_local_motions() {
+    let mut f = Fixture::at(MULTI, 0, 0);
+    f.feed(["G"]); // one real jump
+    f.feed(["h", "j", "k", "l", "w"]); // local motions are not jumps
+    f.feed(["<C-o>"]);
+    // back to the pre-G position regardless of the local motion detours
+    assert_eq!(f.line(), 0);
+    // a new jump after stepping back discards the forward branch
+    f.feed(["j"]); // local (not a jump)
+    f.feed(["G"]);
+    f.feed(["g", "g"]);
+    f.feed(["<C-o>"]);
+    assert_eq!(f.line(), 3);
+}

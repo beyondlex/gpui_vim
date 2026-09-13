@@ -103,6 +103,30 @@ impl Motion {
         }
     }
 
+    /// Whether this motion is a "jump" in vim's sense: it belongs on the
+    /// jumplist reachable with `C-o` / `C-i`.
+    pub fn is_jump(self) -> bool {
+        matches!(
+            self,
+            Motion::GoToLine { .. }
+                | Motion::SearchNext { .. }
+                | Motion::StarSearch { .. }
+                | Motion::ParaNext
+                | Motion::ParaPrev
+                | Motion::SentenceNext
+                | Motion::SentencePrev
+                | Motion::MatchBracket
+                | Motion::ScreenTop
+                | Motion::ScreenMiddle
+                | Motion::ScreenBottom
+                | Motion::ScrollHalfDown
+                | Motion::ScrollHalfUp
+                | Motion::PageUp
+                | Motion::PageDown
+                | Motion::MarkJump { .. }
+        )
+    }
+
     /// Compute the landing offset. Applies `count` where it makes sense.
     /// Pure with respect to the cursor: callers decide whether to move.
     pub fn target(

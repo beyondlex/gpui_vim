@@ -315,7 +315,12 @@ v1 只保证 `j`/`k` 在 wrap 行间按显示行移动（读 viewport 的 host �
 需要升级为 (line, display_row)）。**依赖任务 8 的显示列**。此任务动契约较大，
 允许降级为「文档明确声明不支持 wrap」并移除误导性的 `gj`/`gk` 行。
 
-### 任务 10：jumplist（`C-o`/`C-i`）
+### 任务 10：jumplist（`C-o`/`C-i`）✅ 已完成
+> 实现：`jumps: Vec<usize>` + `jump_pos`（当前项下标）。`goto_motion` 对
+> `is_jump()` 运动（G/gg/n/N/*/`%`/`(`)`/`{`/`}`/H/M/L/C-d/u/f/b/'`` ` ``）在
+> 成功后记录 origin→dest；`` '{char}`` 与 `/pattern<CR>` 执行路径同样记录。
+> 新跳转截断前方分支；上限 100 条。`C-o`/`C-i` 按下标前后走，越界响铃。v1 不
+> 跨 buffer、不经 `:jumps` 展示（等任务 13）。
 
 **方案**：`VimState` 加 `jumps: Vec<(usize, u64)>`（offset + buffer 内容纪元，
 纪元用 `undo_seq` 或 host `changed()` 计数，防陈旧跳转）；`gg/G/n/N/'{char}/

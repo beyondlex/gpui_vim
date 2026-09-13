@@ -73,8 +73,10 @@ impl VimState {
     /// Move to the nearest match for the active pattern in `forward`.
     fn jump_to_current_match(&mut self, ctx: &mut Ctx, forward: bool, count: usize) {
         if let Some(offset) = search::jump_to_match(self, ctx.buf, forward, count) {
+            let origin = self.cursor.offset;
             self.cursor.offset = offset;
             self.cursor.desired_col = None;
+            self.record_jump(origin, offset);
             // publish with the current match marked (respecting `hlsearch`)
             if self.options.hlsearch {
                 let matches = self.search.last_matches.clone();
