@@ -26,6 +26,9 @@ pub const LINE_HEIGHT: f32 = 20.0;
 fn cursor_color() -> gpui::Hsla {
     gpui::black()
 }
+fn editor_bg() -> gpui::Hsla {
+    gpui::rgba(0xfffdf6ff).into()
+}
 fn selection_color() -> gpui::Hsla {
     gpui::rgba(0x3b82f655).into()
 }
@@ -90,6 +93,10 @@ pub struct Editor {
     /// Width of one monospace character, measured each frame.
     char_width: Cell<f32>,
     dragging: Cell<bool>,
+    /// Caret blink phase (demo-side cosmetics; the engine owns no timers).
+    caret_visible: Cell<bool>,
+    /// Set on user input so the blink loop keeps the caret solid while typing.
+    blink_phase_reset: Cell<bool>,
     status_message: Option<String>,
     /// Keeps the keystroke interceptor alive. `gpui::Subscription` detaches
     /// on drop, so it must outlive the engine's use — storing it in the view
@@ -117,7 +124,7 @@ impl Editor {
     pub fn new(initial_text: &str, cx: &mut Context<Self>) -> Self {
         let buffer = RopeBuffer::new(initial_text);
         let host = HostState::new(buffer.shared().clone());
-        Editor {
+        let editor = Editor {
             buffer,
             host,
             vim: VimState::new(),
@@ -128,9 +135,42 @@ impl Editor {
             text_area_bounds: Cell::new(Bounds::default()),
             char_width: Cell::new(8.4),
             dragging: Cell::new(false),
+            caret_visible: Cell::new(true),
+            blink_phase_reset: Cell::new(false),
             status_message: None,
             _vim_subscription: None,
-        }
+        };
+        editor.spawn_blink_loop(cx);
+        editor
+    }
+
+    /// Toggle the caret every 500ms; input keeps it solid (see `mark_caret_activity`).
+    fn spawn_blink_loop(&self, cx: &mut Context<Self>) {
+        cx.spawn(async move |editor, cx| {
+            loop {
+                gpui::Timer::after(std::time::Duration::from_millis(500)).await;
+                let ok = editor
+                    .update(cx, |editor, cx| {
+                        if editor.blink_phase_reset.take() {
+                            editor.caret_visible.set(true);
+                        } else {
+                            editor.caret_visible.set(!editor.caret_visible.get());
+                        }
+                        cx.notify();
+                    })
+                    .is_ok();
+                if !ok {
+                    break;
+                }
+            }
+        })
+        .detach();
+    }
+
+    /// Keep the caret visible and restart the blink phase (on any user input).
+    fn mark_caret_activity(&self) {
+        self.blink_phase_reset.set(true);
+        self.caret_visible.set(true);
     }
 
     /// Store the `attach()` subscription on the view (see field docs).
@@ -211,6 +251,7 @@ impl Editor {
         self.vim.set_cursor_offset(&self.buffer, offset);
         self.dragging.set(true);
         self.host.scrolled_to = None;
+        self.mark_caret_activity();
         cx.notify();
     }
 
@@ -297,6 +338,7 @@ impl gpui_vim::VimEditor for Editor {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.mark_caret_activity();
         self.flush_clipboard(cx);
         self.flush_scroll();
         cx.notify();
@@ -441,7 +483,14 @@ impl Editor {
         // visual selection
         if let Some((selection, linewise)) = self.selection_span() {
             if linewise {
-                quads.push((0..0, selection_color(), true));
+                // only the lines the selection spans get the full-width quad
+                let first = self.buffer.offset_to_line(selection.start);
+                let last = self
+                    .buffer
+                    .offset_to_line(selection.end.saturating_sub(1).max(selection.start));
+                if line >= first && line <= last {
+                    quads.push((0..0, selection_color(), true));
+                }
             } else {
                 let start = selection.start.clamp(line_start, line_end) - line_start;
                 let end = selection.end.clamp(line_start, line_end) - line_start;
@@ -494,11 +543,25 @@ impl Editor {
                 cursor_block: true,
             }
         };
+        // blink phase: hide the caret without touching the engine state
+        let overlays = if self.caret_visible.get() {
+            overlays
+        } else {
+            LineOverlays {
+                cursor: None,
+                ..overlays
+            }
+        };
 
         div()
             .id(("line", line as u64))
             .flex()
             .flex_row()
+            // uniform_list lays each item out with a definite width, but an
+            // auto-width flex row shrinks to its content (just the gutter),
+            // which would collapse the flex_1 text area to 0px — full-width
+            // overlays (V-line selection) would never paint.
+            .w_full()
             .h(px(LINE_HEIGHT))
             .child(
                 div()
@@ -513,15 +576,38 @@ impl Editor {
                     .text_color(if in_range { text_color() } else { tilde_color() })
                     .child(canvas(
                         move |bounds, _window, _cx| bounds,
-                        move |bounds, _, window, cx| {
-                            let runs = [TextRun {
-                                len: text.len(),
-                                font: font(),
-                                color: text_color(),
-                                background_color: None,
-                                underline: None,
-                                strikethrough: None,
-                            }];
+                        move |bounds, _, window, cx| {                            // vim-style invert: the character under the block
+                            // cursor is painted in the background color so it
+                            // reads through the solid cursor block
+                            let inverted = overlays
+                                .cursor
+                                .filter(|_| overlays.cursor_block)
+                                .and_then(|at| {
+                                    text.get(at..)
+                                        .and_then(|rest| rest.chars().next())
+                                        .map(|c| at..at + c.len_utf8())
+                                });
+                            let mut runs: Vec<TextRun> = Vec::new();
+                            let mut push_run = |len: usize, color: gpui::Hsla| {
+                                if len > 0 {
+                                    runs.push(TextRun {
+                                        len,
+                                        font: font(),
+                                        color,
+                                        background_color: None,
+                                        underline: None,
+                                        strikethrough: None,
+                                    });
+                                }
+                            };
+                            match inverted {
+                                Some(range) => {
+                                    push_run(range.start, text_color());
+                                    push_run(range.len(), editor_bg());
+                                    push_run(text.len() - range.end, text_color());
+                                }
+                                None => push_run(text.len(), text_color()),
+                            }
                             let shaped = window
                                 .text_system()
                                 .shape_line(text.clone(), px(FONT_SIZE), &runs, None);
@@ -578,7 +664,12 @@ impl Editor {
                                 cx,
                             );
                         },
-                    )),
+                    )
+                    // canvas has no intrinsic size; without this its bounds
+                    // are 0px wide and full-width overlays (V-line selection)
+                    // never paint — x_for_index-based ones are unaffected
+                    .absolute()
+                    .size_full()),
             )
     }
 
@@ -711,6 +802,7 @@ impl gpui::EntityInputHandler for Editor {
         let (vim, _buf, _host) = gpui_vim::VimEditor::vim_parts(self);
         let cursor_line = _buf.offset_to_line(vim.cursor_offset());
         self.host.scrolled_to = Some(cursor_line);
+        self.mark_caret_activity();
         self.flush_scroll();
         cx.notify();
     }

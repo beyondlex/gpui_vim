@@ -481,3 +481,168 @@ fn unknown_keys_fall_through() {
     let result = f.feed_raw(vim_core::key::Key::ctrl_char('a'));
     assert_eq!(result, vim_core::KeyResult::Unknown);
 }
+
+// ---- I / A insert entry ------------------------------------------------------
+
+#[test]
+fn insert_entry_I_and_A() {
+    // `I`: first non-blank of the line + insert mode
+    let mut f = edit("    indented line\nsecond\n", 0, 8, &["I"]);
+    assert_eq!(f.vim.mode(), vim_core::Mode::Insert);
+    assert_eq!(f.cursor(), 4); // first non-blank
+    f.type_text("XX");
+    assert_eq!(f.text(), "    XXindented line\nsecond\n");
+
+    // `A`: end of the line + insert mode
+    let mut f = edit("tail\n", 0, 0, &["A"]);
+    assert_eq!(f.vim.mode(), vim_core::Mode::Insert);
+    assert_eq!(f.cursor(), 4); // line end (before the newline)
+    f.type_text("!");
+    assert_eq!(f.text(), "tail!\n");
+
+    // `a` on a non-empty line moves one char right; at line end it stays
+    let mut f = edit("abc\n", 0, 2, &["a"]);
+    assert_eq!(f.vim.mode(), vim_core::Mode::Insert);
+    assert_eq!(f.cursor(), 3);
+}
+
+// ---- V linewise visual -------------------------------------------------------
+
+#[test]
+fn visual_line_V() {
+    // `V` enters visual-line mode from normal mode
+    let mut f = Fixture::at(MULTI, 1, 0);
+    f.feed(["V"]);
+    assert_eq!(
+        f.vim.mode(),
+        vim_core::Mode::Visual { kind: vim_core::VisualKind::Line }
+    );
+    // `j` extends the selection one line down; `V` again exits
+    f.feed(["j"]);
+    assert_eq!(f.vim.mode(), vim_core::Mode::Visual { kind: vim_core::VisualKind::Line });
+    f.feed(["V"]);
+    assert_eq!(f.vim.mode(), vim_core::Mode::Normal);
+
+    // `Vj d` deletes whole lines
+    let mut f = Fixture::at(MULTI, 1, 0);
+    f.feed(["V", "j", "d"]);
+    assert_eq!(f.text(), "alpha\ndelta\n");
+    assert_eq!(f.line(), 1); // cursor on 'delta' after the join point
+
+    // `Vj y` yanks linewise; `p` puts below the cursor line
+    let mut f = Fixture::at(MULTI, 0, 0);
+    f.feed(["V", "j", "y", "p"]);
+    assert_eq!(f.text(), "alpha\nbeta\nalpha\nbeta\ngamma\ndelta\n");
+}
+
+// ---- search: Enter reaching the prompt through the text path -----------------
+
+#[test]
+fn cmdline_enter_arriving_as_text_still_executes() {
+    // macOS hands Enter to the text-input path as "\n" (key_char); the
+    // engine must submit the search, not append a newline to the pattern.
+    let mut f = Fixture::at("foo bar foo baz", 0, 0);
+    f.feed(["/"]);
+    assert_eq!(f.vim.mode(), vim_core::Mode::CommandLine { prompt: '/' });
+    f.feed(["f", "o", "o"]);
+    let result = f.feed_raw(vim_core::key::Key::char('\n'));
+    assert_eq!(result, vim_core::KeyResult::Consumed);
+    assert_eq!(f.vim.mode(), vim_core::Mode::Normal);
+    assert_eq!(f.cursor(), 8);
+
+    // same for "\r"
+    let mut f = Fixture::at("foo bar foo baz", 0, 0);
+    f.feed(["/", "b", "a"]);
+    let _ = f.feed_raw(vim_core::key::Key::char('\r'));
+    assert_eq!(f.vim.mode(), vim_core::Mode::Normal);
+    assert_eq!(f.cursor(), 4);
+
+    // a carriage return typed mid-pattern via text must not land in the
+    // pattern either
+    let mut f = Fixture::at("foo bar foo baz", 0, 0);
+    f.feed(["/", "f"]);
+    let _ = f.feed_raw(vim_core::key::Key::char('\n'));
+    assert_eq!(f.vim.cmdline.buffer, "");
+}
+
+#[test]
+fn cmdline_backspace_arriving_as_text_still_deletes() {
+    let mut f = Fixture::at("foo bar", 0, 0);
+    f.feed(["/", "f", "o"]);
+    assert_eq!(f.vim.cmdline.buffer, "fo");
+    let _ = f.feed_raw(vim_core::key::Key::char('\x7f'));
+    assert_eq!(f.vim.cmdline.buffer, "f");
+    // backspacing past the start cancels the prompt
+    let _ = f.feed_raw(vim_core::key::Key::char('\x7f'));
+    let _ = f.feed_raw(vim_core::key::Key::char('\x7f'));
+    assert_eq!(f.vim.mode(), vim_core::Mode::Normal);
+}
+
+// ---- undo grouping: change family and open-line are single undo steps --------
+
+#[test]
+fn change_C_types_and_undoes_in_one_step() {
+    let mut f = Fixture::at("hello world\nsecond\n", 0, 0);
+    f.feed(["C"]);
+    assert_eq!(f.vim.mode(), vim_core::Mode::Insert);
+    f.type_text("XX");
+    f.feed(["<Esc>"]);
+    assert_eq!(f.text(), "XX\nsecond\n");
+    // one `u` must restore the deleted text (not just the typed text)
+    f.feed(["u"]);
+    assert_eq!(f.text(), "hello world\nsecond\n");
+    assert_eq!(f.host.group_count, 1);
+}
+
+#[test]
+fn change_ciw_is_one_undo_step() {
+    let mut f = Fixture::at("foo bar\n", 0, 0);
+    f.feed(["c", "i", "w"]);
+    assert_eq!(f.vim.mode(), vim_core::Mode::Insert);
+    f.type_text("hi");
+    f.feed(["<Esc>"]);
+    assert_eq!(f.text(), "hi bar\n");
+    f.feed(["u"]);
+    assert_eq!(f.text(), "foo bar\n");
+}
+
+#[test]
+fn open_line_o_undo_removes_the_line() {
+    let mut f = Fixture::at("alpha\nbeta\n", 0, 3);
+    f.feed(["o"]);
+    assert_eq!(f.vim.mode(), vim_core::Mode::Insert);
+    f.type_text("new");
+    f.feed(["<Esc>"]);
+    assert_eq!(f.text(), "alpha\nnew\nbeta\n");
+    f.feed(["u"]);
+    assert_eq!(f.text(), "alpha\nbeta\n");
+}
+
+// ---- Esc dismisses search highlights (:noh semantics) -------------------------
+
+#[test]
+fn escape_clears_search_highlights_until_next_search() {
+    let mut f = Fixture::at("foo bar foo baz foo", 0, 0);
+    f.feed(["/", "f", "o", "o", "<CR>"]);
+    assert_eq!(f.host.highlights.len(), 3);
+
+    // Esc dismisses the highlights...
+    f.feed(["<Esc>"]);
+    assert!(f.host.highlights.is_empty());
+
+    // ...but `n` still works and re-publishes them (like :noh + n)
+    f.feed(["n"]);
+    assert_eq!(f.cursor(), 16);
+    assert_eq!(f.host.highlights.len(), 3);
+
+    // a fresh search also re-highlights
+    f.feed(["<Esc>"]);
+    assert!(f.host.highlights.is_empty());
+    f.feed(["/", "b", "a", "<CR>"]);
+    assert!(!f.host.highlights.is_empty());
+
+    // Esc without active highlights is a no-op (no host churn)
+    let mut f = Fixture::at("foo", 0, 0);
+    f.feed(["<Esc>"]);
+    assert!(f.host.highlights.is_empty());
+}

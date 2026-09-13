@@ -5,6 +5,24 @@ use crate::mode::Mode;
 use crate::search;
 use crate::state::{Ctx, KeyResult, VimState};
 
+/// Platforms may deliver Enter, Backspace and Tab as bare control characters
+/// through the text-input path (`"\n"`, `"\x7f"`, `"\t"`). Normalize them so
+/// the prompt treats them like their named keys instead of pattern text.
+fn normalize_control_char(key: Key) -> Key {
+    if !key.modifiers.is_plain() {
+        return key;
+    }
+    if let KeyKind::Char(c) = key.kind {
+        return match c {
+            '\n' | '\r' => Key::enter(),
+            '\x7f' => Key::backspace(),
+            '\t' => Key::tab(),
+            _ => key,
+        };
+    }
+    key
+}
+
 /// Command-line input buffer + search history.
 #[derive(Default)]
 pub struct Cmdline {
@@ -39,6 +57,8 @@ impl VimState {
             self.cmdline.history.push(pattern.clone());
         }
         self.cmdline.history_pos = None;
+        self.cmdline.stash = None;
+        self.cmdline.buffer.clear();
         search::set_pattern(self, ctx, pattern, forward);
         self.jump_to_current_match(ctx, forward, 1);
         ctx.host.changed();
@@ -75,6 +95,11 @@ impl VimState {
             return KeyResult::Consumed;
         };
         let forward = prompt == '/';
+        // Some hosts/platforms deliver Enter, Backspace and Tab as bare
+        // control characters through the text-input path ("\n", "\x7f", "\t").
+        // Normalize them so the prompt treats them like their named keys
+        // instead of appending them to the pattern.
+        let key = normalize_control_char(key);
         match &key.kind {
             KeyKind::Char(c) if key.modifiers.is_plain() => {
                 self.cmdline.buffer.push(*c);

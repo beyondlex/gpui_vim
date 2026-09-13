@@ -270,6 +270,16 @@ impl VimState {
             key.modifiers = Modifiers::NONE;
         }
 
+        // A printable key's shift flag is redundant: the character itself
+        // already encodes it (macOS hands over `I` as shift+i with key_char
+        // "I", `$` as shift+4 with key_char "$"), while commands and mappings
+        // are declared as plain chars (`Key::parse("I")`, `Key::parse("$")`).
+        // Drop the flag so shifted keys hit the same command-table entries —
+        // otherwise every uppercase letter and shifted punctuation misses.
+        if key.modifiers.shift && key.modifiers.is_plain() && matches!(key.kind, KeyKind::Char(_)) {
+            key.modifiers.shift = false;
+        }
+
         // other host command chords (Cmd-…) always pass through
         if key.modifiers.platform {
             return KeyResult::Unknown;
@@ -432,15 +442,26 @@ impl VimState {
     // ---- insert sessions -------------------------------------------------------
 
     pub(crate) fn begin_insert(&mut self, ctx: &mut Ctx, kind: InsertKind) {
-        self.undo_seq += 1;
-        let group_id = self.undo_seq;
+        // Reuse an open undo group when one exists: the change family (c/s/S/C)
+        // deletes the span through a group that is already open, and the
+        // deletion + subsequent typing must undo as ONE step. Without this the
+        // host would snapshot between deletion and typing, so the first `u`
+        // only undid the typing and a second one was needed for the deletion.
+        let group_id = match self.open_undo {
+            Some(id) => id,
+            None => {
+                self.undo_seq += 1;
+                let id = self.undo_seq;
+                self.open_undo = Some(id);
+                ctx.host.begin_undo_group(id, self.cursor.offset);
+                id
+            }
+        };
         self.insert_session = Some(InsertSession {
             kind,
             start_offset: self.cursor.offset,
             group_id,
         });
-        self.open_undo = Some(group_id);
-        ctx.host.begin_undo_group(group_id, self.cursor.offset);
         self.mode = Mode::Insert;
         self.cursor.desired_col = None;
     }
@@ -695,9 +716,14 @@ impl VimState {
             return ProcessOutcome::Consumed;
         }
 
-        // 6. escape clears pending state
+        // 6. escape clears pending state; with search highlights showing it
+        //    also dismisses them (`:noh` semantics) — the next search or
+        //    `n`/`N` re-publishes them
         if key == Key::escape() || key == Key::ctrl_char('[') {
             self.reset_pending();
+            if !self.search.last_matches.is_empty() {
+                crate::search::clear_highlights(self, ctx);
+            }
             return ProcessOutcome::Consumed;
         }
 
@@ -985,7 +1011,11 @@ impl VimState {
         };
         self.begin_edit(ctx);
         ops::apply(self, ctx, op, &span, self.register);
-        self.end_edit();
+        // an operator that entered insert mode (visual `c`) keeps its group
+        // open so deletion + typing undo as one step
+        if self.insert_session.is_none() {
+            self.end_edit();
+        }
         self.bump(ctx);
         self.reset_pending();
         if matches!(self.mode, Mode::Visual { .. }) {
@@ -999,7 +1029,11 @@ impl VimState {
         self.op_count = None;
         self.begin_edit(ctx);
         ops::apply(self, ctx, op, &span, self.register);
-        self.end_edit();
+        // an operator that entered insert mode (cw/ciw/cc) keeps its group
+        // open so deletion + typing undo as one step
+        if self.insert_session.is_none() {
+            self.end_edit();
+        }
         self.bump(ctx);
         self.reset_pending();
     }
@@ -1303,6 +1337,9 @@ impl VimState {
                 self.cursor.offset = ctx.buf.line_start(line);
             }
             InsertKind::OpenLine { below } => {
+                // open the undo group BEFORE mutating, so the snapshot the
+                // host takes can actually undo the inserted line
+                self.begin_edit(ctx);
                 let line = ctx.buf.offset_to_line(self.cursor.offset);
                 let (indent, _) = ctx.buf.line_indent(line);
                 let indent_str = " ".repeat(indent);

@@ -282,7 +282,14 @@ impl Motion {
             }
             Motion::SearchNext { forward } => {
                 match search::jump_to_match(vim, buf, forward, count) {
-                    Some(o) => MotionResult::new(o, MotionKind::Exclusive),
+                    Some(o) => {
+                        // re-publish the matches: after Esc dismissed the
+                        // highlights (`:noh` semantics) `n`/`N` re-arms them
+                        let matches = vim.search.last_matches.clone();
+                        let current = matches.iter().find(|m| m.start == o).cloned();
+                        ctx.host.set_search_highlights(&matches, current);
+                        MotionResult::new(o, MotionKind::Exclusive)
+                    }
                     None => MotionResult::stuck(vim.cursor.offset),
                 }
             }

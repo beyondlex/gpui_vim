@@ -153,7 +153,16 @@ pub fn to_core_key(keystroke: &Keystroke) -> Key {
             _ => KeyKind::Named(key.clone()),
         }
     } else if let Some(c) = keystroke.key_char.as_deref().and_then(|s| s.chars().next()) {
-        KeyKind::Char(c)
+        // macOS reports Enter and Tab with a control character in `key_char`
+        // ("\n", "\t") while `key` carries the canonical name. Convert them
+        // back to named keys so the engine sees <Enter>/<Tab> instead of
+        // printable text — otherwise the search prompt appends the Enter to
+        // the pattern instead of executing it.
+        match (keystroke.key.as_str(), c) {
+            ("enter", '\n' | '\r') => KeyKind::Named("enter".to_owned()),
+            ("tab", '\t') => KeyKind::Named("tab".to_owned()),
+            _ => KeyKind::Char(c),
+        }
     } else if modifiers.shift {
         // shift + single char without key_char (parse path): uppercase it
         let mut chars = key.chars();
@@ -184,6 +193,86 @@ pub fn key_context(mode: Mode) -> KeyContext {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::RefCell;
+    use std::ops::Range;
+    use std::rc::Rc;
+    use vim_core::buffer::{VimBuffer, VimBufferMut};
+    use vim_core::host::VimHost;
+
+    /// Minimal host fixture so tests can run keys through the full
+    /// conversion → engine pipeline.
+    #[derive(Clone)]
+    struct TestBuf(pub Rc<RefCell<String>>);
+
+    impl VimBuffer for TestBuf {
+        fn len(&self) -> usize {
+            self.0.borrow().len()
+        }
+        fn line_count(&self) -> usize {
+            self.0.borrow().split('\n').count()
+        }
+        fn char_at(&self, offset: usize) -> Option<char> {
+            self.0.borrow()[offset..].chars().next()
+        }
+        fn prev_char_offset(&self, offset: usize) -> Option<usize> {
+            if offset == 0 || offset > self.0.borrow().len() {
+                return None;
+            }
+            self.0.borrow()[..offset].chars().next_back().map(|c| offset - c.len_utf8())
+        }
+        fn line_range(&self, line: usize) -> Range<usize> {
+            let text = self.0.borrow();
+            let mut start = 0;
+            for (i, part) in text.split('\n').enumerate() {
+                if i == line {
+                    return start..start + part.len();
+                }
+                start += part.len() + 1;
+            }
+            text.len()..text.len()
+        }
+        fn offset_to_line(&self, offset: usize) -> usize {
+            self.0.borrow()[..offset.min(self.0.borrow().len())].split('\n').count() - 1
+        }
+        fn slice(&self, range: Range<usize>) -> String {
+            self.0.borrow()[range].to_owned()
+        }
+    }
+
+    impl VimBufferMut for TestBuf {
+        fn insert_text(&mut self, offset: usize, text: &str) {
+            self.0.borrow_mut().insert_str(offset, text);
+        }
+        fn delete_range(&mut self, range: Range<usize>) {
+            self.0.borrow_mut().replace_range(range, "");
+        }
+    }
+
+    struct NoopHost;
+    impl VimHost for NoopHost {
+        fn viewport(&self) -> (usize, usize) {
+            (0, 24)
+        }
+        fn scroll_to_line(&mut self, _: usize) {}
+        fn clipboard_write(&mut self, _: &str) {}
+        fn clipboard_read(&self) -> Option<String> {
+            None
+        }
+        fn set_search_highlights(&mut self, _: &[Range<usize>], _: Option<Range<usize>>) {}
+        fn begin_undo_group(&mut self, _: u64, _: usize) {}
+        fn undo(&mut self) -> Option<usize> {
+            None
+        }
+        fn redo(&mut self) -> Option<usize> {
+            None
+        }
+        fn changed(&mut self) {}
+    }
+
+    fn dispatch(vim: &mut VimState, buf: &mut TestBuf, key: Key) -> KeyResult {
+        let mut ctx = Ctx { buf, host: &mut NoopHost };
+        vim.handle_key(&mut ctx, key)
+    }
 
     #[test]
     fn conversion_plain_chars() {
@@ -201,5 +290,81 @@ mod tests {
         assert_eq!(to_core_key(&k), Key::ctrl_char('a'));
         let k = Keystroke::parse("space").unwrap();
         assert_eq!(to_core_key(&k).printable_char(), Some(' '));
+    }
+
+    #[test]
+    fn conversion_enter_and_tab_carry_control_key_chars_on_macos() {
+        // the shape `parse_keystroke` produces on macOS: named key + control
+        // char in key_char
+        let enter = Keystroke {
+            key: "enter".into(),
+            key_char: Some("\n".into()),
+            modifiers: Default::default(),
+        };
+        assert_eq!(to_core_key(&enter), Key::enter());
+        let tab = Keystroke {
+            key: "tab".into(),
+            key_char: Some("\t".into()),
+            modifiers: Default::default(),
+        };
+        assert_eq!(to_core_key(&tab), Key::tab());
+    }
+
+    #[test]
+    fn macos_enter_executes_search_end_to_end() {
+        // the reported bug: `/` + pattern + Enter executed nothing and the
+        // Enter landed in the pattern. This drives the exact macOS keystroke
+        // shape through to_core_key into the engine.
+        let buf = TestBuf(Rc::new(RefCell::new("foo bar foo baz".to_owned())));
+        let mut vim = VimState::new();
+
+        for c in "/foo".chars() {
+            assert_eq!(dispatch(&mut vim, &mut buf.clone(), Key::char(c)), KeyResult::Consumed);
+        }
+        assert!(matches!(vim.mode(), vim_core::Mode::CommandLine { prompt: '/' }));
+        assert_eq!(vim.cmdline.buffer, "foo");
+
+        let enter = Keystroke {
+            key: "enter".into(),
+            key_char: Some("\n".into()),
+            modifiers: Default::default(),
+        };
+        assert_eq!(dispatch(&mut vim, &mut buf.clone(), to_core_key(&enter)), KeyResult::Consumed);
+        assert_eq!(vim.mode(), vim_core::Mode::Normal);
+        assert_eq!(vim.cursor_offset(), 8); // jumped to the second "foo"
+        assert_eq!(vim.cmdline.buffer, "");
+    }
+
+    #[test]
+    fn macos_shift_letter_reaches_normal_commands() {
+        // `I`, `A`, `V` arrive as shift + base key + uppercase key_char
+        let mk = |key: &str, ch: char| Keystroke {
+            key: key.into(),
+            key_char: Some(ch.to_string().into()),
+            modifiers: gpui::Modifiers { shift: true, ..Default::default() },
+        };
+
+        // `I`: first non-blank + insert mode
+        let buf = TestBuf(Rc::new(RefCell::new("    indented\n".to_owned())));
+        let mut vim = VimState::new();
+        dispatch(&mut vim, &mut buf.clone(), to_core_key(&mk("i", 'I')));
+        assert_eq!(vim.mode(), vim_core::Mode::Insert);
+        assert_eq!(vim.cursor_offset(), 4);
+
+        // `A`: line end + insert mode
+        let buf = TestBuf(Rc::new(RefCell::new("tail\n".to_owned())));
+        let mut vim = VimState::new();
+        dispatch(&mut vim, &mut buf.clone(), to_core_key(&mk("a", 'A')));
+        assert_eq!(vim.mode(), vim_core::Mode::Insert);
+        assert_eq!(vim.cursor_offset(), 4);
+
+        // `V`: visual-line mode
+        let buf = TestBuf(Rc::new(RefCell::new("alpha\nbeta\n".to_owned())));
+        let mut vim = VimState::new();
+        dispatch(&mut vim, &mut buf.clone(), to_core_key(&mk("v", 'V')));
+        assert_eq!(
+            vim.mode(),
+            vim_core::Mode::Visual { kind: vim_core::VisualKind::Line }
+        );
     }
 }
