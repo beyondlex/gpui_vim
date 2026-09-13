@@ -243,8 +243,10 @@ impl Editor {
 
         // Prefer the shaped geometry captured at paint time: exact hit
         // testing for CJK/emoji (a uniform cell width is off by 2x there).
-        if let Some((origin_x, shaped)) = self.shaped_lines.borrow().get(&line) {
-            let index = shaped.closest_index_for_x(px(dx - f32::from(*origin_x)));
+        if let Some((_, shaped)) = self.shaped_lines.borrow().get(&line) {
+            // dx is already relative to the line's text start (the line
+            // canvas origin is area.origin.x + gutter)
+            let index = shaped.closest_index_for_x(px(dx));
             let offset = line_start + index.min(line_end - line_start);
             return offset.min(line_end);
         }
@@ -464,7 +466,11 @@ impl Editor {
                         );
                     },
                 )
+                // absolute + auto insets would sit at the element's
+                // STATIC position — after the uniform_list — and every
+                // mouse row would map back to the first line
                 .absolute()
+                .inset_0()
                 .size_full(),
             )
     }
