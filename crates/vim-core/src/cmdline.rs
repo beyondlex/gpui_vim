@@ -94,7 +94,14 @@ impl VimState {
     }
 
     fn cancel_cmdline(&mut self, ctx: &mut Ctx) {
-        self.mode = Mode::Normal;
+        // Esc at a visual `:` prompt returns to the intact selection
+        // (vim semantics); a second Esc from visual exits it
+        if let Some((kind, anchor)) = self.cmdline_visual.take() {
+            self.mode = Mode::Visual { kind };
+            self.visual_anchor = Some(anchor);
+        } else {
+            self.mode = Mode::Normal;
+        }
         self.discard_change_record();
         self.cmdline.buffer.clear();
         // restore the previous highlight set
@@ -137,6 +144,23 @@ impl VimState {
                     if prompt == ':' {
                         self.mode = Mode::Normal;
                         self.execute_ex(ctx, &entry);
+                        // executing a visual `:` command ends visual mode
+                        // (marks written, anchor cleared), like vim
+                        if let Some((kind, anchor)) = self.cmdline_visual.take() {
+                            let cursor = self.cursor.offset;
+                            let (lo, hi) = if anchor <= cursor {
+                                (anchor, cursor)
+                            } else {
+                                (cursor, anchor)
+                            };
+                            self.marks.set('<', lo);
+                            self.marks.set('>', hi);
+                            self.marks.last_visual = Some((lo, hi + 1));
+                            self.visual_anchor = None;
+                            self.marks.active_visual = None;
+                            self.mode = Mode::Normal;
+                            let _ = kind;
+                        }
                     } else {
                         self.execute_search(ctx, entry, prompt == '/');
                     }

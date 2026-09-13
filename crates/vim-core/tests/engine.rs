@@ -1536,3 +1536,57 @@ fn gq_with_motion_and_count() {
     f.feed(["g", "w", "w"]);
     assert_eq!(f.text(), "one two\nthree\nx\n");
 }
+
+// ---- regression: mapping on built-in prefix + visual : lifecycle ----------------
+
+#[test]
+fn mapping_on_builtin_prefix_fires() {
+    // user repro: gt/gT are USER MAPPINGS on `g`, a built-in prefix key.
+    // The mapping lookup must see cmd_seq (the absorbed `g`) + the queue.
+    let mut f = Fixture::at("foo\n", 0, 0);
+    f.vim
+        .keymaps_mut()
+        // vim's :map LHS is a single word: `gt`, never `g t`
+        .map_str_noremap(vim_core::keymap::ModeClass::Normal, "gt", ":action Test.Tab<CR>", true);
+    f.feed(["g", "t"]);
+    assert_eq!(f.host.actions, vec!["Test.Tab".to_owned()]);
+    // no stray keys leak into the buffer
+    assert_eq!(f.text(), "foo\n");
+}
+
+#[test]
+fn visual_colon_esc_restores_selection_and_second_esc_exits() {
+    let mut f = Fixture::at("foo\nfoo\nfoo\n", 0, 0);
+    f.feed(["j", "V", "j"]); // linewise lines 1-2
+    f.feed([":"]);
+    assert_eq!(f.vim.cmdline.buffer, "'<,'>");
+    // the prompt keeps the LINEWISE shape while open
+    assert_eq!(
+        f.vim.visual_selection().map(|(_, _, k)| k),
+        Some(vim_core::VisualKind::Line)
+    );
+    // Esc returns to the intact visual selection (vim semantics)
+    f.feed(["<Esc>"]);
+    assert_eq!(
+        f.vim.mode(),
+        vim_core::Mode::Visual { kind: vim_core::VisualKind::Line }
+    );
+    assert!(f.vim.visual_selection().is_some());
+    // a second Esc exits visual mode and the highlight is gone
+    f.feed(["<Esc>"]);
+    assert_eq!(f.vim.mode(), vim_core::Mode::Normal);
+    assert!(f.vim.visual_selection().is_none());
+}
+
+#[test]
+fn visual_colon_execute_drops_to_normal_on_range() {
+    let mut f = Fixture::at("foo\nfoo\nfoo\n", 0, 0);
+    f.feed(["j", "V", "j", ":"]);
+    f.feed(["s", "/", "f", "o", "o", "/", "x", "/", "<CR>"]);
+    assert_eq!(f.text(), "foo\nx\nx\n");
+    // executing the command ends visual mode
+    assert_eq!(f.vim.mode(), vim_core::Mode::Normal);
+    assert!(f.vim.visual_selection().is_none());
+    // and '<,'> marks were written for a follow-up :'<,'>s
+    assert_eq!(f.vim.marks.resolve('<'), Some(4));
+}

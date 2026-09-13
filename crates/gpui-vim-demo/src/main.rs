@@ -61,13 +61,13 @@ fn main() {
                     editor.tabs_mut().iter_mut().for_each(|tab| {
                         tab.vim.keymaps_mut().map_str_noremap(
                             vim_core::keymap::ModeClass::Normal,
-                            "g t",
+                            "gt",
                             ":action demo.tab-next<CR>",
                             true,
                         );
                         tab.vim.keymaps_mut().map_str_noremap(
                             vim_core::keymap::ModeClass::Normal,
-                            "g T",
+                            "gT",
                             ":action demo.tab-prev<CR>",
                             true,
                         );

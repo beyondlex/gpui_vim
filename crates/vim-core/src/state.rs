@@ -183,6 +183,10 @@ pub struct VimState {
     /// For the `gq`/`gw` spellings of Operator::Format: the trigger letter
     /// (`q` or `w`) to match in the linewise doubling.
     format_trigger: Option<char>,
+    /// Visual state to restore when the visual `:` prompt is cancelled:
+    /// (kind, anchor). While the prompt is open the selection keeps its
+    /// original shape for rendering.
+    pub(crate) cmdline_visual: Option<(crate::mode::VisualKind, usize)>,
     /// `:action <unknown-id>` is silently ignored instead of reported.
     /// Hosts sharing one rc file across apps set this while applying the
     /// user layer (mappings aimed at other apps are expected to miss).
@@ -261,6 +265,7 @@ impl VimState {
             changes: Vec::new(),
             change_pos: 0,
             format_trigger: None,
+            cmdline_visual: None,
             block_insert: None,
             jumps: Vec::new(),
             jump_pos: 0,
@@ -292,10 +297,15 @@ impl VimState {
     /// `(anchor, cursor, kind)` while in visual mode (raw, unnormalized).
     pub fn visual_selection(&self) -> Option<(usize, usize, VisualKind)> {
         let anchor = self.visual_anchor?;
-        Some((anchor, self.cursor.offset, match self.mode {
+        let kind = match self.mode {
             Mode::Visual { kind } => kind,
-            _ => VisualKind::Char,
-        }))
+            // the visual `:` prompt: keep the selection's original shape
+            Mode::CommandLine { .. } => self.cmdline_visual?.0,
+            // outside visual there is no selection (a stale anchor must not
+            // keep rendering one)
+            _ => return None,
+        };
+        Some((anchor, self.cursor.offset, kind))
     }
 
     /// Status-bar mode text (`-- INSERT --` etc.).
@@ -421,7 +431,7 @@ impl VimState {
             return self.cmdline_key(ctx, key);
         }
 
-        self.pending_keys.push_back(key);
+        self.pending_keys.push_back(key.clone());
         let class = mapping_class_for(self.mode);
         let mut guard = 0usize;
         let mut any_unknown = false;
@@ -440,21 +450,20 @@ impl VimState {
             // user mappings (not while an operator is pending: vim uses
             // :omap there, which we do not support yet). Suppressed while a
             // :noremap expansion is being consumed (no recursive remap).
+            // Waiting keeps the key IN the queue: insert-mode printables are
+            // declined by the pipeline and delivered by the host later, so
+            // popping them here would lose them.
             if self.no_remap_left > 0 {
                 self.no_remap_left -= 1;
             } else if self.op.is_none() {
                 let contiguous: &[Key] = self.pending_keys.make_contiguous();
+                eprintln!("PROBE lookup queue={:?}", contiguous.iter().map(|k| k.notation()).collect::<Vec<_>>());
                 match keymap::lookup(self.keymaps.table(class), contiguous) {
-                    MappingMatch::Match {
-                        used,
-                        expansion,
-                        noremap,
-                    } => {
+                    MappingMatch::Match { used, expansion, noremap } => {
                         self.pending_keys.drain(..used);
                         if noremap {
                             self.no_remap_left = expansion.len();
                         }
-                        // the queued expansion belongs to this mapping
                         self.expanding_mapping = true;
                         for key in expansion.into_iter().rev() {
                             self.pending_keys.push_front(key);
@@ -468,6 +477,7 @@ impl VimState {
                         }
                         continue;
                     }
+                    // a longer mapping may still follow: wait, key queued
                     MappingMatch::Waiting => return KeyResult::Consumed,
                     MappingMatch::None => {}
                 }
@@ -1512,8 +1522,14 @@ impl VimState {
             self.register_pending = true;
             return ProcessOutcome::Consumed;
         }
-        // `:` in visual mode seeds the cmdline with '<,'>
+        // `:` in visual mode seeds the cmdline with '<,'>; Esc at the
+        // prompt returns to the selection, executing it drops to normal
         if key.modifiers.is_plain() && key.kind == KeyKind::Char(':') {
+            let kind = match self.mode {
+                Mode::Visual { kind } => kind,
+                _ => crate::mode::VisualKind::Char,
+            };
+            self.cmdline_visual = Some((kind, self.visual_anchor.unwrap_or(self.cursor.offset)));
             self.begin_cmdline(':');
             self.cmdline.buffer.push_str("'<,'>");
             return ProcessOutcome::Consumed;

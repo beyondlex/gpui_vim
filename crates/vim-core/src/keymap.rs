@@ -134,6 +134,7 @@ impl Keymaps {
 }
 
 /// Resolution of the pending input queue against the mapping table.
+#[derive(Debug)]
 pub enum MappingMatch {
     /// A full mapping matched `used` keys; replay `expansion`.
     Match {
