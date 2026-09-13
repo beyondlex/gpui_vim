@@ -176,6 +176,10 @@ pub struct VimState {
     /// A user mapping just expanded: the queued expansion belongs to the
     /// mapping, so a cmdline entry inside it must not break the queue early.
     expanding_mapping: bool,
+    /// Changelist (`g;`/`g,`): positions of recent changes, newest last;
+    /// `change_pos` indexes the current entry.
+    changes: Vec<usize>,
+    change_pos: usize,
     /// `:action <unknown-id>` is silently ignored instead of reported.
     /// Hosts sharing one rc file across apps set this while applying the
     /// user layer (mappings aimed at other apps are expected to miss).
@@ -251,6 +255,8 @@ impl VimState {
             no_remap_left: 0,
             expanding_mapping: false,
             lenient_actions: false,
+            changes: Vec::new(),
+            change_pos: 0,
             block_insert: None,
             jumps: Vec::new(),
             jump_pos: 0,
@@ -568,8 +574,80 @@ impl VimState {
         self.open_undo = None;
     }
 
+    /// `C-a`/`C-x`: find the number at or after the cursor on this line and
+    /// add `delta` to it, preserving leading zeros count (roughly) and
+    /// cursor on the last digit. Returns false when no number is found.
+    fn increment_number_at_cursor(&mut self, ctx: &mut Ctx, delta: i64) -> bool {
+        // returns false when no number is found on the line
+        let line = ctx.buf.offset_to_line(self.cursor.offset);
+        let start = ctx.buf.line_start(line);
+        let end = ctx.buf.line_end(line);
+        let text = ctx.buf.slice(start..end);
+        let bytes = text.as_bytes();
+
+        // cursor column (bytes) within the line
+        let cur = self.cursor.offset - start;
+        // scan forward from the cursor for a digit; if none ahead, scan the
+        // tail of the number the cursor sits inside
+        let num_start = (cur..text.len()).find(|&i| bytes[i].is_ascii_digit());
+        let num_start = match num_start {
+            Some(start) => start,
+            None => {
+                // maybe the cursor is inside a number's tail: walk back to
+                // its first digit
+                let mut i = cur.min(text.len().saturating_sub(1));
+                while i > 0 && !bytes[i].is_ascii_digit() {
+                    i -= 1;
+                }
+                if !bytes.get(i).is_some_and(|b| b.is_ascii_digit()) {
+                    return false;
+                }
+                i
+            }
+        };
+
+        // include a preceding minus as sign when it is directly attached
+        let signed_start = if num_start > 0 && bytes[num_start - 1] == b'-' {
+            num_start - 1
+        } else {
+            num_start
+        };
+
+        // the number ends at the first non-digit
+        let mut num_end = num_start;
+        while num_end < text.len() && bytes[num_end].is_ascii_digit() {
+            num_end += 1;
+        }
+
+        let old_text = &text[signed_start..num_end];
+        let negative = old_text.starts_with('-');
+        let digits = if negative { &old_text[1..] } else { old_text };
+        let value: i64 = digits.parse().unwrap_or(i64::MAX);
+        let new_value = if negative { -value } else { value }.wrapping_add(delta);
+        let new_text = new_value.to_string();
+
+        self.begin_edit(ctx);
+        let abs = start + signed_start;
+        self.edit_replace(ctx, abs..start + num_end, &new_text);
+        self.bump(ctx);
+        // cursor on the last digit of the new number
+        self.cursor.offset = (abs + new_text.len() - 1).max(abs);
+        self.cursor.desired_col = None;
+        self.end_edit();
+        true
+    }
+
     pub(crate) fn bump(&mut self, ctx: &mut Ctx) {
         self.marks.last_change = Some(self.cursor.offset);
+        // changelist: dedupe repeats, cap the list
+        if self.changes.last() != Some(&self.cursor.offset) {
+            self.changes.truncate(self.change_pos + 1);
+            self.changes.push(self.cursor.offset);
+            if self.changes.len() > 100 {
+                self.changes.remove(0);
+            }
+            self.change_pos = self.changes.len() - 1;
+        }
         self.republish_search(ctx);
         ctx.host.changed();
     }
@@ -1876,6 +1954,62 @@ impl VimState {
                             }
                         }
                     }
+                }
+            }
+            NormalCmd::InsertAtLastChange => {
+                // `gi`: insert where the last insert session ended ('^)
+                if let Some(offset) = self.marks.get('^') {
+                    self.cursor.offset = offset.min(ctx.buf.len());
+                    self.cursor.desired_col = None;
+                }
+                self.start_insert(ctx, InsertKind::Insert);
+            }
+            NormalCmd::OlderChange | NormalCmd::NewerChange => {
+                let older = cmd == NormalCmd::OlderChange;
+                let count = self.take_total_count().max(1);
+                if self.changes.is_empty() {
+                    ctx.host
+                        .status_message("E664: changelist is empty");
+                    ctx.host.bell();
+                    return;
+                }
+                for _ in 0..count {
+                    let moved = if older {
+                        if self.change_pos == 0 {
+                            false
+                        } else {
+                            self.change_pos -= 1;
+                            true
+                        }
+                    } else if self.change_pos + 1 < self.changes.len() {
+                        self.change_pos += 1;
+                        true
+                    } else {
+                        false
+                    };
+                    if !moved {
+                        ctx.host
+                            .status_message("E662: At start of changelist");
+                        ctx.host.bell();
+                        break;
+                    }
+                }
+                let offset = self.changes[self.change_pos].min(ctx.buf.len());
+                self.cursor.offset = clamp_to_line_end(ctx.buf, offset);
+                self.cursor.desired_col = None;
+                ctx.host
+                    .scroll_to_line(ctx.buf.offset_to_line(self.cursor.offset));
+                ctx.host.changed();
+            }
+            NormalCmd::IncrementNumber | NormalCmd::DecrementNumber => {
+                let delta: i64 = if cmd == NormalCmd::IncrementNumber {
+                    self.take_total_count().max(1) as i64
+                } else {
+                    -(self.take_total_count().max(1) as i64)
+                };
+                if !self.increment_number_at_cursor(ctx, delta) {
+                    ctx.host.status_message("E18: Unexpected end of file");
+                    ctx.host.bell();
                 }
             }
             NormalCmd::JumpBackward | NormalCmd::JumpForward => {

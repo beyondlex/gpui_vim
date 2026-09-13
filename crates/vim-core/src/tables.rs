@@ -49,6 +49,11 @@ pub enum NormalCmd {
     RepeatChange,        // .
     JumpBackward,        // C-o
     JumpForward,         // C-i
+    InsertAtLastChange,  // gi
+    OlderChange,         // g;
+    NewerChange,         // g,
+    IncrementNumber,     // C-a
+    DecrementNumber,     // C-x
     WriteQuit,           // ZZ
     QuitNoSave,          // ZQ
 }
@@ -110,6 +115,8 @@ impl CmdKind {
                     | NormalCmd::RepeatChange
                     | NormalCmd::JumpBackward
                     | NormalCmd::JumpForward
+                    | NormalCmd::OlderChange
+                    | NormalCmd::NewerChange
                     | NormalCmd::WriteQuit
                     | NormalCmd::QuitNoSave
             ),
@@ -294,6 +301,10 @@ fn build_rows() -> Vec<(Vec<Key>, Phase, CmdKind)> {
     b.normal(&["q"], CmdKind::Normal(NormalCmd::RecordMacro));
     b.normal(&["<C-o>"], CmdKind::Normal(NormalCmd::JumpBackward));
     b.normal(&["<C-i>"], CmdKind::Normal(NormalCmd::JumpForward));
+    b.normal(&["g", ";"], CmdKind::Normal(NormalCmd::OlderChange));
+    b.normal(&["g", ","], CmdKind::Normal(NormalCmd::NewerChange));
+    b.normal(&["<C-a>"], CmdKind::Normal(NormalCmd::IncrementNumber));
+    b.normal(&["<C-x>"], CmdKind::Normal(NormalCmd::DecrementNumber));
     b.normal(&["@"], CmdKind::Normal(NormalCmd::PlayMacro));
     b.normal(&["z", "z"], CmdKind::Normal(NormalCmd::ScrollCenter));
     b.normal(&["z", "t"], CmdKind::Normal(NormalCmd::ScrollTop));

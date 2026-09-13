@@ -477,8 +477,9 @@ fn escape_with_any_modifiers_exits_modes() {
 #[test]
 fn unknown_keys_fall_through() {
     // ctrl chords the engine does not know go to the host
+    // (C-a is bound: number increment; C-z is not)
     let mut f = Fixture::at("abc", 0, 0);
-    let result = f.feed_raw(vim_core::key::Key::ctrl_char('a'));
+    let result = f.feed_raw(vim_core::key::Key::ctrl_char('z'));
     assert_eq!(result, vim_core::KeyResult::Unknown);
 }
 
@@ -1433,4 +1434,65 @@ fn visual_colon_enters_range() {
     assert_eq!(f.vim.cmdline.buffer, "'<,'>");
     f.feed(["s", "/", "f", "o", "o", "/", "x", "/", "<CR>"]);
     assert_eq!(f.text(), "foo\nx\nx\n");
+}
+
+// ---- gi / g; g, / C-a C-x (tasks 4+5) -------------------------------------------
+
+#[test]
+fn gi_inserts_at_last_insert_exit() {
+    let mut f = Fixture::at("one two\nthree\n", 0, 0);
+    f.feed(["A"]);
+    f.type_text("!");
+    f.feed(["<Esc>"]); // cursor steps back onto '!' (byte 7) = '^
+    f.feed(["g", "g"]); // move away
+    f.feed(["g", "i"]);
+    assert_eq!(f.vim.mode(), vim_core::Mode::Insert);
+    assert_eq!(f.cursor(), 7);
+    f.type_text("?");
+    f.feed(["<Esc>"]);
+    assert_eq!(f.text(), "one two?!\nthree\n");
+}
+
+#[test]
+fn changelist_walks_changes() {
+    let mut f = Fixture::at("aaaa\nbbbb\ncccc\n", 0, 0);
+    f.feed(["x"]); // change at line 0
+    f.feed(["j", "x"]); // change at line 1
+    f.feed(["j", "x"]); // change at line 2
+    assert_eq!(f.text(), "aaa\nbbb\nccc\n");
+    // g; walks to older changes
+    f.feed(["g", ";"]);
+    assert_eq!(f.line(), 1);
+    f.feed(["g", ";"]);
+    assert_eq!(f.line(), 0);
+    // g, walks back to newer
+    f.feed(["g", ","]);
+    assert_eq!(f.line(), 1);
+    // at the newest end: bell and stay
+    f.feed(["g", ";", "g", ";", "g", ";"]);
+    assert_eq!(f.line(), 0);
+}
+
+#[test]
+fn increment_decrement_numbers() {
+    // C-a on a number increments
+    let mut f = Fixture::at("id=9\n", 0, 4);
+    f.feed(["<C-a>"]);
+    assert_eq!(f.text(), "id=10\n");
+    assert_eq!(f.cursor(), 4); // last digit of 10 (byte 4 = '0'... '1' is 3)
+
+    // C-x decrements; count multiplies
+    let mut f = Fixture::at("v 100\n", 0, 2);
+    f.feed(["5", "<C-x>"]);
+    assert_eq!(f.text(), "v 95\n");
+
+    // negative numbers keep their sign
+    let mut f = Fixture::at("n -3\n", 0, 3);
+    f.feed(["<C-a>"]);
+    assert_eq!(f.text(), "n -2\n");
+
+    // no number on the line: bell, no change
+    let mut f = Fixture::at("none\n", 0, 0);
+    f.feed(["<C-a>"]);
+    assert_eq!(f.text(), "none\n");
 }

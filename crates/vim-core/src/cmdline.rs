@@ -304,7 +304,9 @@ impl VimState {
         fn base_line(spec: &str, vim: &VimState, ctx: &Ctx) -> Option<usize> {
             match spec {
                 "." | "" => Some(ctx.buf.offset_to_line(vim.cursor.offset)),
-                "%" => return None, // handled by the caller
+                // "%" is handled by the caller before per-address parsing;
+                // treat it as unusable here
+                "%" => None,
                 "$" => Some(ctx.buf.line_count().saturating_sub(1)),
                 "'<" => vim
                     .marks
