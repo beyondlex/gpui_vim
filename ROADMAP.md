@@ -356,7 +356,25 @@ buffer）。
 
 ---
 
-## P3 — gpui 集成产品化
+## P4 — 配置文件与宿主桥（用户追加）
+
+### 任务 14：`~/.gpui-vimrc` 配置 + `:action` 宿主桥 ✅ 已完成
+> 动机：IdeaVim 兼容（`~/.ideavimrc` 同款子集；不读 `init.lua`——嵌入式引擎
+> 无法执行 Lua，用户可 `source ~/.vimrc` 迁移选项与映射）。
+> - `vim-core::config`：解析 `set`（`on/no/!`/`=`）、`:map` 家族
+>   （`[nv]noremap`/`[nvi]map`）、`let mapleader = "x"`、`source`、`"` 注释；
+>   未识别行进 `ignored` 静默跳过（IdeaVim 同策略）；`<Leader>` 在 LHS/RHS
+>   都按 mapleader 展开（默认 `\`）
+> - `Keymaps` 升级为 `Trie<Mapping>`（rhs + noremap）；引擎主循环在消费
+>   noremap 展开期间不再查映射表（真 noremap 语义，非递归）；映射 RHS 进入
+>   cmdline 时不提前 break 队列（`:action Foo<CR>` 一口气跑完）
+> - `VimHost::dispatch_host_action(id)` 桥接 `:action <id>`；gpui-vim 的
+>   `load_config_file`（`~` 展开、source 递归一层上限 4）；demo 启动时加载
+>   `~/.gpui-vimrc` 并把 action 派发经 FocusHandle 路由到应用自身的
+>   `on_action` 处理器
+> - 已知限制：`:map` 无 buffer 参数（全部全局）、无 `:unmap`、`<expr>`、
+>   `silent`；带 JSON 参数的 gpui action 不支持（只桥无参 action）
+
 
 ### 任务 11：渲染组件化 ✅ 已完成
 > 实现：新模块 `gpui_vim::render`——`compute_line_overlays`（纯计算：搜索高

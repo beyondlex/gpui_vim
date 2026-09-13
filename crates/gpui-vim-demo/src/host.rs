@@ -21,6 +21,8 @@ pub struct HostState {
     pub pending_status: Option<String>,
     /// `:q` — the view should close the window.
     pub pending_close: bool,
+    /// `:action <id>` — the view should dispatch this host action.
+    pub pending_action: Option<String>,
     undo_stack: Vec<(ropey::Rope, usize)>,
     redo_stack: Vec<(ropey::Rope, usize)>,
     open_group: Option<u64>,
@@ -38,6 +40,7 @@ impl HostState {
             scrolled_to: None,
             pending_status: None,
             pending_close: false,
+            pending_action: None,
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
             open_group: None,
@@ -126,5 +129,9 @@ impl VimHost for HostState {
 
     fn request_close(&mut self) {
         self.pending_close = true;
+    }
+
+    fn dispatch_host_action(&mut self, id: &str) {
+        self.pending_action = Some(id.to_owned());
     }
 }

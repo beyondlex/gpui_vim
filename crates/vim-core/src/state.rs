@@ -167,6 +167,12 @@ pub struct VimState {
     /// Last register executed with `@` (for `@@`).
     last_macro_played: Option<char>,
 
+    /// Remaining keys of a `:noremap` expansion: the mapping table is not
+    /// consulted while these are consumed (no recursive remap).
+    no_remap_left: usize,
+    /// A user mapping just expanded: the queued expansion belongs to the
+    /// mapping, so a cmdline entry inside it must not break the queue early.
+    expanding_mapping: bool,
     /// Visual-block `I`/`A`/`c`: the rows (insert offsets, descending) that
     /// receive the typed text when the session exits, and the text typed on
     /// the cursor row so far.
@@ -235,6 +241,8 @@ impl VimState {
             macros: HashMap::new(),
             macro_capture: None,
             last_macro_played: None,
+            no_remap_left: 0,
+            expanding_mapping: false,
             block_insert: None,
             jumps: Vec::new(),
             jump_pos: 0,
@@ -412,12 +420,24 @@ impl VimState {
             }
 
             // user mappings (not while an operator is pending: vim uses
-            // :omap there, which we do not support yet)
-            if self.op.is_none() {
+            // :omap there, which we do not support yet). Suppressed while a
+            // :noremap expansion is being consumed (no recursive remap).
+            if self.no_remap_left > 0 {
+                self.no_remap_left -= 1;
+            } else if self.op.is_none() {
                 let contiguous: &[Key] = self.pending_keys.make_contiguous();
                 match keymap::lookup(self.keymaps.table(class), contiguous) {
-                    MappingMatch::Match { used, expansion } => {
+                    MappingMatch::Match {
+                        used,
+                        expansion,
+                        noremap,
+                    } => {
                         self.pending_keys.drain(..used);
+                        if noremap {
+                            self.no_remap_left = expansion.len();
+                        }
+                        // the queued expansion belongs to this mapping
+                        self.expanding_mapping = true;
                         for key in expansion.into_iter().rev() {
                             self.pending_keys.push_front(key);
                         }
@@ -470,16 +490,25 @@ impl VimState {
                     }
                 }
             }
-            if matches!(self.mode, Mode::CommandLine { .. }) && !self.replaying {
+            // a mapping RHS that enters cmdline mode must keep processing
+            // its queued keys (`:action Foo<CR>` as a mapping RHS)
+            if matches!(self.mode, Mode::CommandLine { .. })
+                && !self.replaying
+                && !self.expanding_mapping
+            {
                 break;
             }
         }
         self.map_depth = 0;
         if self.pending_keys.is_empty() && self.replaying {
             self.replaying = false;
+            self.expanding_mapping = false;
+            self.replay_texts.clear();
             self.recording.clear();
             self.recording_mutated = false;
-            self.replay_texts.clear();
+        }
+        if self.pending_keys.is_empty() {
+            self.expanding_mapping = false;
         }
         if any_unknown {
             KeyResult::Unknown
@@ -781,6 +810,34 @@ impl VimState {
         }
         self.cursor.offset = at + expanded.len();
         ctx.host.changed();
+    }
+
+    /// Apply a parsed user config (`~/.gpui-vimrc` style): options via the
+    /// `:set` machinery, mappings into the per-mode mapping tables.
+    pub fn apply_config(&mut self, config: &crate::config::Config) -> crate::config::ConfigStats {
+        let mut stats = crate::config::ConfigStats::default();
+        for setting in &config.settings {
+            let ok = match setting {
+                crate::config::Setting::On(name) => self.options.set_boolean(name, true),
+                crate::config::Setting::Off(name) => self.options.set_boolean(name, false),
+                crate::config::Setting::Toggle(name) => match self.options.bool_option(name) {
+                    Some(current) => self.options.set_boolean(name, !current),
+                    None => false,
+                },
+                crate::config::Setting::Value(name, value) => self.options.set_value(name, value),
+            };
+            if ok {
+                stats.options += 1;
+            } else {
+                stats.ignored += 1;
+            }
+        }
+        for mapping in &config.mappings {
+            self.keymaps.map(mapping.class, &mapping.lhs, mapping.rhs.clone(), mapping.noremap);
+            stats.mappings += 1;
+        }
+        stats.ignored += config.ignored.len();
+        stats
     }
 
     /// Host-side entry for typed/composed text (the IME placement path).

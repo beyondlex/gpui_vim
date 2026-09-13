@@ -235,6 +235,17 @@ impl VimState {
             self.ex_set(ctx, rest.trim_start());
             return;
         }
+        // IdeaVim's host-action bridge: :action SomeId dispatches the host
+        // application action by id (typically the RHS of a :map)
+        if let Some(id) = line.strip_prefix("action").filter(|r| r.starts_with(' ')) {
+            let id = id.trim();
+            if id.is_empty() {
+                ctx.host.bell();
+            } else {
+                ctx.host.dispatch_host_action(id);
+            }
+            return;
+        }
         if self.ex_substitute(ctx, line) {
             return;
         }

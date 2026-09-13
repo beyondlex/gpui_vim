@@ -26,6 +26,7 @@
 
 use gpui::{App, Context, Entity, KeyContext, Keystroke, Subscription, WeakEntity, Window};
 
+pub mod config;
 pub mod render;
 use vim_core::buffer::VimBufferMut;
 use vim_core::host::VimHost;

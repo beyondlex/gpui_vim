@@ -25,6 +25,7 @@
 //! ```
 
 pub mod buffer;
+pub mod config;
 pub mod cmdline;
 pub mod host;
 pub mod insert_mode;

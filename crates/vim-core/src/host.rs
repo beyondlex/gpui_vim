@@ -60,4 +60,11 @@ pub trait VimHost {
     fn buffer_name(&self) -> &str {
         ""
     }
+
+    /// Bridge for `:map <Leader>x :action SomeAction<CR>` — dispatch a
+    /// HOST application action by id (IdeaVim's `:action` bridge). Unknown
+    /// ids are the host's problem: report through `status_message`.
+    fn dispatch_host_action(&mut self, id: &str) {
+        let _ = id;
+    }
 }

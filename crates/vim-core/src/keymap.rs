@@ -89,35 +89,46 @@ pub enum ModeClass {
     Insert,
 }
 
-/// User mappings (`:noremap` semantics when `noremap` is true).
+/// A user mapping's right-hand side. `noremap` mappings expand WITHOUT
+/// re-consulting the mapping table (vim's `:noremap` family); `map` mappings
+/// re-resolve recursively, bounded by the engine's key guard.
+#[derive(Clone, Debug)]
+pub struct Mapping {
+    pub rhs: Vec<Key>,
+    pub noremap: bool,
+}
+
+/// User mappings (`:map` / `:noremap` families).
 #[derive(Default)]
 pub struct Keymaps {
-    tables: HashMap<ModeClass, Trie<Vec<Key>>>,
+    tables: HashMap<ModeClass, Trie<Mapping>>,
 }
 
 impl Keymaps {
-    pub fn map(&mut self, class: ModeClass, from: &[Key], to: Vec<Key>) {
-        self.tables
-            .entry(class)
-            .or_default()
-            .insert(from, to);
+    pub fn map(&mut self, class: ModeClass, from: &[Key], to: Vec<Key>, noremap: bool) {
+        self.tables.entry(class).or_default().insert(
+            from,
+            Mapping {
+                rhs: to,
+                noremap,
+            },
+        );
     }
 
     pub fn map_str(&mut self, class: ModeClass, from: &str, to: &str) {
+        self.map_str_noremap(class, from, to, false);
+    }
+
+    pub fn map_str_noremap(&mut self, class: ModeClass, from: &str, to: &str, noremap: bool) {
         self.map(
             class,
             &crate::key::parse_key_sequence(from),
             crate::key::parse_key_sequence(to),
+            noremap,
         );
     }
 
-    pub fn noremap_str(&mut self, _class: ModeClass, _from: &str, _to: &str) {
-        // noremap vs map only matters for recursive re-resolution; the
-        // expansion loop below handles both with a depth cap, so they are
-        // equivalent here. Kept as a distinct API for host configuration UIs.
-    }
-
-    pub fn table(&self, class: ModeClass) -> Option<&Trie<Vec<Key>>> {
+    pub fn table(&self, class: ModeClass) -> Option<&Trie<Mapping>> {
         self.tables.get(&class)
     }
 }
@@ -125,14 +136,18 @@ impl Keymaps {
 /// Resolution of the pending input queue against the mapping table.
 pub enum MappingMatch {
     /// A full mapping matched `used` keys; replay `expansion`.
-    Match { used: usize, expansion: Vec<Key> },
+    Match {
+        used: usize,
+        expansion: Vec<Key>,
+        noremap: bool,
+    },
     /// The queue is a proper prefix of a mapping: keep waiting.
     Waiting,
     /// No mapping is involved; process input normally.
     None,
 }
 
-pub fn lookup(table: Option<&Trie<Vec<Key>>>, queue: &[Key]) -> MappingMatch {
+pub fn lookup(table: Option<&Trie<Mapping>>, queue: &[Key]) -> MappingMatch {
     let Some(table) = table else {
         return MappingMatch::None;
     };
@@ -140,9 +155,10 @@ pub fn lookup(table: Option<&Trie<Vec<Key>>>, queue: &[Key]) -> MappingMatch {
         return MappingMatch::None;
     }
     match table.get(queue) {
-        Walk::Hit(expansion) => MappingMatch::Match {
+        Walk::Hit(mapping) => MappingMatch::Match {
             used: queue.len(),
-            expansion: expansion.clone(),
+            expansion: mapping.rhs.clone(),
+            noremap: mapping.noremap,
         },
         Walk::Pending => MappingMatch::Waiting,
         Walk::Miss => {

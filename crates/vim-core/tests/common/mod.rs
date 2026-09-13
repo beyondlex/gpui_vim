@@ -105,6 +105,8 @@ pub struct HostView {
     pub close_requested: bool,
     /// status_message texts (Ex feedback tests).
     pub statuses: Vec<String>,
+    /// dispatch_host_action ids (config bridge tests).
+    pub actions: Vec<String>,
     undo_stack: Vec<(String, usize)>,
     redo_stack: Vec<(String, usize)>,
     open_group: Option<u64>,
@@ -143,6 +145,10 @@ impl VimHost for HostView {
 
     fn buffer_name(&self) -> &str {
         "test-buffer"
+    }
+
+    fn dispatch_host_action(&mut self, id: &str) {
+        self.actions.push(id.to_owned());
     }
 
     fn begin_undo_group(&mut self, id: u64, cursor: usize) {
@@ -192,6 +198,7 @@ impl Fixture {
                 saved: 0,
                 close_requested: false,
                 statuses: Vec::new(),
+                actions: Vec::new(),
                 undo_stack: Vec::new(),
                 redo_stack: Vec::new(),
                 open_group: None,

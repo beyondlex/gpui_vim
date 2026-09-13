@@ -68,21 +68,54 @@ b.normal(&["Z", "Z"], CmdKind::Normal(NormalCmd::SaveAndQuit));
 
 ```
 crates/
-├── vim-core/       纯引擎：模式、流水线、motions、operators、objects、
-│                   registers、search、marks、undo 语义（27 个表驱动测试）
-├── gpui-vim/       gpui 集成：VimEditor trait、attach 拦截、dispatch_text、
-│                   key_context（mode == normal/insert/visual 谓词）
+├── vim-core/       纯引擎：模式、motions、operators、text objects、registers、
+│                   search、marks、宏、jumplist、`.`、Ex 命令、undo、配置解析
+├── gpui-vim/       gpui 集成：VimEditor trait、attach 拦截、dispatch_text（IME）、
+│                   render 组件（overlay/行绘制/闪烁）、~/.gpui-vimrc 加载
 └── gpui-vim-demo/  参考宿主：ropey buffer + 编辑器视图 + IME + 鼠标 + 状态栏
 ```
 
-## 路线图
+## 把引擎嵌进你的 gpui 应用
 
-- [ ] `:s` 替换、`:` Ex 命令子集、vimrc（map/set 行解析）
-- [ ] macro 录制回放（`q`/`@`）、dot repeat（`.`）
-- [ ] Visual-Block（`C-v`）与多光标
-- [ ] Replace 模式（`R`，引擎状态机已预留）
-- [ ] 折叠（fold）、`'timeout'`/`timeoutlen`、jumplist（`C-o`/`C-i`）
-- [ ] gpui-kit 编辑器组件的官方适配层
+```rust
+use gpui::prelude::*;
+use vim_core::state::VimState;
+
+struct Editor {
+    vim: VimState,
+    buffer: RopeBuffer,      // impl VimBuffer + VimBufferMut
+    focus_handle: FocusHandle,
+}
+
+impl gpui_vim::VimEditor for Editor {
+    fn vim_parts(&mut self) -> (&mut VimState, &mut dyn VimBufferMut, &mut dyn VimHost) {
+        (&mut self.vim, &mut self.buffer, &mut self.host)
+    }
+    fn vim_accepts_keys(&self, window: &Window, cx: &App) -> bool {
+        self.focus_handle.contains_focused(window, cx)
+    }
+}
+
+// inside Application::run:
+let subscription = gpui_vim::attach(&editor_entity, cx); // 必须保活（存到 view 上）
+```
+
+渲染用 `gpui_vim::render`：每行 `compute_line_overlays` → `paint_vim_line`
+（含反色块光标、三种可视选区、搜索高亮、caret 闪烁 `CaretBlinker`），返回的
+`ShapedLine` 供鼠标/IME 反查。配置支持 `~/.gpui-vimrc`（`set`、`:map` 家族含
+`noremap`/`<Leader>`、`source`、`"` 注释），映射 RHS 里的 `:action SomeId<CR>`
+会调用宿主 action 系统（`VimHost::dispatch_host_action`）。
+
+支持的功能：`hjkl w b e f t % gg G 0 ^ $`、算子 `d c y > < gu gU g~`、text
+objects `iw aw i" a( it ...`、`C-v` 块可视（含块 `I/A/c/p`）、`R`、`.`、宏
+`q/@`、jumplist `C-o/C-i`、`/ ? n N * #`（incsearch/hlsearch）、`~/.gpui-vimrc`。
+
+## 状态
+
+ROADMAP（见 `ROADMAP.md`）中 13 项任务全部完成：块可视、`.`、宏、jumplist、
+`R`、宽字符列模型、`:` 命令（`:noh`/`:set`/`:%s`/`:w`/`:q`）、rc 配置与
+`:action` 桥、渲染组件化。未支持（有意）：多光标、折叠、`'timeout'` 等待、
+`init.lua`/完整 vimscript、`:g`/外部命令。
 
 ## License
 

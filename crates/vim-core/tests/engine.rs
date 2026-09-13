@@ -1272,3 +1272,78 @@ fn insert_typing_records_text_exactly_once() {
     f.feed(["u", "u"]);
     assert_eq!(f.text(), "ab\n");
 }
+
+// ---- config files + :action bridge (ROADMAP task 14) ----------------------------
+
+#[test]
+fn config_parse_set_and_map_family() {
+    let text = r#"
+" a comment
+set number relativenumber
+set nohlsearch
+set ts=8
+set hlsearch!
+nnoremap Q dd
+map <Leader>w :action test.save<CR>
+let mapleader = " "
+nmap <Leader>x x
+this is garbage
+"#;
+    let config = vim_core::config::parse(text);
+    assert_eq!(config.settings.len(), 5);
+    assert!(config.settings.contains(&vim_core::config::Setting::On("number".into())));
+    assert!(config.settings.contains(&vim_core::config::Setting::Off("hlsearch".into())));
+    assert!(config.settings.contains(&vim_core::config::Setting::Value("ts".into(), "8".into())));
+    assert!(config.settings.contains(&vim_core::config::Setting::Toggle("hlsearch".into())));
+    assert_eq!(config.mappings.len(), 4); // Q + leader-w(2 classes: map→n+v) + leader-x
+    assert_eq!(config.ignored, vec!["this is garbage".to_owned()]);
+}
+
+#[test]
+fn config_apply_options_and_mappings() {
+    let text = "set nohlsearch\ntset ts=2\nnnoremap Q dd\n";
+    let text = text.replace("tset", "set");
+    let mut f = Fixture::at("one\ntwo\n", 0, 0);
+    let config = vim_core::config::parse(&text);
+    f.vim.apply_config(&config);
+    assert!(!f.vim.options.hlsearch);
+    assert_eq!(f.vim.options.tabstop, 2);
+    // `Q` now deletes a line
+    f.feed(["Q"]);
+    assert_eq!(f.text(), "two\n");
+}
+
+#[test]
+fn config_noremap_vs_map_semantics() {
+    // recursive `map j dd`: j deletes a line; `noremap k j`: k MOVES down
+    // (the RHS `j` is not re-mapped)
+    let text = "map j dd\nnoremap k j\n";
+    let mut f = Fixture::at("one\ntwo\n", 0, 0);
+    let config = vim_core::config::parse(text);
+    f.vim.apply_config(&config);
+    f.feed(["k"]);
+    assert_eq!(f.line(), 1);
+    assert_eq!(f.text(), "one\ntwo\n");
+    f.feed(["g", "g"]);
+    f.feed(["j"]);
+    assert_eq!(f.text(), "two\n");
+}
+
+#[test]
+fn config_leader_action_bridge() {
+    // the user's example shape: :map <Leader>cc :action Some.Action<CR>
+    let text = "let mapleader = \" \"\nmap <Leader>cc :action Test.Change<CR>\n";
+    let mut f = Fixture::at("foo\n", 0, 0);
+    let config = vim_core::config::parse(text);
+    f.vim.apply_config(&config);
+    f.feed([" ", "c", "c"]);
+    assert_eq!(f.host.actions, vec!["Test.Change".to_owned()]);
+    assert_eq!(f.vim.mode(), vim_core::Mode::Normal);
+}
+
+#[test]
+fn config_source_directive_is_collected() {
+    let config = vim_core::config::parse("source ~/.vimrc\nset number\n");
+    assert_eq!(config.sources, vec![std::path::PathBuf::from("~/.vimrc")]);
+    assert!(config.settings.contains(&vim_core::config::Setting::On("number".into())));
+}
