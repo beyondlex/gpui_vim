@@ -384,11 +384,11 @@ impl VimState {
     }
 
     /// Close any open undo group (end of a logical command or insert session).
-    fn end_edit(&mut self) {
+    pub(crate) fn end_edit(&mut self) {
         self.open_undo = None;
     }
 
-    fn bump(&mut self, ctx: &mut Ctx) {
+    pub(crate) fn bump(&mut self, ctx: &mut Ctx) {
         self.marks.last_change = Some(self.cursor.offset);
         ctx.host.changed();
     }
@@ -790,7 +790,7 @@ impl VimState {
             return ProcessOutcome::Consumed;
         }
 
-        // 7. search prompts
+        // 7. search prompts & the Ex command line
         if key.modifiers.is_plain() {
             match &key.kind {
                 KeyKind::Char('/') => {
@@ -801,7 +801,10 @@ impl VimState {
                     self.begin_cmdline('?');
                     return ProcessOutcome::Consumed;
                 }
-                KeyKind::Char(':') => return ProcessOutcome::Unknown,
+                KeyKind::Char(':') => {
+                    self.begin_cmdline(':');
+                    return ProcessOutcome::Consumed;
+                }
                 _ => {}
             }
         }

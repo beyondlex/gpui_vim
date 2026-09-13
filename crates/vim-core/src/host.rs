@@ -35,8 +35,16 @@ pub trait VimHost {
     fn redo(&mut self) -> Option<usize>;
 
     /// The buffer changed: repaint.
-    fn changed(&mut self);
+    fn changed(&mut self) {}
 
     /// Feedback for ignored keys (visual bell / flash). Optional.
     fn bell(&mut self) {}
+
+    /// `:w` — persist the buffer. Hosts that don't persist may report the
+    /// no-op through their own status channel.
+    fn save(&mut self) {}
+
+    /// `:q` — close the editor. The host decides whether that is allowed
+    /// (e.g. prompting about unsaved changes is the host's call).
+    fn request_close(&mut self) {}
 }

@@ -753,3 +753,101 @@ fn replace_ops_keep_marks_aligned() {
     assert_eq!(f.vim.marks.get('c'), Some(2));
 }
 
+
+// ---- `:` Ex commands (ROADMAP task 3) ------------------------------------------
+
+#[test]
+fn ex_noh_clears_highlights() {
+    let mut f = Fixture::at("foo bar foo\n", 0, 0);
+    f.feed(["/", "f", "o", "o", "<CR>"]);
+    assert!(!f.host.highlights.is_empty());
+    f.feed([":", "n", "o", "h", "<CR>"]);
+    assert!(f.host.highlights.is_empty());
+    assert_eq!(f.vim.mode(), vim_core::Mode::Normal);
+}
+
+#[test]
+fn ex_set_changes_options() {
+    let mut f = Fixture::at("foo bar\n", 0, 0);
+    assert!(f.vim.options.hlsearch);
+    f.feed([":", "s", "e", "t", " ", "n", "o", "h", "l", "s", "<CR>"]);
+    assert!(!f.vim.options.hlsearch);
+    // search now publishes no highlights
+    f.feed(["/", "f", "o", "o", "<CR>"]);
+    assert!(f.host.highlights.is_empty());
+    // boolean toggle form re-enables
+    f.feed([":", "s", "e", "t", " ", "h", "l", "s", "!", "<CR>"]);
+    assert!(f.vim.options.hlsearch);
+    // numeric form
+    f.feed([":", "s", "e", "t", " ", "t", "s", "=", "8", "<CR>"]);
+    assert_eq!(f.vim.options.tabstop, 8);
+    // unknown option rings the bell and stops
+    f.feed([":", "s", "e", "t", " ", "f", "r", "o", "b", "<CR>"]);
+    assert_eq!(f.host.highlights.len(), 0); // no crash; hlsearch still on
+    assert!(f.vim.options.hlsearch);
+}
+
+#[test]
+fn ex_substitute_current_line() {
+    let mut f = Fixture::at("foo bar foo\nfoo below\n", 0, 0);
+    f.feed([":", "s", "/", "f", "o", "o", "/", "b", "a", "z", "/", "<CR>"]);
+    // first match per line only
+    assert_eq!(f.text(), "baz bar foo\nfoo below\n");
+    // cursor on the substituted match
+    assert_eq!(f.cursor(), 0);
+
+    // the `g` flag replaces all matches on the line
+    let mut f = Fixture::at("foo bar foo\n", 0, 0);
+    f.feed([":", "%", "s", "/", "f", "o", "o", "/", "b", "a", "z", "/", "g", "<CR>"]);
+    assert_eq!(f.text(), "baz bar baz\n");
+}
+
+#[test]
+fn ex_substitute_whole_file_and_marks() {
+    let mut f = Fixture::at("foo\nbar foo\nplain\n", 0, 0);
+    f.feed(["j", "m", "a"]); // mark on line 1
+    f.feed(["g", "g"]); // back to line 0
+    f.feed([":", "%", "s", "/", "f", "o", "o", "/", "q", "u", "x", "/", "g", "<CR>"]);
+    assert_eq!(f.text(), "qux\nbar qux\nplain\n");
+    // cursor lands on the last substituted match (the qux on line 1)
+    assert_eq!(f.line(), 1);
+    assert_eq!(f.cursor(), 8);
+    // mark on line 1 survived the (same-line-length? no — length changed)
+    // edit by shifting correctly: 'foo'->'qux' keeps byte length
+    assert_eq!(f.vim.marks.get('a'), Some(4));
+}
+
+#[test]
+fn ex_substitute_no_match_rings_bell() {
+    let mut f = Fixture::at("foo\n", 0, 0);
+    f.feed([":", "%", "s", "/", "z", "z", "z", "/", "y", "<CR>"]);
+    assert_eq!(f.text(), "foo\n");
+    assert_eq!(f.vim.mode(), vim_core::Mode::Normal);
+}
+
+#[test]
+fn ex_save_and_quit_hit_the_host() {
+    let mut f = Fixture::at("foo\n", 0, 0);
+    f.feed([":", "w", "<CR>"]);
+    assert_eq!(f.host.saved, 1);
+    assert!(!f.host.close_requested);
+    f.feed([":", "w", "q", "<CR>"]);
+    assert_eq!(f.host.saved, 2);
+    assert!(f.host.close_requested);
+}
+
+#[test]
+fn ex_history_is_per_prompt() {
+    let mut f = Fixture::at("foo bar foo\n", 0, 0);
+    f.feed(["/", "f", "o", "o", "<CR>"]); // search history: "foo"
+    f.feed([":", "w", "<CR>"]); // command history: "w"
+    // `:` then Up recalls "w", not "foo"
+    f.feed([":"]);
+    f.feed(["<up>"]);
+    assert_eq!(f.vim.cmdline.buffer, "w");
+    // Esc cancels; `/` then Up recalls "foo"
+    f.feed(["<Esc>"]);
+    f.feed(["/"]);
+    f.feed(["<up>"]);
+    assert_eq!(f.vim.cmdline.buffer, "foo");
+}

@@ -64,13 +64,7 @@ cargo run -p gpui-vim-demo
 
 ## P0 — 正确性
 
-### 任务 1：中文/日文 IME 合成输入完全不可用
-
-> **状态：代码已实现（commit 待验收）。** 四处修复都在 demo `editor.rs` 的
-> `EntityInputHandler` 实现里：`marked_text_range` 空区间返回 None、
-> `unmark_text` 删除残留合成文本、`replace_text_in_range` 提交时替换 marked
-> 区间（不经 `dispatch_text`）、`replace_and_mark_text_in_range` 不再存储空
-> 区间。等待下方「验收」一节的手动拼音输入法验证后可移除本状态行。
+### 任务 1：中文/日文 IME 合成输入完全不可用 ✅ 已完成并通过用户验收
 
 **症状**（已由用户在中文拼音输入法下复现）：insert 模式中切换到拼音输入法后，
 (1) Esc 退不出 insert 模式；(2) 候选词上屏后，已输入的拼音字母残留在 buffer
@@ -123,7 +117,11 @@ cargo run -p gpui-vim-demo
 **陷阱**：`marked_range` 是 UTF-8 字节区间，gpui 传入的 range 是 UTF-16；转换
 只用 demo buffer.rs 已有的 `utf16_to_byte`/`byte_to_utf16`，不要自写换算。
 
-### 任务 2：marks 在编辑后不平移
+### 任务 2：marks 在编辑后不平移 ✅ 已完成
+> 实现超出原设计：所有 buffer 变更收敛到 `VimState::edit_insert/edit_delete/
+> edit_replace` 三个包装器（22 个调用点），顺带修复了 `dw` 在 buffer 最后一行
+> 吃掉换行的既有 bug（`span_from_motion` 的 target 未钳到行尾）。等长替换
+> （`gu`/`gU`/`g~`）保持区域内 mark 的相对位置。
 
 **现状**：`vim-core/src/marks.rs` 存裸字节偏移。任何插入/删除都不会调整
 `a-z`、`'^`、`'.'` 与 `'<`/`'>`；在文件头部插入一行后所有 mark 错位。
@@ -145,7 +143,14 @@ changelist，平移规则相同。
 
 ## P1 — 日常功能
 
-### 任务 3：`:` Ex 命令行（`:noh` `:set` `:s` `:w` `:q`）
+### 任务 3：`:` Ex 命令行（`:noh` `:set` `:s` `:w` `:q`）✅ 已完成
+> 实现：`:noh[lsearch]`、`:set`（`name`/`noname`/`name!`/`name=value`，数值项
+> `ts/sw/so`）、`:[%]s/pat/rep/[g]`（Rust regex 展开，`$1` 代替 vim 的 `\1`，
+> 空 pattern 复用上次搜索）、`:w`/`:q`/`:q!`/`:wq`/`:x`（新 host 契约
+> `save`/`request_close`，demo 里 `:w` 显示状态、`:q` 退出）。历史按 prompt
+> 分开；`:s` 是单步 undo；高亮发布全部尊重 `hlsearch`（修了 jump 路径无视
+> 该选项的不一致）。不支持：范围语法（`1,3s`/`'<,'>`）、`:\d` 行号、确认模式、
+> `:g`（见「非目标」）。
 
 **现状**：`Mode::CommandLine { prompt }` 只有 `'/'`/`'?'`；normal 模式按 `:`
 返回 `Unknown`。`options.set_boolean`（options.rs）就是为 `:set` 预留的；

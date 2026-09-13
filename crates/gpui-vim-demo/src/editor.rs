@@ -186,9 +186,10 @@ impl Editor {
             Mode::Insert => "-- INSERT --".to_owned(),
             Mode::Replace => "-- REPLACE --".to_owned(),
             Mode::Visual { kind } => format!("-- {} --", kind.indicator()),
-            Mode::CommandLine { prompt, .. } => {
-                format!("SEARCH {}{}", prompt, self.vim.cmdline.buffer)
-            }
+            Mode::CommandLine { prompt, .. } => match prompt {
+                ':' => format!(":{}", self.vim.cmdline.buffer),
+                other => format!("SEARCH {}{}", other, self.vim.cmdline.buffer),
+            },
         }
     }
 
@@ -287,6 +288,17 @@ impl Editor {
         }
     }
 
+    /// `:w` status text and `:q` close requests arrive through the host.
+    fn flush_host_effects(&mut self, cx: &mut Context<Self>) {
+        if let Some(status) = self.host.pending_status.take() {
+            self.status_message = Some(status);
+        }
+        if self.host.pending_close {
+            self.host.pending_close = false;
+            cx.quit();
+        }
+    }
+
     // ---- actions -----------------------------------------------------------------
 
     pub fn save(&mut self, _action: &Save, _window: &mut Window, cx: &mut Context<Self>) {
@@ -341,6 +353,7 @@ impl gpui_vim::VimEditor for Editor {
         self.mark_caret_activity();
         self.flush_clipboard(cx);
         self.flush_scroll();
+        self.flush_host_effects(cx);
         cx.notify();
     }
 }

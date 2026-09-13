@@ -63,4 +63,41 @@ impl Options {
         }
         true
     }
+
+    /// Current value of a boolean option (`:set name!` toggling).
+    pub fn bool_option(&self, name: &str) -> Option<bool> {
+        match name {
+            "number" | "nu" => Some(self.number),
+            "relativenumber" | "rnu" => Some(self.relativenumber),
+            "expandtab" | "et" => Some(self.expandtab),
+            "autoindent" | "ai" => Some(self.autoindent),
+            "ignorecase" | "ic" => Some(self.ignorecase),
+            "smartcase" | "scs" => Some(self.smartcase),
+            "hlsearch" | "hls" => Some(self.hlsearch),
+            "incsearch" | "is" => Some(self.incsearch),
+            "showmode" | "smd" => Some(self.showmode),
+            "showcmd" | "sc" => Some(self.showcmd),
+            _ => None,
+        }
+    }
+
+    /// `:set name=value` for numeric options.
+    pub fn set_value(&mut self, name: &str, value: &str) -> bool {
+        match name {
+            "tabstop" | "ts" => match value.parse() {
+                Ok(v) => self.tabstop = v,
+                Err(_) => return false,
+            },
+            "shiftwidth" | "sw" => match value.parse() {
+                Ok(v) => self.shiftwidth = v,
+                Err(_) => return false,
+            },
+            "scrolloff" | "so" => match value.parse() {
+                Ok(v) => self.scrolloff = v,
+                Err(_) => return false,
+            },
+            _ => return false,
+        }
+        true
+    }
 }

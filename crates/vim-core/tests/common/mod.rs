@@ -99,6 +99,10 @@ pub struct HostView {
     pub current_highlight: Option<Range<usize>>,
     pub scrolled_to: Vec<usize>,
     pub group_count: usize,
+    /// `:w` counter (Ex command tests).
+    pub saved: usize,
+    /// `:q` flag (Ex command tests).
+    pub close_requested: bool,
     undo_stack: Vec<(String, usize)>,
     redo_stack: Vec<(String, usize)>,
     open_group: Option<u64>,
@@ -122,6 +126,14 @@ impl VimHost for HostView {
         self.current_highlight = current;
     }
     fn changed(&mut self) {}
+
+    fn save(&mut self) {
+        self.saved += 1;
+    }
+
+    fn request_close(&mut self) {
+        self.close_requested = true;
+    }
 
     fn begin_undo_group(&mut self, id: u64, cursor: usize) {
         if self.open_group != Some(id) {
@@ -167,6 +179,8 @@ impl Fixture {
                 current_highlight: None,
                 scrolled_to: Vec::new(),
                 group_count: 0,
+                saved: 0,
+                close_requested: false,
                 undo_stack: Vec::new(),
                 redo_stack: Vec::new(),
                 open_group: None,

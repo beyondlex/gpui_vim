@@ -17,6 +17,10 @@ pub struct HostState {
     /// Mirrored system clipboard (synced on focus / paste).
     pub clipboard: Option<String>,
     pub scrolled_to: Option<usize>,
+    /// `:w` — status text for the view to show (demo does not persist).
+    pub pending_status: Option<String>,
+    /// `:q` — the view should close the window.
+    pub pending_close: bool,
     undo_stack: Vec<(ropey::Rope, usize)>,
     redo_stack: Vec<(ropey::Rope, usize)>,
     open_group: Option<u64>,
@@ -32,6 +36,8 @@ impl HostState {
             pending_clipboard_write: None,
             clipboard: None,
             scrolled_to: None,
+            pending_status: None,
+            pending_close: false,
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
             open_group: None,
@@ -98,4 +104,18 @@ impl VimHost for HostState {
     }
 
     fn changed(&mut self) {}
+
+    fn save(&mut self) {
+        let (lines, bytes) = {
+            let rope = self.rope.borrow();
+            (rope.len_lines().saturating_sub(1), rope.len_bytes())
+        };
+        self.pending_status = Some(format!(
+            "\"untitled\" {lines}L, {bytes}B written (demo: not persisted)"
+        ));
+    }
+
+    fn request_close(&mut self) {
+        self.pending_close = true;
+    }
 }
