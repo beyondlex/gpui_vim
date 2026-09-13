@@ -25,6 +25,7 @@ use crate::registers::Registers;
 use crate::search::SearchState;
 use crate::tables::{mapping_class_for, CmdKind, CommandTables, NormalCmd, Phase, VisualCmd};
 use std::collections::VecDeque;
+use std::collections::HashMap;
 use std::ops::Range;
 
 /// Buffer + host pair threaded through all engine calls.
@@ -78,6 +79,10 @@ pub enum CharArgCmd {
     Replace,
     MarkSet,
     JumpMark { linewise: bool },
+    /// `q{reg}` / the trailing `q` that stops recording.
+    MacroRecord,
+    /// `@{reg}` / `@@`.
+    MacroPlay,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -139,6 +144,15 @@ pub struct VimState {
     /// buffer; only the committed text becomes part of a `.` repeat.
     recording_suppressed: bool,
 
+    /// Macro registers (`q`/`@`). Stored as recorded steps (not register
+    /// text): the notation round-trip through `Key::parse` is lossy for
+    /// named keys, and typed text never flows through the key pipeline.
+    macros: HashMap<char, Vec<RecordedStep>>,
+    /// Active `q` recording: the register and the steps captured so far.
+    macro_capture: Option<(char, Vec<RecordedStep>)>,
+    /// Last register executed with `@` (for `@@`).
+    last_macro_played: Option<char>,
+
     pub(crate) insert_session: Option<InsertSession>,
     pub(crate) insert_register_pending: bool,
 
@@ -193,6 +207,9 @@ impl VimState {
             replaying: false,
             replay_texts: VecDeque::new(),
             recording_suppressed: false,
+            macros: HashMap::new(),
+            macro_capture: None,
+            last_macro_played: None,
             insert_session: None,
             insert_register_pending: false,
             options: Options::default(),
@@ -278,6 +295,11 @@ impl VimState {
         &mut self.keymaps
     }
 
+    /// The register currently recording a macro (`q`), for host status UI.
+    pub fn macro_recording(&self) -> Option<char> {
+        self.macro_capture.as_ref().map(|(reg, _)| *reg)
+    }
+
     /// Host-side recording suppression: while set, text placed into the
     /// buffer is NOT recorded for `.` repeat. Wrap IME composition preview
     /// mutations (the raw pinyin) with this; only the committed text should
@@ -341,6 +363,9 @@ impl VimState {
             // `.` can replay Ex commands typed into the prompt
             if !self.replaying {
                 self.recording.push(RecordedStep::Key(key.clone()));
+                if let Some((_, keys)) = &mut self.macro_capture {
+                    keys.push(RecordedStep::Key(key.clone()));
+                }
             }
             return self.cmdline_key(ctx, key);
         }
@@ -356,6 +381,8 @@ impl VimState {
                 self.pending_keys.clear();
                 self.reset_pending();
                 self.discard_change_record();
+                self.replaying = false;
+                self.replay_texts.clear();
                 return KeyResult::Consumed;
             }
 
@@ -393,6 +420,9 @@ impl VimState {
             }
             if !self.replaying {
                 self.recording.push(RecordedStep::Key(front.clone()));
+                if let Some((_, keys)) = &mut self.macro_capture {
+                    keys.push(RecordedStep::Key(front.clone()));
+                }
             }
             match self.process_key(ctx, front) {
                 ProcessOutcome::Consumed => {}
@@ -674,6 +704,9 @@ impl VimState {
                 Some(RecordedStep::Text(existing)) => existing.push_str(text),
                 _ => self.recording.push(RecordedStep::Text(text.to_owned())),
             }
+            if let Some((_, keys)) = &mut self.macro_capture {
+                keys.push(RecordedStep::Text(text.to_owned()));
+            }
         }
         ctx.host.changed();
     }
@@ -695,6 +728,9 @@ impl VimState {
             match self.recording.last_mut() {
                 Some(RecordedStep::Text(existing)) => existing.push_str(text),
                 _ => self.recording.push(RecordedStep::Text(text.to_owned())),
+            }
+            if let Some((_, keys)) = &mut self.macro_capture {
+                keys.push(RecordedStep::Text(text.to_owned()));
             }
         }
         self.begin_edit(ctx);
@@ -1066,6 +1102,19 @@ impl VimState {
 
     /// Execute a resolved command. `count`/`register` come from pending state.
     pub(crate) fn execute_command(&mut self, ctx: &mut Ctx, kind: CmdKind) -> ProcessOutcome {
+        // `q` while recording stops immediately (vim semantics) — it must not
+        // wait for a char argument, or the NEXT key would be eaten as the
+        // "stop key" and the real trailing `q` would stay in the macro
+        if kind == CmdKind::Normal(NormalCmd::RecordMacro) && self.macro_capture.is_some() {
+            if let Some((reg, mut keys)) = self.macro_capture.take() {
+                keys.pop(); // drop the stopping `q` (captured by the hook)
+                self.macros.insert(reg, keys);
+                // vim: the recording register counts as "used", so `@@`
+                // replays it right after recording
+                self.last_macro_played = Some(reg);
+            }
+            return ProcessOutcome::Consumed;
+        }
         // char-argument commands wait for their argument first
         if kind.takes_char() {
             self.char_arg_cmd = Some(match kind {
@@ -1078,6 +1127,8 @@ impl VimState {
                 }
                 CmdKind::Normal(NormalCmd::ReplaceChar) => CharArgCmd::Replace,
                 CmdKind::Normal(NormalCmd::MarkSet) => CharArgCmd::MarkSet,
+                CmdKind::Normal(NormalCmd::RecordMacro) => CharArgCmd::MacroRecord,
+                CmdKind::Normal(NormalCmd::PlayMacro) => CharArgCmd::MacroPlay,
                 _ => unreachable!("takes_char out of sync"),
             });
             return ProcessOutcome::Consumed;
@@ -1414,6 +1465,12 @@ impl VimState {
             NormalCmd::MarkSet => {
                 self.char_arg_cmd = Some(CharArgCmd::MarkSet);
             }
+            NormalCmd::RecordMacro => {
+                self.char_arg_cmd = Some(CharArgCmd::MacroRecord);
+            }
+            NormalCmd::PlayMacro => {
+                self.char_arg_cmd = Some(CharArgCmd::MacroPlay);
+            }
             NormalCmd::JumpMark { linewise } => {
                 self.char_arg_cmd = Some(CharArgCmd::JumpMark { linewise });
             }
@@ -1637,6 +1694,38 @@ impl VimState {
             }
             CharArgCmd::MarkSet => {
                 self.marks.set(c, self.cursor.offset);
+            }
+            CharArgCmd::MacroRecord => {
+                // starting `q{reg}`; the stop is handled in execute_command
+                self.macro_capture = Some((c, Vec::new()));
+            }
+            CharArgCmd::MacroPlay => {
+                let reg = if c == '@' { self.last_macro_played } else { Some(c) };
+                match reg.and_then(|r| self.macros.get(&r).cloned()) {
+                    Some(keys) => {
+                        self.last_macro_played = Some(c);
+                        let count = self.take_total_count().max(1);
+                        // replay through the pipeline with `.` recording
+                        // suppressed; the key guard handles recursive macros
+                        self.replaying = true;
+                        self.recording.clear();
+                        self.recording_mutated = false;
+                        for _ in 0..count {
+                            for step in &keys {
+                                match step {
+                                    RecordedStep::Key(key) => {
+                                        self.pending_keys.push_back(key.clone())
+                                    }
+                                    RecordedStep::Text(text) => {
+                                        self.replay_texts.push_back(text.clone());
+                                        self.pending_keys.push_back(Key::named(DOT_TEXT_MARKER));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    None => ctx.host.bell(),
+                }
             }
             CharArgCmd::JumpMark { linewise } => {
                 match self.marks.resolve(c) {

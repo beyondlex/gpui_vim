@@ -248,7 +248,15 @@ enum LastChange {
 不回退一格（现逻辑回退一字符是 insert 的语义）。注意 demo `cursor_is_block`
 对 Replace 显示下划线光标（cosmetic，可选）。
 
-### 任务 7：宏 `q` / `@`
+### 任务 7：宏 `q` / `@` ✅ 已完成
+> 实现：宏存为 `HashMap<char, Vec<RecordedStep>>`（与 `.` 共用步骤模型：键 +
+> 文本片段——打字在 macOS 走 IME 不经管线，所以 Text 步骤必须一并录制）。
+> `q{reg}` 开录、录制中按 `q` **立即**停止（不走 char-arg pending，否则下一个
+> 键会被当成"停止键"吃掉、真正的 `q` 留在宏里）；`@{reg}`/`@@` 重放（录制
+> 寄存器即"最后使用"，录完 `@@` 可直接用）；重放复用 `replaying` 抑制（`.`
+> 不变、cmdline 模式不提前 break），500 键护栏防递归宏（护栏路径现在会复位
+> replaying）。demo 状态栏显示红色 `recording @x`。不支持：大写寄存器追加、
+> `:registers` 查看（等任务 13 的消息通道）。
 
 **方案**：`VimState` 加 `macro_recording: Option<(char, Vec<Key>)>`；`q{reg}`
 开始、`q` 结束、`@{reg}` 回放 = `parse_key_sequence` 反向——直接把录得的

@@ -38,6 +38,8 @@ pub enum NormalCmd {
     Undo,                // u
     Redo,                // <C-r>
     MarkSet,             // m{char}
+    RecordMacro,         // q{reg}
+    PlayMacro,           // @{reg} / @@
     JumpMark { linewise: bool }, // '{char} / `{char
     LinewiseOp(Operator), // guu / gUU / g~~ / gugu ...
     ScrollCenter,        // zz
@@ -77,6 +79,8 @@ impl CmdKind {
                 | CmdKind::Normal(NormalCmd::ReplaceChar)
                 | CmdKind::Normal(NormalCmd::MarkSet)
                 | CmdKind::Normal(NormalCmd::JumpMark { .. })
+                | CmdKind::Normal(NormalCmd::RecordMacro)
+                | CmdKind::Normal(NormalCmd::PlayMacro)
         )
     }
 
@@ -91,6 +95,8 @@ impl CmdKind {
                 cmd,
                 NormalCmd::MarkSet
                     | NormalCmd::JumpMark { .. }
+                    | NormalCmd::RecordMacro
+                    | NormalCmd::PlayMacro
                     | NormalCmd::ScrollCenter
                     | NormalCmd::ScrollTop
                     | NormalCmd::ScrollBottom
@@ -277,6 +283,8 @@ fn build_rows() -> Vec<(Vec<Key>, Phase, CmdKind)> {
     b.normal(&["<C-r>"], CmdKind::Normal(NormalCmd::Redo));
     b.normal(&["m"], CmdKind::Normal(NormalCmd::MarkSet));
     b.normal(&["."], CmdKind::Normal(NormalCmd::RepeatChange));
+    b.normal(&["q"], CmdKind::Normal(NormalCmd::RecordMacro));
+    b.normal(&["@"], CmdKind::Normal(NormalCmd::PlayMacro));
     b.normal(&["z", "z"], CmdKind::Normal(NormalCmd::ScrollCenter));
     b.normal(&["z", "t"], CmdKind::Normal(NormalCmd::ScrollTop));
     b.normal(&["z", "b"], CmdKind::Normal(NormalCmd::ScrollBottom));

@@ -971,3 +971,68 @@ fn replace_mode_shorter_text_keeps_remainder_and_dot_repeats() {
     f.feed(["<Esc>"]);
     assert_eq!(f.text(), "aXYZ\n");
 }
+
+// ---- macros q / @@ (ROADMAP task 7) ---------------------------------------------
+
+#[test]
+fn macro_record_execute_and_count() {
+    let mut f = Fixture::at("aa bb cc dd\n", 0, 0);
+    f.feed(["q", "a", "d", "w", "q"]); // record dw into a (runs during record)
+    assert_eq!(f.text(), "bb cc dd\n");
+    f.feed(["@", "a"]);
+    assert_eq!(f.text(), "cc dd\n");
+    f.feed(["2", "@", "a"]); // count replays the macro twice
+    assert_eq!(f.text(), "\n");
+}
+
+#[test]
+fn macro_qq_and_last_played_replay() {
+    // qq..q records into q; @@ replays the last executed register
+    let mut f = Fixture::at("x = 1\ny = 2\n", 0, 0);
+    f.feed(["q", "q", "A"]);
+    f.type_text(";"); // typed text records as a Text step
+    f.feed(["<Esc>", "q"]);
+    assert_eq!(f.text(), "x = 1;\ny = 2\n");
+    f.feed(["j", "@", "@"]);
+    assert_eq!(f.text(), "x = 1;\ny = 2;\n");
+}
+
+#[test]
+fn macro_records_ex_commands_and_insert() {
+    // a macro may contain an Ex command and an insert session
+    let mut f = Fixture::at("foo\n", 0, 0);
+    f.feed(["q", "b"]);
+    f.feed([":", "s", "/", "f", "o", "o", "/", "b", "a", "r", "/", "<CR>"]);
+    f.feed(["A"]);
+    f.type_text("!");
+    f.feed(["<Esc>", "q"]);
+    assert_eq!(f.text(), "bar!\n");
+    // new content elsewhere: replay appends ! after the word
+    let mut f2 = Fixture::at("foo\n", 0, 0);
+    f2.feed(["q", "c", "A"]);
+    f2.type_text("!");
+    f2.feed(["<Esc>", "q"]);
+    f2.feed(["0", "@", "c"]);
+    assert_eq!(f2.text(), "foo!!\n"); // replay appends another !
+}
+
+#[test]
+fn macro_empty_register_or_stop_without_start_bell() {
+    let mut f = Fixture::at("foo\n", 0, 0);
+    f.feed(["@", "a"]); // nothing recorded in a
+    assert_eq!(f.text(), "foo\n");
+    // record an empty macro (qqq): stop immediately
+    f.feed(["q", "q", "q"]);
+    assert_eq!(f.text(), "foo\n");
+}
+
+#[test]
+fn macro_stop_key_not_captured() {
+    // the trailing `q` must not end up inside the macro: the macro below
+    // records `x` twice via @@? — record q a x q: contains exactly one x
+    let mut f = Fixture::at("abcdef\n", 0, 0);
+    f.feed(["q", "a", "x", "q"]);
+    assert_eq!(f.text(), "bcdef\n");
+    f.feed(["0", "@", "a"]);
+    assert_eq!(f.text(), "cdef\n"); // exactly one x ran on replay
+}

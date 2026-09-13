@@ -720,6 +720,13 @@ impl Editor {
                 bar.child(div().child(format!("pending: {showcmd}")))
             })
             .child(div().flex_1())
+            .when_some(self.vim.macro_recording(), |bar, register| {
+                bar.child(
+                    div()
+                        .text_color(gpui::red())
+                        .child(format!("recording @{}", register)),
+                )
+            })
             .when_some(self.status_message.clone(), |bar, message| {
                 bar.child(div().text_color(gpui::yellow()).child(message))
             })
