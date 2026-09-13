@@ -10,6 +10,7 @@ pub struct Options {
     pub scrolloff: usize,
     pub tabstop: usize,
     pub shiftwidth: usize,
+    pub textwidth: usize,
     pub expandtab: bool,
     pub autoindent: bool,
     pub ignorecase: bool,
@@ -28,6 +29,7 @@ impl Default for Options {
             scrolloff: 4,
             tabstop: 4,
             shiftwidth: 4,
+            textwidth: 78,
             expandtab: true,
             autoindent: true,
             ignorecase: true,
@@ -90,6 +92,10 @@ impl Options {
             },
             "shiftwidth" | "sw" => match value.parse() {
                 Ok(v) => self.shiftwidth = v,
+                Err(_) => return false,
+            },
+            "textwidth" | "tw" => match value.parse() {
+                Ok(v) => self.textwidth = v,
                 Err(_) => return false,
             },
             "scrolloff" | "so" => match value.parse() {

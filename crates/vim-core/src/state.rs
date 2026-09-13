@@ -180,6 +180,9 @@ pub struct VimState {
     /// `change_pos` indexes the current entry.
     changes: Vec<usize>,
     change_pos: usize,
+    /// For the `gq`/`gw` spellings of Operator::Format: the trigger letter
+    /// (`q` or `w`) to match in the linewise doubling.
+    format_trigger: Option<char>,
     /// `:action <unknown-id>` is silently ignored instead of reported.
     /// Hosts sharing one rc file across apps set this while applying the
     /// user layer (mappings aimed at other apps are expected to miss).
@@ -257,6 +260,7 @@ impl VimState {
             lenient_actions: false,
             changes: Vec::new(),
             change_pos: 0,
+            format_trigger: None,
             block_insert: None,
             jumps: Vec::new(),
             jump_pos: 0,
@@ -1222,6 +1226,7 @@ fn op_keys(op: Operator) -> &'static str {
         Operator::Lowercase => "gu",
         Operator::Uppercase => "gU",
         Operator::ToggleCase => "g~",
+        Operator::Format => "gq",
     }
 }
 
@@ -1251,10 +1256,19 @@ impl VimState {
             return ProcessOutcome::Consumed;
         }
 
-        // 2. operator doubling: dd / yy / >> / guu / g~~ ...
+        // 2. operator doubling: dd / yy / >> / guu / g~~ / gqq / gww ...
+        // (gq/gw need the remembered spelling: their trigger letters are
+        // not derivable from the operator alone)
         if self.op.is_some() && self.cmd_seq.is_empty() {
-            if let (KeyKind::Char(c), true) = (&key.kind, key.modifiers.is_plain()) {
-                if Self::operator_trigger(self.op.unwrap()) == Some(*c) {
+            let trigger = if self.op == Some(Operator::Format) {
+                self.format_trigger
+            } else {
+                Self::operator_trigger(self.op.unwrap())
+            };
+            if let (Some(trigger), KeyKind::Char(c), true) =
+                (trigger, &key.kind, key.modifiers.is_plain())
+            {
+                if trigger == *c {
                     let count = self.take_total_count();
                     let line = ctx.buf.offset_to_line(self.cursor.offset);
                     let last = (line + count - 1).min(ctx.buf.line_count() - 1);
@@ -1276,6 +1290,15 @@ impl VimState {
             seq.push(key.clone());
             match self.tables.trie(phase).get(&seq) {
                 keymap::Walk::Hit(kind) => {
+                    // remember the gq/gw spelling BEFORE cmd_seq is cleared
+                    // (execute_command reads it for the linewise doubling)
+                    if *kind == CmdKind::Operator(Operator::Format) {
+                        // the spelling letter is the LAST key of [g, q|w]
+                        self.format_trigger = match seq.last().map(|k| &k.kind) {
+                            Some(KeyKind::Char('w')) => Some('w'),
+                            _ => Some('q'),
+                        };
+                    }
                     self.cmd_seq.clear();
                     return self.execute_command(ctx, *kind);
                 }
@@ -1284,6 +1307,7 @@ impl VimState {
                     return ProcessOutcome::Consumed;
                 }
                 keymap::Walk::Miss => {
+                    eprintln!("PROBE trie miss seq={:?}", self.cmd_seq.iter().map(|k| k.notation()).collect::<Vec<_>>());
                     // execute the longest terminal prefix, re-feed the rest
                     if let Some((len, kind)) = self.tables.longest_terminal(phase, &seq) {
                         self.cmd_seq.clear();
@@ -1754,6 +1778,7 @@ impl VimState {
             Operator::Lowercase => Some('u'),
             Operator::Uppercase => Some('U'),
             Operator::ToggleCase => Some('~'),
+            Operator::Format => None,
         }
     }
 

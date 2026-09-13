@@ -25,6 +25,7 @@ pub enum Operator {
     Lowercase,
     Uppercase,
     ToggleCase,
+    Format,
 }
 
 /// A concrete span to operate on.
@@ -310,6 +311,10 @@ pub fn apply(
             vim.cursor.offset = ctx.buf.first_non_blank(first.min(ctx.buf.line_count() - 1));
             vim.cursor.desired_col = None;
         }
+        Operator::Format => {
+            let last_line = ctx.buf.offset_to_line(span.end.saturating_sub(1).max(span.start));
+            format_lines(vim, ctx, span.start, last_line);
+        }
         Operator::Lowercase | Operator::Uppercase | Operator::ToggleCase => {
             let text = ctx.buf.slice(span.start..span.end);
             let mapped: String = text
@@ -372,6 +377,69 @@ pub fn shift_line(vim: &mut VimState, ctx: &mut Ctx, line: usize, right: bool) {
         }
         vim.edit_delete(ctx, start..cut);
     }
+}
+
+/// `gq`/`gw`: reflow the span's lines to `textwidth` as one paragraph per
+/// blank-line-separated group. The span's first-line indent becomes the
+/// paragraph indent for all wrapped lines.
+pub fn format_lines(vim: &mut VimState, ctx: &mut Ctx, start: usize, last_line: usize) {
+    let width = vim.options.textwidth.max(1);
+    let span_end = ctx.buf.line_end(last_line);
+    if start >= span_end {
+        vim.cursor.offset = clamp_to_line_end(ctx.buf, start);
+        return;
+    }
+
+    let mut out = String::new();
+    let mut paragraph: Vec<String> = Vec::new();
+    let mut indent = String::new();
+
+    fn flush(paragraph: &mut Vec<String>, indent: &str, width: usize, out: &mut String) {
+        let mut col = indent.chars().count();
+        let mut line = String::from(indent);
+        for word in paragraph.drain(..) {
+            let w = word.chars().count();
+            if col > indent.chars().count() && col + w > width {
+                out.push_str(line.trim_end());
+                out.push('\n');
+                line = String::from(indent);
+                col = indent.chars().count();
+            }
+            line.push_str(&word);
+            line.push(' ');
+            col += w + 1;
+        }
+        out.push_str(line.trim_end());
+        out.push('\n');
+    }
+
+    for line in start..=last_line {
+        let ls = ctx.buf.line_start(line);
+        let le = ctx.buf.line_end(line);
+        let text = ctx.buf.slice(ls..le);
+        let (ind, blank) = ctx.buf.line_indent(line);
+        if blank || text.trim().is_empty() {
+            flush(&mut paragraph, &indent, width, &mut out);
+            out.push('\n'); // keep the blank separator line
+        } else {
+            if paragraph.is_empty() {
+                indent = text[..ind].to_owned();
+            }
+            for word in text[ind..].split_whitespace() {
+                paragraph.push(word.to_owned());
+            }
+        }
+    }
+    flush(&mut paragraph, &indent, width, &mut out);
+
+    // each flushed paragraph ends with one newline; drop only the final
+    // terminator (it belongs to the buffer structure, not the text)
+    if out.ends_with('\n') {
+        out.pop();
+    }
+    vim.edit_replace(ctx, start..span_end, &out);
+    vim.cursor.offset = clamp_to_line_end(ctx.buf, start);
+    vim.cursor.desired_col = None;
 }
 
 /// `p` / `P`: paste a register.

@@ -1496,3 +1496,43 @@ fn increment_decrement_numbers() {
     f.feed(["<C-a>"]);
     assert_eq!(f.text(), "none\n");
 }
+
+// ---- gq format operator (task 3) ------------------------------------------------
+
+#[test]
+fn gq_reflow_to_textwidth() {
+    let mut f = Fixture::at("the quick brown fox jumps over the lazy dog\nnext\n", 0, 0);
+    f.vim.options_mut().textwidth = 20;
+    f.feed(["g", "q", "q"]);
+    // reflowed greedily at width 20, cursor at the start
+    assert_eq!(f.text(), "the quick brown fox\njumps over the lazy\ndog\nnext\n");
+    assert_eq!(f.cursor(), 0);
+}
+
+#[test]
+fn gq_keeps_indent_and_blank_separators() {
+    let mut f = Fixture::at("    alpha beta gamma delta\n\n    tail\n", 0, 0);
+    f.vim.options_mut().textwidth = 16;
+    f.feed(["g", "G"]);
+    let text = f.text();
+    // every produced line keeps the 4-space indent; the blank separator
+    // between paragraphs survives
+    assert!(text.starts_with("    alpha "));
+    assert!(text.contains("\n\n    tail"));
+    for line in text.split('\n').filter(|l| !l.is_empty()) {
+        assert!(line.starts_with("    "), "line {line:?} lost its indent");
+    }
+}
+
+#[test]
+fn gq_with_motion_and_count() {
+    let mut f = Fixture::at("aaa bbb ccc ddd\ntail\n", 0, 0);
+    f.vim.options_mut().textwidth = 12;
+    f.feed(["g", "q", "q"]); // current line only
+    assert_eq!(f.text(), "aaa bbb ccc\nddd\ntail\n");
+    // gw motion variant behaves the same in v1
+    let mut f = Fixture::at("one two three\nx\n", 0, 0);
+    f.vim.options_mut().textwidth = 8;
+    f.feed(["g", "w", "w"]);
+    assert_eq!(f.text(), "one two\nthree\nx\n");
+}

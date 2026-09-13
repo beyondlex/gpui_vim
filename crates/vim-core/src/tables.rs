@@ -231,12 +231,16 @@ fn build_rows() -> Vec<(Vec<Key>, Phase, CmdKind)> {
     b.normal(&["g", "u"], CmdKind::Operator(Operator::Lowercase));
     b.normal(&["g", "U"], CmdKind::Operator(Operator::Uppercase));
     b.normal(&["g", "~"], CmdKind::Operator(Operator::ToggleCase));
+    b.normal(&["g", "q"], CmdKind::Operator(Operator::Format));
+    b.normal(&["g", "w"], CmdKind::Operator(Operator::Format));
     // multi-key operator doubling (single-key doubling is generic)
     b.normal(&["g", "u", "u"], CmdKind::Normal(NormalCmd::LinewiseOp(Operator::Lowercase)));
     b.normal(&["g", "u", "g", "u"], CmdKind::Normal(NormalCmd::LinewiseOp(Operator::Lowercase)));
     b.normal(&["g", "U", "U"], CmdKind::Normal(NormalCmd::LinewiseOp(Operator::Uppercase)));
     b.normal(&["g", "U", "g", "U"], CmdKind::Normal(NormalCmd::LinewiseOp(Operator::Uppercase)));
     b.normal(&["g", "~", "~"], CmdKind::Normal(NormalCmd::LinewiseOp(Operator::ToggleCase)));
+    b.normal(&["g", "q", "q"], CmdKind::Normal(NormalCmd::LinewiseOp(Operator::Format)));
+    b.normal(&["g", "q", "g", "q"], CmdKind::Normal(NormalCmd::LinewiseOp(Operator::Format)));
     b.normal(&["g", "~", "g", "~"], CmdKind::Normal(NormalCmd::LinewiseOp(Operator::ToggleCase)));
 
     // ---- text objects (pending + visual) ---------------------------------
@@ -352,6 +356,7 @@ fn build_rows() -> Vec<(Vec<Key>, Phase, CmdKind)> {
     b.visual(&["g", "u"], CmdKind::Operator(Operator::Lowercase));
     b.visual(&["g", "U"], CmdKind::Operator(Operator::Uppercase));
     b.visual(&["g", "~"], CmdKind::Operator(Operator::ToggleCase));
+    b.visual(&["g", "q"], CmdKind::Operator(Operator::Format));
     b.visual(&["p"], CmdKind::Visual(VisualCmd::PutReplace));
     b.visual(&["P"], CmdKind::Visual(VisualCmd::PutReplace));
     b.visual(&["J"], CmdKind::Visual(VisualCmd::Join { literal: false }));
