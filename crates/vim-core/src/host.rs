@@ -5,6 +5,20 @@
 
 use std::ops::Range;
 
+/// Where the requested line should land in the viewport (`zz`/`zt`/`zb`).
+/// Plain cursor scrolls use [`ScrollAnchor::Cursor`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ScrollAnchor {
+    /// Just make the line visible (minimal scroll).
+    Cursor,
+    /// `zz` — centered.
+    Center,
+    /// `zt` — top of the viewport.
+    Top,
+    /// `zb` — bottom of the viewport.
+    Bottom,
+}
+
 /// Side-effect hooks the host must (or may) implement.
 pub trait VimHost {
     /// Inclusive `(first_line, last_line)` of what is currently visible.
@@ -12,6 +26,20 @@ pub trait VimHost {
 
     /// Make sure `line` is visible.
     fn scroll_to_line(&mut self, line: usize);
+
+    /// Make `line` visible with a specific anchor (`zz`/`zt`/`zb`). The
+    /// default forwards to [`VimHost::scroll_to_line`] for hosts that don't
+    /// distinguish anchors.
+    fn scroll_to_line_anchored(&mut self, line: usize, anchor: ScrollAnchor) {
+        let _ = anchor;
+        self.scroll_to_line(line);
+    }
+
+    /// Scroll the viewport by `lines` (positive = down) without moving the
+    /// cursor (`C-e`/`C-y`). Default: no-op for hosts without free scrolling.
+    fn scroll_lines(&mut self, lines: i32) {
+        let _ = lines;
+    }
 
     fn clipboard_write(&mut self, text: &str);
     fn clipboard_read(&self) -> Option<String>;
@@ -62,9 +90,11 @@ pub trait VimHost {
     }
 
     /// Bridge for `:map <Leader>x :action SomeAction<CR>` — dispatch a
-    /// HOST application action by id (IdeaVim's `:action` bridge). Unknown
-    /// ids are the host's problem: report through `status_message`.
-    fn dispatch_host_action(&mut self, id: &str) {
-        let _ = id;
+    /// HOST application action by id (IdeaVim's `:action` bridge).
+    /// `strict` is true for host-specific config layers (a miss is worth
+    /// reporting via `status_message`) and false for shared user layers
+    /// (mappings aimed at other apps are expected to miss: ignore quietly).
+    fn dispatch_host_action_hinted(&mut self, id: &str, strict: bool) {
+        let _ = (id, strict);
     }
 }

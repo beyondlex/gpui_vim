@@ -38,24 +38,22 @@ fn main() {
                 let subscription = gpui_vim::attach(&editor, cx);
                 editor.update(cx, |editor, _cx| {
                     editor.set_vim_subscription(subscription);
-                    // load the user's rc file when it exists
-                    if let Some(path) = gpui_vim::config::default_config_path() {
-                        if path.exists() {
-                            match gpui_vim::config::load_config_file(editor, &path) {
-                                Ok(stats) => {
-                                    editor.status_message = Some(format!(
-                                        "loaded {} mappings, {} options from {}",
-                                        stats.mappings,
-                                        stats.options,
-                                        path.display()
-                                    ));
-                                }
-                                Err(error) => {
-                                    editor.status_message =
-                                        Some(format!("E: {}: {error}", path.display()));
-                                }
-                            }
-                        }
+                    // layered rc loading: the shared user layer (~/.gpui-vimrc,
+                    // unknown :action ids ignored) then the app-specific layer
+                    // (~/.config/gpui-vim-demo/vimrc, unknown ids reported)
+                    let user = gpui_vim::config::default_config_path();
+                    let host = user.as_ref().map(|rc| {
+                        rc.parent()
+                            .expect("rc path has a parent")
+                            .join(".config/gpui-vim-demo/vimrc")
+                    });
+                    let layers = gpui_vim::config::Layers { user, host };
+                    let stats = gpui_vim::config::load_layers(editor, &layers);
+                    if stats.files > 0 {
+                        editor.status_message = Some(format!(
+                            "loaded {} mappings, {} options ({} files)",
+                            stats.mappings, stats.options, stats.files
+                        ));
                     }
                 });
                 schedule_smoke_test(&editor, cx);

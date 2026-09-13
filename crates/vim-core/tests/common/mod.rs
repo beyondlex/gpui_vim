@@ -147,7 +147,7 @@ impl VimHost for HostView {
         "test-buffer"
     }
 
-    fn dispatch_host_action(&mut self, id: &str) {
+    fn dispatch_host_action_hinted(&mut self, id: &str, _strict: bool) {
         self.actions.push(id.to_owned());
     }
 

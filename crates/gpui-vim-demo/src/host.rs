@@ -131,7 +131,15 @@ impl VimHost for HostState {
         self.pending_close = true;
     }
 
-    fn dispatch_host_action(&mut self, id: &str) {
-        self.pending_action = Some(id.to_owned());
+    fn dispatch_host_action_hinted(&mut self, id: &str, strict: bool) {
+        // strict layers report unknown ids; shared user layers ignore them
+        // (mappings aimed at other apps are expected to miss)
+        let known = matches!(
+            id,
+            "demo.Save" | "demo.Copy" | "demo.Paste" | "Save" | "Copy" | "Paste"
+        );
+        if known || strict {
+            self.pending_action = Some(id.to_owned());
+        }
     }
 }

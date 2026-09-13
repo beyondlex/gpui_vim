@@ -242,7 +242,10 @@ impl VimState {
             if id.is_empty() {
                 ctx.host.bell();
             } else {
-                ctx.host.dispatch_host_action(id);
+                // strict = the layer wants misses reported (host-specific
+                // rc); lenient = shared-rc misses should pass silently
+                ctx.host
+                    .dispatch_host_action_hinted(id, !self.lenient_actions);
             }
             return;
         }

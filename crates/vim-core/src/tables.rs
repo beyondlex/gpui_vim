@@ -49,6 +49,8 @@ pub enum NormalCmd {
     RepeatChange,        // .
     JumpBackward,        // C-o
     JumpForward,         // C-i
+    WriteQuit,           // ZZ
+    QuitNoSave,          // ZQ
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -108,6 +110,8 @@ impl CmdKind {
                     | NormalCmd::RepeatChange
                     | NormalCmd::JumpBackward
                     | NormalCmd::JumpForward
+                    | NormalCmd::WriteQuit
+                    | NormalCmd::QuitNoSave
             ),
             CmdKind::Visual(cmd) => !matches!(
                 cmd,
@@ -295,6 +299,8 @@ fn build_rows() -> Vec<(Vec<Key>, Phase, CmdKind)> {
     b.normal(&["z", "t"], CmdKind::Normal(NormalCmd::ScrollTop));
     b.normal(&["z", "b"], CmdKind::Normal(NormalCmd::ScrollBottom));
     b.normal(&["g", "v"], CmdKind::Normal(NormalCmd::RestoreVisual));
+    b.normal(&["Z", "Z"], CmdKind::Normal(NormalCmd::WriteQuit));
+    b.normal(&["Z", "Q"], CmdKind::Normal(NormalCmd::QuitNoSave));
 
     // ---- entering insert ---------------------------------------------------
     b.normal(&["i"], CmdKind::EnterInsert(InsertKind::Insert));
@@ -304,6 +310,7 @@ fn build_rows() -> Vec<(Vec<Key>, Phase, CmdKind)> {
     b.normal(&["o"], CmdKind::EnterInsert(InsertKind::OpenLine { below: true }));
     b.normal(&["O"], CmdKind::EnterInsert(InsertKind::OpenLine { below: false }));
     b.normal(&["g", "I"], CmdKind::EnterInsert(InsertKind::InsertAtColumnZero));
+    b.normal(&["g", "i"], CmdKind::EnterInsert(InsertKind::LastInsertExit));
     b.normal(&["R"], CmdKind::EnterInsert(InsertKind::Replace));
 
     // ---- entering visual ---------------------------------------------------

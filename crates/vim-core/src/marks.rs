@@ -22,6 +22,14 @@ impl Marks {
         self.offsets.get(&name).copied()
     }
 
+    /// All set marks as `(name, offset)`, sorted by name — for `:marks`
+    /// style listings (the map itself stays private).
+    pub fn items(&self) -> Vec<(char, usize)> {
+        let mut v: Vec<(char, usize)> = self.offsets.iter().map(|(c, o)| (*c, *o)).collect();
+        v.sort();
+        v
+    }
+
     pub fn set(&mut self, name: char, offset: usize) {
         if name.is_ascii_alphabetic() || matches!(name, '^' | '.') {
             self.offsets.insert(name, offset);

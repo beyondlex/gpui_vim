@@ -108,7 +108,21 @@ let subscription = gpui_vim::attach(&editor_entity, cx); // 必须保活（存�
 
 支持的功能：`hjkl w b e f t % gg G 0 ^ $`、算子 `d c y > < gu gU g~`、text
 objects `iw aw i" a( it ...`、`C-v` 块可视（含块 `I/A/c/p`）、`R`、`.`、宏
-`q/@`、jumplist `C-o/C-i`、`/ ? n N * #`（incsearch/hlsearch）、`~/.gpui-vimrc`。
+`q/@`、jumplist `C-o/C-i`、`/ ? n N * #`（incsearch/hlsearch）。
+
+### 配置分层（多应用共享一份 rc）
+
+多个 gpui 应用可共享同一份 `~/.gpui-vimrc`：选项和映射各应用独立生效；唯一
+的跨应用差异是 `:action <id>` 的目标。加载采用两层：
+
+1. **用户层** `~/.gpui-vimrc`——跨应用的键位习惯。`action` 未命中**静默忽
+   略**（这里的映射可能写给别的应用）；
+2. **宿主层** `~/.config/<app>/vimrc`——应用专属映射，**后加载、同键覆盖**，
+   `action` 未命中**上报**（真错误要暴露）。
+
+宿主用 `gpui_vim::config::{Layers, load_layers}` 定制路径；`:action <id>`
+桥经 `VimHost::dispatch_host_action_hinted(id, strict)` 交给宿主决定报错还
+是忽略。
 
 ## 状态
 

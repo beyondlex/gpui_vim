@@ -191,6 +191,12 @@ vim.search.pattern.clone();
 
 ## Notes & current limitations
 
+- **User mappings sharing a prefix with builtin chords shadow them**: with
+  `gi` mapped, the key `g` enters the mapping-wait state and a following `g`
+  (of `gg`) never reaches the builtin table — there is no `'timeoutlen'`.
+  Prefer extending the builtin tables (`tables.rs`, one row per command) for
+  chords that share prefixes (`g`/`z`/`[`/`]`). `gi`, `ZZ` and `ZQ` are
+  builtins for exactly this reason.
 - **Esc through hyper keys**: the engine treats *any* `<Esc>` as escape,
   regardless of modifiers (even `Cmd`), so caps-lock→Esc hyper taps
   (Karabiner `to_if_alone`) exit insert/visual reliably even if modifier

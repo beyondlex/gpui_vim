@@ -13,7 +13,7 @@
 
 use crate::buffer::{clamp_to_line_end, VimBuffer, VimBufferMut};
 use crate::cmdline::Cmdline;
-use crate::host::VimHost;
+use crate::host::{ScrollAnchor, VimHost};
 use crate::key::{Key, KeyKind, Modifiers};
 use crate::keymap::{self, Keymaps, MappingMatch};
 use crate::marks::Marks;
@@ -52,6 +52,9 @@ pub enum InsertKind {
     AppendLineEnd,      // A
     OpenLine { below: bool }, // o / O
     InsertAtColumnZero, // gI
+    /// gi: insert where the last insert session ended (`^` mark), or at the
+    /// cursor when there is none.
+    LastInsertExit, // gi
     Change,             // c / s / S / C
     Replace,            // R: overwrite instead of insert
 }
@@ -173,6 +176,10 @@ pub struct VimState {
     /// A user mapping just expanded: the queued expansion belongs to the
     /// mapping, so a cmdline entry inside it must not break the queue early.
     expanding_mapping: bool,
+    /// `:action <unknown-id>` is silently ignored instead of reported.
+    /// Hosts sharing one rc file across apps set this while applying the
+    /// user layer (mappings aimed at other apps are expected to miss).
+    pub(crate) lenient_actions: bool,
     /// Visual-block `I`/`A`/`c`: the rows (insert offsets, descending) that
     /// receive the typed text when the session exits, and the text typed on
     /// the cursor row so far.
@@ -243,6 +250,7 @@ impl VimState {
             last_macro_played: None,
             no_remap_left: 0,
             expanding_mapping: false,
+            lenient_actions: false,
             block_insert: None,
             jumps: Vec::new(),
             jump_pos: 0,
@@ -562,7 +570,37 @@ impl VimState {
 
     pub(crate) fn bump(&mut self, ctx: &mut Ctx) {
         self.marks.last_change = Some(self.cursor.offset);
+        self.republish_search(ctx);
         ctx.host.changed();
+    }
+
+    /// Buffer edits shift the byte offsets behind any published highlights;
+    /// recompute and republish so `hlsearch` visuals follow the text. No-op
+    /// while nothing is published (`:noh`, no pattern) — editing must not
+    /// revive cleared highlights.
+    fn republish_search(&mut self, ctx: &mut Ctx) {
+        if !self.options.hlsearch || self.search.last_matches.is_empty() {
+            return;
+        }
+        let Some(pattern) = self.search.pattern.clone() else {
+            return;
+        };
+        let matches = crate::search::all_matches(self, ctx.buf, &pattern);
+        if matches.is_empty() {
+            self.search.last_matches.clear();
+            self.search.last_index = None;
+            ctx.host.set_search_highlights(&[], None);
+            return;
+        }
+        let current = matches
+            .iter()
+            .find(|m| m.start >= self.cursor.offset)
+            .or_else(|| matches.last())
+            .cloned();
+        let index = current.as_ref().and_then(|c| matches.iter().position(|m| m == c));
+        self.search.last_matches = matches.clone();
+        self.search.last_index = index;
+        ctx.host.set_search_highlights(&matches, current);
     }
 
     // ---- buffer edits (the ONLY mutation paths; keep marks in sync) -------
@@ -766,6 +804,7 @@ impl VimState {
         }
         self.commit_change_record();
         self.insert_session = None;
+        self.republish_search(ctx);
         self.end_edit();
         self.mode = Mode::Normal;
         self.insert_register_pending = false;
@@ -809,7 +848,19 @@ impl VimState {
             self.edit_insert(ctx, at, &expanded);
         }
         self.cursor.offset = at + expanded.len();
+        self.republish_search(ctx);
         ctx.host.changed();
+    }
+
+    /// While set, `:action <unknown-id>` misses are silently ignored
+    /// (host chooses whether the bridge reports; shared rc files contain
+    /// mappings aimed at other apps).
+    pub fn set_lenient_actions(&mut self, lenient: bool) {
+        self.lenient_actions = lenient;
+    }
+
+    pub fn lenient_actions(&self) -> bool {
+        self.lenient_actions
     }
 
     /// Apply a parsed user config (`~/.gpui-vimrc` style): options via the
@@ -1775,7 +1826,13 @@ impl VimState {
             NormalCmd::ScrollCenter | NormalCmd::ScrollTop | NormalCmd::ScrollBottom => {
                 let line = ctx.buf.offset_to_line(self.cursor.offset);
                 // hosts implement the actual scroll; notify with the line
-                ctx.host.scroll_to_line(line);
+                // and the anchor (zz/zt/zb semantics)
+                let anchor = match cmd {
+                    NormalCmd::ScrollCenter => ScrollAnchor::Center,
+                    NormalCmd::ScrollTop => ScrollAnchor::Top,
+                    _ => ScrollAnchor::Bottom,
+                };
+                ctx.host.scroll_to_line_anchored(line, anchor);
             }
             NormalCmd::RepeatChange => {
                 let count = self.take_total_count().max(1);
@@ -1837,6 +1894,13 @@ impl VimState {
                     self.cursor.offset = hi.saturating_sub(1).min(ctx.buf.len());
                     self.mode = Mode::Visual { kind };
                 }
+            }
+            NormalCmd::WriteQuit => {
+                ctx.host.save();
+                ctx.host.request_close();
+            }
+            NormalCmd::QuitNoSave => {
+                ctx.host.request_close();
             }
         }
     }
@@ -1996,6 +2060,11 @@ impl VimState {
             InsertKind::InsertAtColumnZero => {
                 let line = ctx.buf.offset_to_line(self.cursor.offset);
                 self.cursor.offset = ctx.buf.line_start(line);
+            }
+            InsertKind::LastInsertExit => {
+                if let Some(off) = self.marks.last_insert_exit {
+                    self.cursor.offset = off.min(ctx.buf.len());
+                }
             }
             InsertKind::OpenLine { below } => {
                 // open the undo group BEFORE mutating, so the snapshot the

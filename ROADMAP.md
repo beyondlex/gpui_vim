@@ -372,6 +372,9 @@ buffer）。
 >   `load_config_file`（`~` 展开、source 递归一层上限 4）；demo 启动时加载
 >   `~/.gpui-vimrc` 并把 action 派发经 FocusHandle 路由到应用自身的
 >   `on_action` 处理器
+> - 多应用共享一份 rc：`load_layers` 分两层（用户层 action 未命中静默、宿
+>   主层上报且同键覆盖用户层）；`dispatch_host_action_hinted(id, strict)`
+>   把策略交给宿主
 > - 已知限制：`:map` 无 buffer 参数（全部全局）、无 `:unmap`、`<expr>`、
 >   `silent`；带 JSON 参数的 gpui action 不支持（只桥无参 action）
 

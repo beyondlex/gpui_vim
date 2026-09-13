@@ -1347,3 +1347,38 @@ fn config_source_directive_is_collected() {
     assert_eq!(config.sources, vec![std::path::PathBuf::from("~/.vimrc")]);
     assert!(config.settings.contains(&vim_core::config::Setting::On("number".into())));
 }
+
+// ---- multi-app rc isolation (layered loading semantics) -------------------------
+
+#[test]
+fn lenient_action_flag_gates_reporting() {
+    let text = "map <Leader>a :action Other.App.Save<CR>\n";
+    let config = vim_core::config::parse(text);
+
+    // strict (host layer): the miss is surfaced to the host
+    let mut f = Fixture::at("foo\n", 0, 0);
+    eprintln!("PROBE mappings={:?} ignored={:?}", config.mappings, config.ignored);
+    f.vim.apply_config(&config);
+    f.feed(["\\", "a"]);
+    eprintln!("PROBE actions={:?} statuses={:?}", f.host.actions, f.host.statuses);
+    assert_eq!(f.host.actions, vec!["Other.App.Save".to_owned()]);
+    assert_eq!(f.host.statuses.len(), 0);
+
+    // the flag is engine state the host loader toggles per layer
+    assert!(!f.vim.lenient_actions());
+    f.vim.set_lenient_actions(true);
+    assert!(f.vim.lenient_actions());
+}
+
+#[test]
+fn host_layer_mapping_overrides_user_layer() {
+    // later apply_config wins per key: the host layer's Q overrides the
+    // user layer's Q
+    let user = vim_core::config::parse("map Q x\n");
+    let host = vim_core::config::parse("nnoremap Q dd\n");
+    let mut f = Fixture::at("keep\n", 0, 0);
+    f.vim.apply_config(&user);
+    f.vim.apply_config(&host);
+    f.feed(["Q"]);
+    assert_eq!(f.text(), ""); // dd won (whole line gone), not x ("eep")
+}
