@@ -43,7 +43,10 @@ pub fn span_from_motion(
 ) -> OpSpan {
     let start = vim.cursor.offset;
     let start_line = buf.offset_to_line(start);
-    let target = result.offset;
+    // a motion may land past a line's trailing newline (e.g. `w` at the
+    // last word of a buffer lands in the phantom final line); anchor the
+    // span to the line end so `dw` etc. never swallow the newline
+    let target = crate::buffer::clamp_to_line_end(buf, result.offset);
     let target_line = buf.offset_to_line(target);
 
     if result.kind == MotionKind::Linewise {
@@ -163,7 +166,7 @@ pub fn delete_span(vim: &mut VimState, ctx: &mut Ctx, span: &OpSpan, register: O
     let text = ctx.buf.slice(span.start..span.end);
     vim.registers
         .store_delete(register, text, register_kind(span));
-    ctx.buf.delete_range(span.start..span.end);
+    vim.edit_delete(ctx, span.start..span.end);
 
     vim.cursor.offset = if span.linewise {
         let line = ctx
@@ -217,8 +220,9 @@ pub fn apply(
             };
             delete_span(vim, ctx, &effective, register);
             if !indent_text.is_empty() {
-                ctx.buf.insert_text(vim.cursor.offset, &indent_text);
-                vim.cursor.offset += indent_text.len();
+                let at = vim.cursor.offset;
+            vim.edit_insert(ctx, at, &indent_text);
+                vim.cursor.offset = at + indent_text.len();
             }
             vim.begin_insert(ctx, InsertKind::Change);
         }
@@ -241,7 +245,7 @@ pub fn apply(
                     _ => toggle_case(c),
                 })
                 .collect();
-            ctx.buf.replace_range(span.start..span.end, &mapped);
+            vim.edit_replace(ctx, span.start..span.end, &mapped);
             vim.cursor.offset = clamp_to_line_end(ctx.buf, span.start);
             vim.cursor.desired_col = None;
         }
@@ -258,7 +262,7 @@ pub fn toggle_case(c: char) -> char {
 }
 
 /// Shift one line by `shiftwidth` left or right.
-pub fn shift_line(vim: &VimState, ctx: &mut Ctx, line: usize, right: bool) {
+pub fn shift_line(vim: &mut VimState, ctx: &mut Ctx, line: usize, right: bool) {
     if line >= ctx.buf.line_count() {
         return;
     }
@@ -274,7 +278,7 @@ pub fn shift_line(vim: &VimState, ctx: &mut Ctx, line: usize, right: bool) {
         } else {
             "\t".to_owned()
         };
-        ctx.buf.insert_text(start, &unit);
+        vim.edit_insert(ctx, start, &unit);
     } else if indent > 0 {
         // remove up to `sw` columns of indent; a tab counts as a full unit
         let indent_end = start + indent;
@@ -291,7 +295,7 @@ pub fn shift_line(vim: &VimState, ctx: &mut Ctx, line: usize, right: bool) {
             o += c.len_utf8();
             cut = o;
         }
-        ctx.buf.delete_range(start..cut);
+        vim.edit_delete(ctx, start..cut);
     }
 }
 
@@ -322,7 +326,7 @@ pub fn put(vim: &mut VimState, ctx: &mut Ctx, register: char, count: usize, afte
             // last line without trailing newline: open a new line for it
             (ctx.buf.len(), format!("\n{}", repeated.trim_end_matches('\n')))
         };
-        ctx.buf.insert_text(insert_at, &text);
+        vim.edit_insert(ctx, insert_at, &text);
         let pasted_lines = text.trim_end_matches('\n').split('\n').count();
         let cursor_line = (ctx.buf.offset_to_line(insert_at) + pasted_lines - 1)
             .min(ctx.buf.line_count() - 1);
@@ -332,7 +336,7 @@ pub fn put(vim: &mut VimState, ctx: &mut Ctx, register: char, count: usize, afte
         if after && !ctx.buf.at_line_end(at) {
             at = ctx.buf.next_char_offset(at).unwrap_or(at);
         }
-        ctx.buf.insert_text(at, &repeated);
+        vim.edit_insert(ctx, at, &repeated);
         // block cursor sits on the last pasted character: step back to the
         // START of the last char — `end - 1` is byte arithmetic and would
         // park the cursor inside a multi-byte character
@@ -356,7 +360,7 @@ pub fn join_lines(vim: &mut VimState, ctx: &mut Ctx, count: usize, literal: bool
         let next_start = ctx.buf.line_start(line + 1);
 
         if literal {
-            ctx.buf.delete_range(join_at..next_start);
+            vim.edit_delete(ctx, join_at..next_start);
         } else {
             let next_end = ctx.buf.line_end(line + 1);
             let next_content = ctx.buf.slice(next_start..next_end);
@@ -442,7 +446,7 @@ pub fn replace_chars(vim: &mut VimState, ctx: &mut Ctx, ch: char, count: usize) 
         replacements.push(ch);
         o += c.len_utf8();
     }
-    ctx.buf.replace_range(start..o, &replacements);
+    vim.edit_replace(ctx, start..o, &replacements);
     vim.cursor.offset = clamp_to_line_end(
         ctx.buf,
         start + replacements.len() - ch.len_utf8(),
@@ -468,7 +472,7 @@ pub fn toggle_chars(vim: &mut VimState, ctx: &mut Ctx, count: usize) {
     if mapped.is_empty() {
         return;
     }
-    ctx.buf.replace_range(start..start + mapped.len(), &mapped);
+    vim.edit_replace(ctx, start..start + mapped.len(), &mapped);
     // vim's `~` moves right past the last toggled char (staying on it only
     // at line end); plain byte arithmetic was wrong for multi-byte chars
     vim.cursor.offset = clamp_to_line_end(ctx.buf, start + mapped.len());

@@ -47,7 +47,7 @@ impl VimState {
                     let at = self.cursor.offset;
                     if let Some(c) = ctx.buf.char_at(at) {
                         self.begin_edit(ctx);
-                        ctx.buf.delete_range(at..at + c.len_utf8());
+                        self.edit_delete(ctx, at..at + c.len_utf8());
                         ctx.host.changed();
                     }
                     return ProcessOutcome::Consumed;
@@ -118,14 +118,14 @@ impl VimState {
         if at > line_start {
             if let Some(prev) = ctx.buf.prev_char_offset(at) {
                 self.begin_edit(ctx);
-                ctx.buf.delete_range(prev..at);
+                self.edit_delete(ctx, prev..at);
                 self.cursor.offset = prev;
                 ctx.host.changed();
             }
         } else if at > 0 {
             // join with the previous line
             self.begin_edit(ctx);
-            ctx.buf.delete_range(at - 1..at);
+            self.edit_delete(ctx, at - 1..at);
             self.cursor.offset = at - 1;
             ctx.host.changed();
         }
@@ -162,7 +162,7 @@ impl VimState {
         }
         if cursor < at {
             self.begin_edit(ctx);
-            ctx.buf.delete_range(cursor..at);
+            self.edit_delete(ctx, cursor..at);
             self.cursor.offset = cursor;
             ctx.host.changed();
         }
@@ -173,7 +173,7 @@ impl VimState {
         let line_start = ctx.buf.line_start(ctx.buf.offset_to_line(at));
         if at > line_start {
             self.begin_edit(ctx);
-            ctx.buf.delete_range(line_start..at);
+            self.edit_delete(ctx, line_start..at);
             self.cursor.offset = line_start;
             ctx.host.changed();
         }

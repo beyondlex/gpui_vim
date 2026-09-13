@@ -393,6 +393,69 @@ impl VimState {
         ctx.host.changed();
     }
 
+    // ---- buffer edits (the ONLY mutation paths; keep marks in sync) -------
+
+    /// All engine buffer mutations go through these three wrappers so marks
+    /// (`a-z`, `^ . < >`) and the last-visual span shift with the text. Never
+    /// call `ctx.buf.insert_text/delete_range/replace_range` directly.
+    pub(crate) fn edit_insert(&mut self, ctx: &mut Ctx, at: usize, text: &str) {
+        if text.is_empty() {
+            return;
+        }
+        ctx.buf.insert_text(at, text);
+        let len = text.len();
+        self.marks.adjust_insert(at, len);
+        if let Some((a, b, _)) = &mut self.last_visual {
+            if *a > at {
+                *a += len;
+            }
+            if *b > at {
+                *b += len;
+            }
+        }
+    }
+
+    pub(crate) fn edit_delete(&mut self, ctx: &mut Ctx, range: Range<usize>) {
+        if range.start >= range.end {
+            return;
+        }
+        ctx.buf.delete_range(range.clone());
+        self.marks.adjust_delete(range.clone());
+        if let Some((a, b, _)) = &mut self.last_visual {
+            if *a >= range.end {
+                *a -= range.len();
+            } else if *a > range.start {
+                *a = range.start;
+            }
+            if *b >= range.end {
+                *b -= range.len();
+            } else if *b > range.start {
+                *b = range.start;
+            }
+        }
+    }
+
+    pub(crate) fn edit_replace(&mut self, ctx: &mut Ctx, range: Range<usize>, text: &str) {
+        if range.start >= range.end {
+            return self.edit_insert(ctx, range.start, text);
+        }
+        ctx.buf.replace_range(range.clone(), text);
+        let new_len = text.len();
+        self.marks.adjust_replace(range.clone(), new_len);
+        let delta = new_len as isize - range.len() as isize;
+        if let Some((a, b, _)) = &mut self.last_visual {
+            let apply = |pos: &mut usize| {
+                if *pos >= range.end {
+                    *pos = (*pos as isize + delta).max(0) as usize;
+                } else if *pos > range.start {
+                    *pos = range.start;
+                }
+            };
+            apply(a);
+            apply(b);
+        }
+    }
+
     // ---- movement ------------------------------------------------------------
 
     pub(crate) fn apply_motion_result(
@@ -515,9 +578,9 @@ impl VimState {
                 }
                 end = next;
             }
-            ctx.buf.replace_range(at..end.min(line_end.max(at)), &expanded);
+            self.edit_replace(ctx, at..end.min(line_end.max(at)), &expanded);
         } else {
-            ctx.buf.insert_text(at, &expanded);
+            self.edit_insert(ctx, at, &expanded);
         }
         self.cursor.offset = at + expanded.len();
         ctx.host.changed();
@@ -532,7 +595,7 @@ impl VimState {
     /// Replace an arbitrary range (IME committed composition text).
     pub fn replace_range(&mut self, ctx: &mut Ctx, range: Range<usize>, text: &str) {
         self.begin_edit(ctx);
-        ctx.buf.replace_range(range.clone(), text);
+        self.edit_replace(ctx, range.clone(), text);
         // place the cursor at the end of the replacement when it touches it
         if range.contains(&self.cursor.offset) || self.cursor.offset == range.end {
             self.cursor.offset = range.start + text.len();
@@ -1286,11 +1349,11 @@ impl VimState {
                             format!("{repeated}\n")
                         };
                         let at = self.cursor.offset;
-                        ctx.buf.insert_text(at, &text);
+                        self.edit_insert(ctx, at, &text);
                         self.cursor.offset = ctx.buf.first_non_blank(ctx.buf.offset_to_line(at));
                     } else {
                         let at = self.cursor.offset.min(ctx.buf.len());
-                        ctx.buf.insert_text(at, &repeated);
+                        self.edit_insert(ctx, at, &repeated);
                         // cursor on the last pasted char's START — byte - 1
                         // would sit inside a multi-byte character
                         let end = at + repeated.len();
@@ -1351,11 +1414,11 @@ impl VimState {
                 let indent_str = " ".repeat(indent);
                 if below {
                     let at = ctx.buf.line_end(line);
-                    ctx.buf.insert_text(at, &format!("\n{indent_str}"));
+                    self.edit_insert(ctx, at, &format!("\n{indent_str}"));
                     self.cursor.offset = at + 1 + indent_str.len();
                 } else {
                     let at = ctx.buf.line_start(line);
-                    ctx.buf.insert_text(at, &format!("{indent_str}\n"));
+                    self.edit_insert(ctx, at, &format!("{indent_str}\n"));
                     self.cursor.offset = at + indent_str.len();
                 }
                 ctx.host.changed();

@@ -1,6 +1,7 @@
 //! Marks: user marks `a-z`, special marks (` ^ . < >), and jump helpers.
 
 use std::collections::HashMap;
+use std::ops::Range;
 
 /// Local (buffer) marks.
 #[derive(Clone, Debug, Default)]
@@ -33,6 +34,71 @@ impl Marks {
             '<' => self.last_visual.map(|(a, _)| a),
             '>' => self.last_visual.map(|(_, b)| b),
             _ => self.get(name),
+        }
+    }
+
+    /// Shift every stored mark after an insertion of `len` bytes at `at`.
+    /// A mark exactly AT `at` stays: vim keeps it before the inserted text.
+    pub fn adjust_insert(&mut self, at: usize, len: usize) {
+        if len == 0 {
+            return;
+        }
+        self.for_each_pos(|pos| {
+            if *pos > at {
+                *pos += len;
+            }
+        });
+    }
+
+    /// Shift marks around a deletion of `range`: marks past the end move
+    /// back by its length, marks strictly inside land on the range start
+    /// (a mark exactly at the start stays there).
+    pub fn adjust_delete(&mut self, range: Range<usize>) {
+        if range.start >= range.end {
+            return;
+        }
+        let len = range.end - range.start;
+        self.for_each_pos(|pos| {
+            if *pos >= range.end {
+                *pos -= len;
+            } else if *pos > range.start {
+                *pos = range.start;
+            }
+        });
+    }
+
+    /// Marks around a replacement (`gu`/`~`/`:s`): past-the-end marks shift
+    /// by the length delta, marks inside the replaced range land on its start.
+    pub fn adjust_replace(&mut self, range: Range<usize>, new_len: usize) {
+        if range.start >= range.end {
+            return;
+        }
+        let delta = new_len as isize - (range.end - range.start) as isize;
+        // case operators replace with equal-length text: keep inner marks at
+        // their relative position, like vim's column-preserving adjustment
+        let preserve_inner = new_len == range.end - range.start;
+        self.for_each_pos(move |pos| {
+            if *pos >= range.end {
+                *pos = (*pos as isize + delta).max(0) as usize;
+            } else if *pos > range.start && !preserve_inner {
+                *pos = range.start;
+            }
+        });
+    }
+
+    fn for_each_pos(&mut self, mut f: impl FnMut(&mut usize)) {
+        for pos in self.offsets.values_mut() {
+            f(pos);
+        }
+        if let Some((a, b)) = self.last_visual.as_mut() {
+            f(a);
+            f(b);
+        }
+        if let Some(p) = self.last_change.as_mut() {
+            f(p);
+        }
+        if let Some(p) = self.last_insert_exit.as_mut() {
+            f(p);
         }
     }
 }

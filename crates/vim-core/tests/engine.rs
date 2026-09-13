@@ -690,3 +690,66 @@ fn cjk_visual_put_replace_cursor_on_last_char() {
     assert_eq!(f.text(), "中文\n中文\n");
     assert_eq!(f.cursor(), 10); // start of the pasted 文 (was 11, mid-char)
 }
+
+// ---- marks shift with edits (ROADMAP task 2) -----------------------------------
+
+#[test]
+fn marks_shift_when_text_is_inserted_before_them() {
+    let mut f = Fixture::at("alpha\nbeta\n", 0, 0);
+    f.feed(["m", "a"]); // mark a at 0
+    f.feed(["j", "m", "b"]); // mark b at 6 (beta start)
+    // insert at buffer start: mark a (== insert point) stays, b moves
+    f.feed(["g", "g", "g", "I"]);
+    f.type_text("XX");
+    f.feed(["<Esc>"]);
+    assert_eq!(f.text(), "XXalpha\nbeta\n");
+    assert_eq!(f.vim.marks.get('a'), Some(0));
+    assert_eq!(f.vim.marks.get('b'), Some(8));
+}
+
+#[test]
+fn marks_inside_deleted_range_move_to_range_start() {
+    let mut f = Fixture::at("alpha\nbeta\ngamma\n", 1, 0);
+    f.feed(["m", "b"]); // mark b on "beta" (offset 6)
+    f.feed(["k", "d", "d"]); // delete line 0 ("alpha\n", 6 bytes)
+    assert_eq!(f.text(), "beta\ngamma\n");
+    assert_eq!(f.vim.marks.get('b'), Some(0));
+
+    // a mark strictly inside a deleted range lands on the range start
+    let mut f = Fixture::at("alpha beta\n", 0, 6);
+    f.feed(["m", "a"]); // inside "beta"
+    f.feed(["d", "w"]); // delete "beta"
+    assert_eq!(f.text(), "alpha \n");
+    assert_eq!(f.vim.marks.get('a'), Some(6));
+}
+
+#[test]
+fn visual_marks_shift_and_gv_tracks_the_text() {
+    let mut f = Fixture::at("aa\nbbbb\n", 1, 0);
+    f.feed(["v", "l", "l", "y"]); // select bbb, sets '< '>
+    assert_eq!(f.vim.marks.resolve('<'), Some(3));
+    assert_eq!(f.vim.marks.resolve('>'), Some(6)); // stored as an exclusive end
+    // open a line above: everything shifts by 2 ("x\n")
+    f.feed(["g", "g"]);
+    f.feed(["o"]);
+    f.type_text("x");
+    f.feed(["<Esc>"]);
+    assert_eq!(f.text(), "aa\nx\nbbbb\n");
+    assert_eq!(f.vim.marks.resolve('<'), Some(5));
+    assert_eq!(f.vim.marks.resolve('>'), Some(8)); // stored as an exclusive end
+    // gv restores the selection over the SHIFTED text
+    f.feed(["g", "v"]);
+    assert!(matches!(f.vim.mode(), vim_core::Mode::Visual { .. }));
+    assert_eq!(f.vim.visual_selection().map(|(a, c, _)| (a, c)), Some((5, 7)));
+}
+
+#[test]
+fn replace_ops_keep_marks_aligned() {
+    // g~~ replaces a range with same-length text: inner marks land on start
+    let mut f = Fixture::at("abcdef\n", 0, 2);
+    f.feed(["m", "c"]);
+    f.feed(["g", "~", "~"]);
+    assert_eq!(f.text(), "ABCDEF\n");
+    assert_eq!(f.vim.marks.get('c'), Some(2));
+}
+
