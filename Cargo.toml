@@ -1,0 +1,16 @@
+[workspace]
+resolver = "2"
+members = ["crates/vim-core", "crates/gpui-vim", "crates/gpui-vim-demo"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+authors = ["Lex"]
+
+[workspace.dependencies]
+regex = "1"
+ropey = "1"
+
+[profile.dev]
+opt-level = 1

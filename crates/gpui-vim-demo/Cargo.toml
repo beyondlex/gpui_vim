@@ -1,0 +1,17 @@
+[package]
+name = "gpui-vim-demo"
+description = "Reference host for vim-core: a minimal multi-line editor with full vim mode."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "gpui-vim-demo"
+path = "src/main.rs"
+
+[dependencies]
+vim-core = { path = "../vim-core" }
+gpui-vim = { path = "../gpui-vim" }
+gpui = "0.2"
+ropey = { workspace = true }

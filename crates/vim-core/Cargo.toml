@@ -1,0 +1,10 @@
+[package]
+name = "vim-core"
+description = "A host-agnostic Vim engine: modes, motions, operators, text objects, registers, search and marks."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+regex = { workspace = true }
