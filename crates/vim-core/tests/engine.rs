@@ -851,3 +851,89 @@ fn ex_history_is_per_prompt() {
     f.feed(["<up>"]);
     assert_eq!(f.vim.cmdline.buffer, "foo");
 }
+
+// ---- `.` repeat (ROADMAP task 4) ------------------------------------------------
+
+#[test]
+fn dot_repeats_simple_edits_and_multiplies_count() {
+    let mut f = Fixture::at("aaa bbb ccc\n", 0, 0);
+    f.feed(["x"]);
+    assert_eq!(f.text(), "aa bbb ccc\n");
+    f.feed(["."]);
+    assert_eq!(f.text(), "a bbb ccc\n");
+    // `3.` replays the recorded change 3 times
+    f.feed(["3", "."]);
+    assert_eq!(f.text(), "bb ccc\n");
+}
+
+#[test]
+fn dot_repeats_operator_motion() {
+    let mut f = Fixture::at("one two three four\n", 0, 0);
+    f.feed(["d", "w"]);
+    assert_eq!(f.text(), "two three four\n");
+    f.feed(["."]);
+    assert_eq!(f.text(), "three four\n");
+    f.feed(["."]);
+    assert_eq!(f.text(), "four\n");
+}
+
+#[test]
+fn dot_repeats_insert_session() {
+    // the classic: ciw<text><Esc>, move, `.` replaces the word there too
+    let mut f = Fixture::at("foo bar\nzap bar\n", 0, 0);
+    f.feed(["c", "i", "w"]);
+    f.type_text("hello");
+    f.feed(["<Esc>"]);
+    assert_eq!(f.text(), "hello bar\nzap bar\n");
+    // `j` keeps the column, so go to the start of the word first
+    f.feed(["j", "0", "."]);
+    assert_eq!(f.text(), "hello bar\nhello bar\n");
+    // cursor on the last char of the replayed insert (vim semantics)
+    assert_eq!(f.cursor(), 14);
+}
+
+#[test]
+fn dot_repeats_open_line() {
+    let mut f = Fixture::at("one\n", 0, 0);
+    f.feed(["o"]);
+    f.type_text("two");
+    f.feed(["<Esc>"]);
+    assert_eq!(f.text(), "one\ntwo\n");
+    f.feed(["."]);
+    assert_eq!(f.text(), "one\ntwo\ntwo\n");
+}
+
+#[test]
+fn dot_repeats_ex_substitute() {
+    let mut f = Fixture::at("foo\nkeep foo\nmore\n", 0, 0);
+    f.feed([":", "s", "/", "f", "o", "o", "/", "b", "a", "r", "/", "<CR>"]);
+    assert_eq!(f.text(), "bar\nkeep foo\nmore\n");
+    f.feed(["j", "."]);
+    assert_eq!(f.text(), "bar\nkeep bar\nmore\n");
+}
+
+#[test]
+fn dot_ignores_visual_canceled_and_non_changes() {
+    // visual changes are not repeatable in v1
+    let mut f = Fixture::at("abc def\n", 0, 0);
+    f.feed(["v", "l", "d"]);
+    assert_eq!(f.text(), "c def\n");
+    f.feed(["."]);
+    assert_eq!(f.text(), "c def\n");
+
+    // a canceled operator (d<Esc>) doesn't leak into the next change
+    let mut f = Fixture::at("abcd\n", 0, 0);
+    f.feed(["d", "<Esc>", "x"]);
+    assert_eq!(f.text(), "bcd\n");
+    f.feed(["."]);
+    assert_eq!(f.text(), "cd\n");
+
+    // motions/undo alone never become the last change
+    let mut f = Fixture::at("ab\ncd\n", 0, 1);
+    f.feed(["x"]); // last change = x
+    assert_eq!(f.text(), "a\ncd\n");
+    f.feed(["u"]); // undo
+    f.feed(["j"]); // keeps the column: cursor on 'd'
+    f.feed(["."]); // still replays x, not the motion
+    assert_eq!(f.text(), "ab\nc\n");
+}

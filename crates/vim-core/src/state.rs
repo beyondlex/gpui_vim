@@ -54,6 +54,22 @@ pub enum InsertKind {
     Change,             // c / s / S / C
 }
 
+/// Synthetic pending-key marker for a recorded [`RecordedStep::Text`]: when
+/// the `.` replay reaches it, the stashed text is applied through
+/// `insert_text_at_cursor` instead of the key pipeline. Not producible by
+/// `Key::parse`, so it can never collide with real keys or mappings.
+pub(crate) const DOT_TEXT_MARKER: &str = "\u{0}dot-text";
+
+/// One recorded step of the last change, for `.` repeat. Typed text is
+/// recorded as [`RecordedStep::Text`] (it never goes through the key
+/// pipeline — on macOS it arrives via the IME — so replay must not feed it
+/// back as keys either, or the host would insert it a second time).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum RecordedStep {
+    Key(Key),
+    Text(String),
+}
+
 /// State collected while a char-argument command waits for its key.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CharArgCmd {
@@ -103,6 +119,21 @@ pub struct VimState {
     pending_keys: VecDeque<Key>,
     map_depth: usize,
 
+    /// `.` repeat: the last change as replayable steps, plus the in-progress
+    /// recording. Text typed during an insert session is recorded as
+    /// [`RecordedStep::Text`]. Visual-mode changes are not repeatable (v1).
+    last_change: Vec<RecordedStep>,
+    recording: Vec<RecordedStep>,
+    recording_mutated: bool,
+    recording_blocked: bool,
+    /// Set while `.` replays: keys flow through the pipeline but recording
+    /// and committing are suppressed so `last_change` stays put.
+    replaying: bool,
+    replay_texts: VecDeque<String>,
+    /// Hosts suppress recording while IME composition previews mutate the
+    /// buffer; only the committed text becomes part of a `.` repeat.
+    recording_suppressed: bool,
+
     pub(crate) insert_session: Option<InsertSession>,
     pub(crate) insert_register_pending: bool,
 
@@ -150,6 +181,13 @@ impl VimState {
             last_find: None,
             pending_keys: VecDeque::new(),
             map_depth: 0,
+            last_change: Vec::new(),
+            recording: Vec::new(),
+            recording_mutated: false,
+            recording_blocked: false,
+            replaying: false,
+            replay_texts: VecDeque::new(),
+            recording_suppressed: false,
             insert_session: None,
             insert_register_pending: false,
             options: Options::default(),
@@ -235,6 +273,14 @@ impl VimState {
         &mut self.keymaps
     }
 
+    /// Host-side recording suppression: while set, text placed into the
+    /// buffer is NOT recorded for `.` repeat. Wrap IME composition preview
+    /// mutations (the raw pinyin) with this; only the committed text should
+    /// be repeatable.
+    pub fn set_recording_suppressed(&mut self, suppressed: bool) {
+        self.recording_suppressed = suppressed;
+    }
+
     /// Platform plumbing (see [`VimState::take_pending_unknown_char`]).
     pub fn set_pending_unknown_char(&mut self, c: Option<char>) {
         self.pending_unknown_char = c;
@@ -286,6 +332,11 @@ impl VimState {
         }
 
         if matches!(self.mode, Mode::CommandLine { .. }) {
+            // the pipeline loop never runs in cmdline mode — record here so
+            // `.` can replay Ex commands typed into the prompt
+            if !self.replaying {
+                self.recording.push(RecordedStep::Key(key.clone()));
+            }
             return self.cmdline_key(ctx, key);
         }
 
@@ -299,6 +350,7 @@ impl VimState {
             if guard > 500 {
                 self.pending_keys.clear();
                 self.reset_pending();
+                self.discard_change_record();
                 return KeyResult::Consumed;
             }
 
@@ -327,6 +379,16 @@ impl VimState {
             }
 
             self.pending_keys.pop_front();
+            // replayed text is applied inline, not through the key pipeline
+            if front.kind == KeyKind::Named(DOT_TEXT_MARKER.to_owned()) {
+                if let Some(text) = self.replay_texts.pop_front() {
+                    self.insert_text_at_cursor(ctx, &text);
+                }
+                continue;
+            }
+            if !self.replaying {
+                self.recording.push(RecordedStep::Key(front.clone()));
+            }
             match self.process_key(ctx, front) {
                 ProcessOutcome::Consumed => {}
                 ProcessOutcome::Unknown => any_unknown = true,
@@ -336,11 +398,17 @@ impl VimState {
                     }
                 }
             }
-            if matches!(self.mode, Mode::CommandLine { .. }) {
+            if matches!(self.mode, Mode::CommandLine { .. }) && !self.replaying {
                 break;
             }
         }
         self.map_depth = 0;
+        if self.pending_keys.is_empty() && self.replaying {
+            self.replaying = false;
+            self.recording.clear();
+            self.recording_mutated = false;
+            self.replay_texts.clear();
+        }
         if any_unknown {
             KeyResult::Unknown
         } else {
@@ -375,6 +443,9 @@ impl VimState {
 
     /// Open (or reuse) the undo group for the current logical command.
     pub(crate) fn begin_edit(&mut self, ctx: &mut Ctx) {
+        if !self.replaying {
+            self.recording_mutated = true;
+        }
         if self.open_undo.is_none() {
             self.undo_seq += 1;
             let id = self.undo_seq;
@@ -539,6 +610,7 @@ impl VimState {
         }
         self.marks.last_insert_exit = Some(self.cursor.offset);
         self.marks.set('^', self.cursor.offset);
+        self.commit_change_record();
         self.insert_session = None;
         self.end_edit();
         self.mode = Mode::Normal;
@@ -583,6 +655,16 @@ impl VimState {
             self.edit_insert(ctx, at, &expanded);
         }
         self.cursor.offset = at + expanded.len();
+        if self.insert_session.is_some()
+            && !self.replaying
+            && !self.recording_suppressed
+            && !text.is_empty()
+        {
+            match self.recording.last_mut() {
+                Some(RecordedStep::Text(existing)) => existing.push_str(text),
+                _ => self.recording.push(RecordedStep::Text(text.to_owned())),
+            }
+        }
         ctx.host.changed();
     }
 
@@ -594,6 +676,17 @@ impl VimState {
 
     /// Replace an arbitrary range (IME committed composition text).
     pub fn replace_range(&mut self, ctx: &mut Ctx, range: Range<usize>, text: &str) {
+        // an IME commit during an insert session is recorded as typed text
+        if self.insert_session.is_some()
+            && !self.replaying
+            && !self.recording_suppressed
+            && !text.is_empty()
+        {
+            match self.recording.last_mut() {
+                Some(RecordedStep::Text(existing)) => existing.push_str(text),
+                _ => self.recording.push(RecordedStep::Text(text.to_owned())),
+            }
+        }
         self.begin_edit(ctx);
         self.edit_replace(ctx, range.clone(), text);
         // place the cursor at the end of the replacement when it touches it
@@ -646,11 +739,13 @@ impl VimState {
             .map(|(a, c, k)| (a.min(c), c.max(a), k));
         self.visual_anchor = None;
         self.mode = Mode::Normal;
+        self.discard_change_record();
         ctx.host.changed();
     }
 
     /// Restore the cursor to a visual range start (used after visual ops).
     pub(crate) fn finish_visual_op(&mut self, ctx: &mut Ctx) {
+        self.discard_change_record();
         if let Some((anchor, cursor, kind)) = self.visual_selection() {
             let (lo, hi) = if anchor <= cursor { (anchor, cursor) } else { (cursor, anchor) };
             self.marks.last_visual = Some((lo, hi + 1));
@@ -784,6 +879,7 @@ impl VimState {
         //    `n`/`N` re-publishes them
         if key == Key::escape() || key == Key::ctrl_char('[') {
             self.reset_pending();
+            self.discard_change_record();
             if !self.search.last_matches.is_empty() {
                 crate::search::clear_highlights(self, ctx);
             }
@@ -1071,6 +1167,8 @@ impl VimState {
     /// Apply an operator to the current visual selection and leave visual mode
     /// (unless the operator opened insert, e.g. `c`).
     fn apply_visual_operator(&mut self, ctx: &mut Ctx, op: Operator) {
+        // visual-mode changes are not `.`-repeatable in v1
+        self.recording_blocked = true;
         let Some(span) = ops::span_from_visual(self, ctx.buf) else {
             ctx.host.bell();
             return;
@@ -1102,6 +1200,9 @@ impl VimState {
         }
         self.bump(ctx);
         self.reset_pending();
+        if self.insert_session.is_none() {
+            self.commit_change_record();
+        }
     }
 
     fn take_total_count(&mut self) -> usize {
@@ -1110,8 +1211,36 @@ impl VimState {
         pre * post
     }
 
+    /// End of a complete top-level command: commit the recording if the
+    /// command mutated the buffer. An active insert session commits later,
+    /// in `exit_insert` (the session is part of the same change).
+    pub(crate) fn commit_change_record(&mut self) {
+        if self.replaying {
+            return;
+        }
+        if self.recording_blocked {
+            self.discard_change_record();
+        } else if self.recording_mutated && !self.recording.is_empty() {
+            self.last_change = std::mem::take(&mut self.recording);
+            self.recording_mutated = false;
+        } else {
+            self.recording.clear();
+            self.recording_mutated = false;
+        }
+    }
+
+    /// Visual-mode changes are not repeatable in v1: discard the recording.
+    pub(crate) fn discard_change_record(&mut self) {
+        self.recording.clear();
+        self.recording_mutated = false;
+        self.recording_blocked = false;
+    }
+
     /// End of a complete top-level command.
     fn end_command(&mut self) {
+        if self.insert_session.is_none() {
+            self.commit_change_record();
+        }
         self.count = None;
         self.register = None;
         self.register_pending = false;
@@ -1296,6 +1425,31 @@ impl VimState {
                 let line = ctx.buf.offset_to_line(self.cursor.offset);
                 // hosts implement the actual scroll; notify with the line
                 ctx.host.scroll_to_line(line);
+            }
+            NormalCmd::RepeatChange => {
+                let count = self.take_total_count().max(1);
+                if self.last_change.is_empty() {
+                    ctx.host.bell();
+                    return;
+                }
+                let steps = self.last_change.clone();
+                self.replaying = true;
+                // the `.` key itself is already in the recording — drop it
+                // so the next change doesn't start with a stale `.` step
+                self.recording.clear();
+                self.recording_mutated = false;
+                for _ in 0..count {
+                    for step in &steps {
+                        match step {
+                            RecordedStep::Key(key) => self.pending_keys.push_back(key.clone()),
+                            RecordedStep::Text(text) => {
+                                self.replay_texts.push_back(text.clone());
+                                self.pending_keys
+                                    .push_back(Key::named(DOT_TEXT_MARKER));
+                            }
+                        }
+                    }
+                }
             }
             NormalCmd::RestoreVisual => {
                 if let Some((lo, hi, kind)) = self.last_visual {

@@ -93,6 +93,7 @@ impl VimState {
 
     fn cancel_cmdline(&mut self, ctx: &mut Ctx) {
         self.mode = Mode::Normal;
+        self.discard_change_record();
         self.cmdline.buffer.clear();
         // restore the previous highlight set
         let matches = self.search.last_matches.clone();
@@ -392,6 +393,8 @@ impl VimState {
             self.cursor.offset = crate::buffer::clamp_to_line_end(ctx.buf, offset);
             self.cursor.desired_col = None;
         }
+        // `.` repeats the substitution at the cursor's line
+        self.commit_change_record();
         true
     }
 }

@@ -864,9 +864,13 @@ impl gpui::EntityInputHandler for Editor {
     ) {
         // IME composition (e.g. pinyin): place the text directly and mark it,
         // bypassing the command pipeline — composing text is not commands.
+        // The raw pinyin is a preview: suppress `.` recording so only the
+        // committed text (replace_text_in_range) becomes repeatable.
         if !matches!(self.vim.mode(), Mode::Insert | Mode::Replace) {
             return;
         }
+        let (vim, _buf, _host) = gpui_vim::VimEditor::vim_parts(self);
+        vim.set_recording_suppressed(true);
         if let Some(previous) = self.marked_range.take() {
             let (vim, buf, host) = gpui_vim::VimEditor::vim_parts(self);
             let mut ctx = Ctx { buf, host };
@@ -884,6 +888,8 @@ impl gpui::EntityInputHandler for Editor {
             vim.insert_text_at_cursor(&mut ctx, new_text);
             self.marked_range = Some(start..start + new_text.len());
         }
+        let (vim, _buf, _host) = gpui_vim::VimEditor::vim_parts(self);
+        vim.set_recording_suppressed(false);
     }
 
     fn bounds_for_range(

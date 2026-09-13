@@ -179,7 +179,15 @@ changelist，平移规则相同。
 不要为新 prompt 单开模式分支。`:s` 的替换里 `\1` 后向引用交给 regex crate
 的 `replace_all`（`$1` 语法），文档中注明与 vim 的 `\1` 差异。
 
-### 任务 4：`.` 重复上一变更
+### 任务 4：`.` 重复上一变更 ✅ 已完成
+> 实现：`VimState` 录制「结构键 + 文本片段」两种步骤（`RecordedStep`）——插入
+> 期间的打字在 macOS 上不走按键管线（IME 路径），所以文本录为 `Text` 步骤，
+> 重放时经合成 marker（`DOT_TEXT_MARKER`，`Key::parse` 不可产生，无碰撞）直落
+> buffer，避免宿主二次插入。提交点：`end_command`/`complete_operator_with_span`
+> /`exit_insert`/`execute_ex`；visual 变更 v1 不可重复（`recording_blocked`）；
+> `Esc` 取消半截命令即丢弃；`N.` = 重放 N 次（与 vim 的乘法语义一致）；IME 合成
+> 预览经 `set_recording_suppressed` 抑制，只有上屏文本可重复。顺带修复：
+> cmdline 模式的按键此前不进录制路径；重放 `:` 时主循环不再提前 break。
 
 **现状**：无实现。`NormalCmd::Redo` 之外没有「上一个变更」的概念。
 
