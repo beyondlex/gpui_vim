@@ -55,6 +55,23 @@ fn main() {
                             stats.mappings, stats.options, stats.files
                         ));
                     }
+                    // demo defaults: gt/gT switch buffer tabs (the user rc
+                    // may override them — it loads first, these win). Every
+                    // tab has its OWN engine, so the mapping goes on all.
+                    editor.tabs_mut().iter_mut().for_each(|tab| {
+                        tab.vim.keymaps_mut().map_str_noremap(
+                            vim_core::keymap::ModeClass::Normal,
+                            "g t",
+                            ":action demo.tab-next<CR>",
+                            true,
+                        );
+                        tab.vim.keymaps_mut().map_str_noremap(
+                            vim_core::keymap::ModeClass::Normal,
+                            "g T",
+                            ":action demo.tab-prev<CR>",
+                            true,
+                        );
+                    });
                 });
                 schedule_smoke_test(&editor, cx);
                 editor

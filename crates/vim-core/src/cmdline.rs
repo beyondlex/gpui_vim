@@ -253,6 +253,18 @@ impl VimState {
             self.ex_set(ctx, rest.trim_start());
             return;
         }
+        if line == "bnext" || line == "bn" {
+            if !ctx.host.cycle_buffer(true) {
+                ctx.host.bell();
+            }
+            return;
+        }
+        if line == "bprev" || line == "bprevious" || line == "bp" {
+            if !ctx.host.cycle_buffer(false) {
+                ctx.host.bell();
+            }
+            return;
+        }
         // IdeaVim's host-action bridge: :action SomeId dispatches the host
         // application action by id (typically the RHS of a :map)
         if let Some(id) = line.strip_prefix("action").filter(|r| r.starts_with(' ')) {
@@ -267,7 +279,6 @@ impl VimState {
             }
             return;
         }
-        eprintln!("PROBE line={:?} r=({}, {})", line, range_first, range_last);
         // `:s` without a range defaults to the current line
         let range = range.unwrap_or_else(|| {
             let current = ctx.buf.offset_to_line(self.cursor.offset);

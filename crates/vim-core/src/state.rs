@@ -1307,7 +1307,6 @@ impl VimState {
                     return ProcessOutcome::Consumed;
                 }
                 keymap::Walk::Miss => {
-                    eprintln!("PROBE trie miss seq={:?}", self.cmd_seq.iter().map(|k| k.notation()).collect::<Vec<_>>());
                     // execute the longest terminal prefix, re-feed the rest
                     if let Some((len, kind)) = self.tables.longest_terminal(phase, &seq) {
                         self.cmd_seq.clear();

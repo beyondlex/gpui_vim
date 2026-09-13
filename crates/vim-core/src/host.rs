@@ -89,6 +89,12 @@ pub trait VimHost {
         ""
     }
 
+    /// `:bnext`/`:bprev`/`:bfirst`/`:blast` — the host owns the buffer list;
+    /// it switches and returns false when there is nothing to switch to.
+    fn cycle_buffer(&mut self, _forward: bool) -> bool {
+        true
+    }
+
     /// Bridge for `:map <Leader>x :action SomeAction<CR>` — dispatch a
     /// HOST application action by id (IdeaVim's `:action` bridge).
     /// `strict` is true for host-specific config layers (a miss is worth

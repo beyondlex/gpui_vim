@@ -23,6 +23,8 @@ pub struct HostState {
     pub pending_close: bool,
     /// `:action <id>` — the view should dispatch this host action.
     pub pending_action: Option<String>,
+    /// demo-reserved: tab cycling direction (Some(forward)).
+    pub pending_tab_cycle: Option<bool>,
     undo_stack: Vec<(ropey::Rope, usize)>,
     redo_stack: Vec<(ropey::Rope, usize)>,
     open_group: Option<u64>,
@@ -40,6 +42,7 @@ impl HostState {
             scrolled_to: None,
             pending_status: None,
             pending_close: false,
+            pending_tab_cycle: None,
             pending_action: None,
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
@@ -131,7 +134,21 @@ impl VimHost for HostState {
         self.pending_close = true;
     }
 
+    fn cycle_buffer(&mut self, forward: bool) -> bool {
+        self.pending_tab_cycle = Some(forward);
+        true
+    }
+
     fn dispatch_host_action_hinted(&mut self, id: &str, strict: bool) {
+        // demo-reserved ids: tab switching from mappings (gt/gT analog)
+        if id == "demo.tab-next" {
+            self.pending_tab_cycle = Some(true);
+            return;
+        }
+        if id == "demo.tab-prev" {
+            self.pending_tab_cycle = Some(false);
+            return;
+        }
         // strict layers report unknown ids; shared user layers ignore them
         // (mappings aimed at other apps are expected to miss)
         let known = matches!(

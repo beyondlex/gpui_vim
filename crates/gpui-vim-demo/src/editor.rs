@@ -69,10 +69,19 @@ actions!(demo, [Save, Copy, Paste]);
 
 
 
+/// One open buffer: its own engine, rope and host state (undo, clipboard,
+/// viewport). The Editor view switches between tabs; each keeps its own
+/// cursor, mode and history.
+pub struct BufferTab {
+    pub name: &'static str,
+    pub buffer: RopeBuffer,
+    pub host: HostState,
+    pub vim: VimState,
+}
+
 pub struct Editor {
-    buffer: RopeBuffer,
-    host: HostState,
-    vim: VimState,
+    tabs: Vec<BufferTab>,
+    active: usize,
     pub focus_handle: FocusHandle,
     scroll_handle: UniformListScrollHandle,
     /// UTF-8 byte range of IME marked (composing) text.
@@ -112,16 +121,29 @@ pub fn font() -> Font {
 impl Editor {
     /// Full buffer text (for debugging/tests).
     pub fn text(&self) -> String {
-        self.buffer.text()
+        self.tab().buffer.text()
     }
 
     pub fn new(initial_text: &str, cx: &mut Context<Self>) -> Self {
         let buffer = RopeBuffer::new(initial_text);
+        let vim = VimState::new();
         let host = HostState::new(buffer.shared().clone());
         let editor = Editor {
-            buffer,
-            host,
-            vim: VimState::new(),
+            tabs: vec![
+                BufferTab {
+                    name: "main",
+                    buffer,
+                    host,
+                    vim,
+                },
+                BufferTab {
+                    name: "scratch",
+                    buffer: RopeBuffer::new("~ scratch buffer\n"),
+                    host: HostState::new(RopeBuffer::new("").shared().clone()),
+                    vim: VimState::new(),
+                },
+            ],
+            active: 0,
             focus_handle: cx.focus_handle(),
             scroll_handle: UniformListScrollHandle::new(),
             marked_range: None,
@@ -156,35 +178,35 @@ impl Editor {
     // ---- read helpers --------------------------------------------------------
 
     fn mode_label(&self) -> String {
-        match self.vim.mode() {
+        match self.tab().vim.mode() {
             Mode::Normal => "NORMAL".to_owned(),
             Mode::Insert => "-- INSERT --".to_owned(),
             Mode::Replace => "-- REPLACE --".to_owned(),
             Mode::Visual { kind } => format!("-- {} --", kind.indicator()),
             Mode::CommandLine { prompt, .. } => match prompt {
-                ':' => format!(":{}", self.vim.cmdline.buffer),
-                other => format!("SEARCH {}{}", other, self.vim.cmdline.buffer),
+                ':' => format!(":{}", self.tab().vim.cmdline.buffer),
+                other => format!("SEARCH {}{}", other, self.tab().vim.cmdline.buffer),
             },
         }
     }
 
     fn line_col(&self) -> (usize, usize) {
-        let line = self.buffer.offset_to_line(self.vim.cursor_offset());
-        let col = self.vim.cursor_offset() - self.buffer.line_start(line);
+        let line = self.tab().buffer.offset_to_line(self.tab().vim.cursor_offset());
+        let col = self.tab().vim.cursor_offset() - self.tab().buffer.line_start(line);
         (line + 1, col)
     }
 
     /// Normalized visual-selection span (bytes) for rendering, if any.
     fn selection_span(&self) -> Option<(Range<usize>, bool)> {
-        let (anchor, cursor, kind) = self.vim.visual_selection()?;
+        let (anchor, cursor, kind) = self.tab().vim.visual_selection()?;
         let (lo, hi) = if anchor <= cursor { (anchor, cursor) } else { (cursor, anchor) };
         let linewise = kind == vim_core::VisualKind::Line;
         let range = if linewise {
-            let start = self.buffer.line_start(self.buffer.offset_to_line(lo));
-            let end = self.buffer.line_range(self.buffer.offset_to_line(hi)).end;
+            let start = self.tab().buffer.line_start(self.tab().buffer.offset_to_line(lo));
+            let end = self.tab().buffer.line_range(self.tab().buffer.offset_to_line(hi)).end;
             start..end
         } else {
-            let end = hi + self.buffer.char_at(hi).map(|c| c.len_utf8()).unwrap_or(0);
+            let end = hi + self.tab().buffer.char_at(hi).map(|c| c.len_utf8()).unwrap_or(0);
             lo..end
         };
         Some((range, linewise))
@@ -205,9 +227,9 @@ impl Editor {
         let dy = f32::from(position.y - area.origin.y);
         let dx = f32::from(position.x - area.origin.x - self.gutter_width());
         let row = (dy / LINE_HEIGHT).floor().max(0.0) as usize;
-        let line = (self.visible_lines.get().0 + row).min(self.buffer.line_count() - 1);
-        let line_start = self.buffer.line_start(line);
-        let line_end = self.buffer.line_end(line);
+        let line = (self.visible_lines.get().0 + row).min(self.tab().buffer.line_count() - 1);
+        let line_start = self.tab().buffer.line_start(line);
+        let line_end = self.tab().buffer.line_end(line);
 
         // Prefer the shaped geometry captured at paint time: exact hit
         // testing for CJK/emoji (a uniform cell width is off by 2x there).
@@ -224,7 +246,7 @@ impl Editor {
         let mut offset = line_start;
         let mut visual = 0usize;
         while offset < line_end && visual < col {
-            match self.buffer.next_char_offset(offset) {
+            match self.tab().buffer.next_char_offset(offset) {
                 Some(next) if next <= line_end => offset = next,
                 _ => break,
             }
@@ -236,9 +258,12 @@ impl Editor {
     fn on_mouse_down(&mut self, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         window.focus(&self.focus_handle);
         let offset = self.byte_at_point(event.position);
-        self.vim.set_cursor_offset(&self.buffer, offset);
+        {
+            let tab = self.tab_mut();
+            tab.vim.set_cursor_offset(&tab.buffer, offset);
+            tab.host.scrolled_to = None;
+        }
         self.dragging.set(true);
-        self.host.scrolled_to = None;
         self.mark_caret_activity();
         cx.notify();
     }
@@ -248,8 +273,11 @@ impl Editor {
             return;
         }
         let offset = self.byte_at_point(event.position);
-        let anchor = self.vim.cursor_offset();
-        self.vim.set_visual_range(&self.buffer, anchor, offset);
+        let anchor = self.tab().vim.cursor_offset();
+        {
+            let tab = self.tab_mut();
+            tab.vim.set_visual_range(&tab.buffer, anchor, offset);
+        }
         cx.notify();
     }
 
@@ -261,13 +289,13 @@ impl Editor {
     // ---- post-key flushes ------------------------------------------------------
 
     fn flush_clipboard(&mut self, cx: &mut Context<Self>) {
-        if let Some(text) = self.host.pending_clipboard_write.take() {
+        if let Some(text) = self.tab_mut().host.pending_clipboard_write.take() {
             cx.write_to_clipboard(ClipboardItem::new_string(text));
         }
     }
 
     fn flush_scroll(&mut self) {
-        if let Some(line) = self.host.scrolled_to.take() {
+        if let Some(line) = self.tab_mut().host.scrolled_to.take() {
             let (first, last) = self.visible_lines.get();
             if line < first || line > last {
                 self.scroll_handle.scroll_to_item(line, ScrollStrategy::Center);
@@ -278,14 +306,17 @@ impl Editor {
     /// `:w` status text, `:q` close requests and `:action <id>` host
     /// actions arrive through the host.
     fn flush_host_effects(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(status) = self.host.pending_status.take() {
+        if let Some(status) = self.tab_mut().host.pending_status.take() {
             self.status_message = Some(status);
         }
-        if self.host.pending_close {
-            self.host.pending_close = false;
+        if self.tab().host.pending_close {
+            self.tab_mut().host.pending_close = false;
             cx.quit();
         }
-        if let Some(id) = self.host.pending_action.take() {
+        if let Some(forward) = self.tab_mut().host.pending_tab_cycle.take() {
+            self.cycle_tab(forward);
+        }
+        if let Some(id) = self.tab_mut().host.pending_action.take() {
             match cx.build_action(&id, None) {
                 Ok(action) => {
                     // route through the focused element so the app's own
@@ -306,8 +337,8 @@ impl Editor {
     pub fn save(&mut self, _action: &Save, _window: &mut Window, cx: &mut Context<Self>) {
         self.status_message = Some(format!(
             "\"untitled\" {}L, {}B written (demo: not persisted)",
-            self.buffer.line_count(),
-            self.buffer.len()
+            self.tab().buffer.line_count(),
+            self.tab().buffer.len()
         ));
         cx.notify();
     }
@@ -315,7 +346,7 @@ impl Editor {
     pub fn copy(&mut self, _action: &Copy, _window: &mut Window, cx: &mut Context<Self>) {
         let text = self
             .selection_span()
-            .map(|(range, _)| self.buffer.slice(range))
+            .map(|(range, _)| self.tab().buffer.slice(range))
             .unwrap_or_default();
         if !text.is_empty() {
             let len = text.len();
@@ -337,9 +368,34 @@ impl Editor {
     }
 }
 
+impl Editor {
+    /// The active tab for &mut contexts (key handlers, IME).
+    pub fn tab_mut(&mut self) -> &mut BufferTab {
+        &mut self.tabs[self.active]
+    }
+    /// The active tab for &self contexts (render).
+    pub fn tab(&self) -> &BufferTab {
+        &self.tabs[self.active]
+    }
+    /// All tabs (for host-level setup that must apply to every engine).
+    pub fn tabs_mut(&mut self) -> &mut [BufferTab] {
+        &mut self.tabs
+    }
+    /// Switch to the next/previous buffer tab.
+    pub fn cycle_tab(&mut self, forward: bool) {
+        let n = self.tabs.len();
+        self.active = if forward {
+            (self.active + 1) % n
+        } else {
+            (self.active + n - 1) % n
+        };
+    }
+}
+
 impl gpui_vim::VimEditor for Editor {
     fn vim_parts(&mut self) -> (&mut VimState, &mut dyn vim_core::buffer::VimBufferMut, &mut dyn VimHost) {
-        (&mut self.vim, &mut self.buffer, &mut self.host)
+        let tab = &mut self.tabs[self.active];
+        (&mut tab.vim, &mut tab.buffer, &mut tab.host)
     }
 
     fn vim_accepts_keys(&self, window: &Window, cx: &gpui::App) -> bool {
@@ -389,13 +445,14 @@ impl Render for Editor {
             .bg::<gpui::Hsla>(gpui::Hsla::from(rgba(0xfffdf6ff)))
             .text_color(text_color())
             .track_focus(&self.focus_handle)
-            .key_context(gpui_vim::key_context(self.vim.mode()))
+            .key_context(gpui_vim::key_context(self.tab().vim.mode()))
             .on_action(cx.listener(Editor::save))
             .on_action(cx.listener(Editor::copy))
             .on_action(cx.listener(Editor::paste))
             .on_mouse_down(gpui::MouseButton::Left, cx.listener(Editor::on_mouse_down))
             .on_mouse_move(cx.listener(Editor::on_mouse_drag))
             .on_mouse_up(gpui::MouseButton::Left, cx.listener(Editor::on_mouse_up))
+            .child(self.render_tab_bar())
             .child(self.render_text_area(view))
             .child(self.render_status_bar())
     }
@@ -403,7 +460,7 @@ impl Render for Editor {
 
 impl Editor {
     fn render_text_area(&self, view: SharedView) -> impl IntoElement {
-        let line_count = self.buffer.line_count().max(24);
+        let line_count = self.tab().buffer.line_count().max(24);
         let focus = self.focus_handle.clone();
         let view2 = view.clone();
         div()
@@ -459,8 +516,8 @@ impl Editor {
     }
 
     fn gutter_text(&self, line: usize) -> String {
-        let current = self.buffer.offset_to_line(self.vim.cursor_offset());
-        let label = if self.vim.options.relativenumber && line != current {
+        let current = self.tab().buffer.offset_to_line(self.tab().vim.cursor_offset());
+        let label = if self.tab().vim.options.relativenumber && line != current {
             line.abs_diff(current).to_string()
         } else {
             (line + 1).to_string()
@@ -486,15 +543,15 @@ impl Editor {
 
     /// Build the paint-time overlay set for `line` (delegates to the library).
     fn overlays_for_line(&self, line: usize) -> gpui_vim::render::LineOverlays {
-        if line >= self.buffer.line_count() {
+        if line >= self.tab().buffer.line_count() {
             return gpui_vim::render::LineOverlays::default();
         }
         gpui_vim::render::compute_line_overlays(&gpui_vim::render::LineOverlayInputs {
-            vim: &self.vim,
-            buf: &self.buffer,
+            vim: &self.tab().vim,
+            buf: &self.tab().buffer,
             line,
-            search_highlights: &self.host.highlights,
-            search_current: self.host.current_highlight.clone(),
+            search_highlights: &self.tab().host.highlights,
+            search_current: self.tab().host.current_highlight.clone(),
             ime_marked: self.marked_range.clone(),
             caret_visible: self.caret_blinker.is_visible(),
             style: &self.overlay_style(),
@@ -502,9 +559,9 @@ impl Editor {
     }
 
     fn render_line(&self, line: usize, view: SharedView) -> impl IntoElement {
-        let in_range = line < self.buffer.line_count();
+        let in_range = line < self.tab().buffer.line_count();
         let text = if in_range {
-            SharedString::from(self.buffer.line_content(line))
+            SharedString::from(self.tab().buffer.line_content(line))
         } else {
             SharedString::from("~".to_owned())
         };
@@ -513,7 +570,7 @@ impl Editor {
         } else {
             format!("{:>width$} ", "~", width = self.gutter_cols() - 1)
         };
-        let gutter_active = in_range && line == self.buffer.offset_to_line(self.vim.cursor_offset());
+        let gutter_active = in_range && line == self.tab().buffer.offset_to_line(self.tab().vim.cursor_offset());
         // out-of-range lines (`~` placeholders) carry no overlays; the
         // library computation handles the caret blink phase itself
         let style = self.overlay_style();
@@ -575,10 +632,37 @@ impl Editor {
             )
     }
 
+    /// Tab bar above the text: one entry per buffer, active highlighted.
+    fn render_tab_bar(&self) -> impl IntoElement {
+        div()
+            .flex()
+            .flex_row()
+            .gap_1()
+            .px_2()
+            .py_1()
+            .bg(gpui::Hsla::from(rgba(0xefe9dcff)))
+            .children(self.tabs.iter().enumerate().map(|(i, tab)| {
+                let active = i == self.active;
+                div()
+                    .id(("tab", i as u64))
+                    .px_2()
+                    .rounded_sm()
+                    .text_size(px(11.0))
+                    .when(active, |d| {
+                        d.bg(accent())
+                            .text_color(gpui::Hsla::from(rgba(0xffffffff)))
+                    })
+                    .when(!active, |d| {
+                        d.text_color(gpui::Hsla::from(rgba(0x6b7280ff)))
+                    })
+                    .child(format!("{}: {}", i + 1, tab.name))
+            }))
+    }
+
     fn render_status_bar(&self) -> impl IntoElement {
         let (line, col) = self.line_col();
         let mode = self.mode_label();
-        let showcmd = self.vim.showcmd();
+        let showcmd = self.tab().vim.showcmd();
         div()
             .flex()
             .flex_row()
@@ -597,11 +681,12 @@ impl Editor {
                     .text_color(gpui::Hsla::from(rgba(0xffffffff)))
                     .child(mode),
             )
+            .child(div().child(format!("[{}]", self.tab().name)))
             .when(!showcmd.is_empty(), |bar| {
                 bar.child(div().child(format!("pending: {showcmd}")))
             })
             .child(div().flex_1())
-            .when_some(self.vim.macro_recording(), |bar, register| {
+            .when_some(self.tab().vim.macro_recording(), |bar, register| {
                 bar.child(
                     div()
                         .text_color(gpui::red())
@@ -629,9 +714,9 @@ impl gpui::EntityInputHandler for Editor {
         _window: &mut Window,
         _cx: &mut Context<Self>,
     ) -> Option<String> {
-        let start = self.buffer.utf16_to_byte(range_utf16.start);
-        let end = self.buffer.utf16_to_byte(range_utf16.end);
-        let text = self.buffer.slice(start..end);
+        let start = self.tab().buffer.utf16_to_byte(range_utf16.start);
+        let end = self.tab().buffer.utf16_to_byte(range_utf16.end);
+        let text = self.tab().buffer.slice(start..end);
         adjusted_range.replace(start..end);
         Some(text)
     }
@@ -642,12 +727,12 @@ impl gpui::EntityInputHandler for Editor {
         _window: &mut Window,
         _cx: &mut Context<Self>,
     ) -> Option<gpui::UTF16Selection> {
-        let cursor = self.buffer.byte_to_utf16(self.vim.cursor_offset());
+        let cursor = self.tab().buffer.byte_to_utf16(self.tab().vim.cursor_offset());
         let selection = self
             .selection_span()
             .map(|(range, _)| {
-                let start = self.buffer.byte_to_utf16(range.start);
-                let end = self.buffer.byte_to_utf16(range.end);
+                let start = self.tab().buffer.byte_to_utf16(range.start);
+                let end = self.tab().buffer.byte_to_utf16(range.end);
                 start..end
             })
             .unwrap_or(cursor..cursor);
@@ -670,7 +755,7 @@ impl gpui::EntityInputHandler for Editor {
         if range.is_empty() {
             return None;
         }
-        Some(self.buffer.byte_to_utf16(range.start)..self.buffer.byte_to_utf16(range.end))
+        Some(self.tab().buffer.byte_to_utf16(range.start)..self.tab().buffer.byte_to_utf16(range.end))
     }
 
     fn unmark_text(&mut self, _window: &mut Window, _cx: &mut Context<Self>) {
@@ -699,7 +784,7 @@ impl gpui::EntityInputHandler for Editor {
         // route it as a direct replacement. Otherwise the text is ordinary
         // typing: feed it through the engine pipeline (normal-mode commands,
         // `jk` mappings, search prompts all arrive here on macOS).
-        let concrete = self.buffer.clone();
+        let concrete = self.tab().buffer.clone();
         let explicit_range = range.and_then(|r| {
             let start = concrete.utf16_to_byte(r.start);
             let end = concrete.utf16_to_byte(r.end);
@@ -732,7 +817,7 @@ impl gpui::EntityInputHandler for Editor {
 
         let (vim, _buf, _host) = gpui_vim::VimEditor::vim_parts(self);
         let cursor_line = _buf.offset_to_line(vim.cursor_offset());
-        self.host.scrolled_to = Some(cursor_line);
+        self.tab_mut().host.scrolled_to = Some(cursor_line);
         self.mark_caret_activity();
         self.flush_scroll();
         cx.notify();
@@ -750,7 +835,7 @@ impl gpui::EntityInputHandler for Editor {
         // bypassing the command pipeline — composing text is not commands.
         // The raw pinyin is a preview: suppress `.` recording so only the
         // committed text (replace_text_in_range) becomes repeatable.
-        if !matches!(self.vim.mode(), Mode::Insert | Mode::Replace) {
+        if !matches!(self.tab().vim.mode(), Mode::Insert | Mode::Replace) {
             return;
         }
         let (vim, _buf, _host) = gpui_vim::VimEditor::vim_parts(self);
@@ -783,10 +868,10 @@ impl gpui::EntityInputHandler for Editor {
         _window: &mut Window,
         _cx: &mut Context<Self>,
     ) -> Option<Bounds<Pixels>> {
-        let byte = self.buffer.utf16_to_byte(range_utf16.start);
-        let line = self.buffer.offset_to_line(byte);
+        let byte = self.tab().buffer.utf16_to_byte(range_utf16.start);
+        let line = self.tab().buffer.offset_to_line(byte);
         let row = line.saturating_sub(self.visible_lines.get().0);
-        let col = byte - self.buffer.line_start(line);
+        let col = byte - self.tab().buffer.line_start(line);
         // shaped geometry gives the exact x for wide/clustered glyphs;
         // x_for_index is relative to the line text start (after the gutter)
         let within_line = self
@@ -813,6 +898,6 @@ impl gpui::EntityInputHandler for Editor {
         _cx: &mut Context<Self>,
     ) -> Option<usize> {
         let byte = self.byte_at_point(point);
-        Some(self.buffer.byte_to_utf16(byte))
+        Some(self.tab().buffer.byte_to_utf16(byte))
     }
 }
