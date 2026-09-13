@@ -236,7 +236,11 @@ enum LastChange {
 **验收**：矩形删除/复制/粘贴；跨 CJK 行的块选择列对齐；块插入后一次 `u`
 全部还原（不变量 2）。
 
-### 任务 6：`R` 替换模式
+### 任务 6：`R` 替换模式 ✅ 已完成
+> 实现：`InsertKind::Replace` + 命令表行；`begin_insert` 按 kind 进入
+> `Mode::Replace`；退出行为与 insert 一致（vim 实际是在最后一个被覆盖字符上，
+> 最初「R 不回退」的假设有误，已按真实 vim 行为实现）。与 `.` 协同：重放
+> `[R, Text, Esc]` 即重复覆盖。不支持 `{count}R`（重放 N 次），留给后续。
 
 **现状**：`Mode::Replace` 存在；`insert_text_at_cursor` 已有 overwrite 分支。
 缺进入命令与退出细节。方案：命令表加 `R → EnterInsert(Replace)`（新

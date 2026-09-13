@@ -937,3 +937,37 @@ fn dot_ignores_visual_canceled_and_non_changes() {
     f.feed(["."]); // still replays x, not the motion
     assert_eq!(f.text(), "ab\nc\n");
 }
+
+// ---- R replace mode (ROADMAP task 6) -------------------------------------------
+
+#[test]
+fn replace_mode_R_overwrites_and_keeps_cursor() {
+    let mut f = Fixture::at("hello world\n", 0, 0);
+    f.feed(["R"]);
+    assert_eq!(f.vim.mode(), vim_core::Mode::Replace);
+    f.type_text("HELP");
+    assert_eq!(f.text(), "HELPo world\n");
+    f.feed(["<Esc>"]);
+    // unlike insert mode, R does NOT step back on exit
+    assert_eq!(f.cursor(), 3); // on 'P', the last typed char
+    assert_eq!(f.vim.mode(), vim_core::Mode::Normal);
+}
+
+#[test]
+fn replace_mode_shorter_text_keeps_remainder_and_dot_repeats() {
+    let mut f = Fixture::at("hello\n", 0, 0);
+    f.feed(["R"]);
+    f.type_text("HI");
+    f.feed(["<Esc>"]);
+    assert_eq!(f.text(), "HIllo\n");
+    assert_eq!(f.cursor(), 1);
+    // `.` replays the overwrite at the cursor
+    f.feed(["l", "."]);
+    assert_eq!(f.text(), "HIHIo\n");
+    // overwrite cannot cross the line end: remainder is inserted
+    let mut f = Fixture::at("ab\n", 0, 1);
+    f.feed(["R"]);
+    f.type_text("XYZ");
+    f.feed(["<Esc>"]);
+    assert_eq!(f.text(), "aXYZ\n");
+}

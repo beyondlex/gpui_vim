@@ -290,6 +290,7 @@ fn build_rows() -> Vec<(Vec<Key>, Phase, CmdKind)> {
     b.normal(&["o"], CmdKind::EnterInsert(InsertKind::OpenLine { below: true }));
     b.normal(&["O"], CmdKind::EnterInsert(InsertKind::OpenLine { below: false }));
     b.normal(&["g", "I"], CmdKind::EnterInsert(InsertKind::InsertAtColumnZero));
+    b.normal(&["R"], CmdKind::EnterInsert(InsertKind::Replace));
 
     // ---- entering visual ---------------------------------------------------
     b.normal(&["v"], CmdKind::EnterVisual(crate::mode::VisualKind::Char));

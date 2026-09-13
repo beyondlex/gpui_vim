@@ -52,6 +52,7 @@ pub enum InsertKind {
     OpenLine { below: bool }, // o / O
     InsertAtColumnZero, // gI
     Change,             // c / s / S / C
+    Replace,            // R: overwrite instead of insert
 }
 
 /// Synthetic pending-key marker for a recorded [`RecordedStep::Text`]: when
@@ -89,11 +90,15 @@ pub struct Cursor {
 
 /// An in-progress insert session: one undo group + `'^` bookkeeping.
 #[derive(Clone, Copy, Debug)]
-#[allow(dead_code)]
 pub(crate) struct InsertSession {
+    /// Kept for future per-kind behaviors (e.g. `{count}R` repeating the
+    /// entered text); exit behavior is currently uniform across kinds.
+    #[allow(dead_code)]
     kind: InsertKind,
     #[allow(dead_code)]
     start_offset: usize,
+    /// The undo group id (the host merges all session edits into one group).
+    #[allow(dead_code)]
     group_id: u64,
 }
 
@@ -596,12 +601,17 @@ impl VimState {
             start_offset: self.cursor.offset,
             group_id,
         });
-        self.mode = Mode::Insert;
+        self.mode = if kind == InsertKind::Replace {
+            Mode::Replace
+        } else {
+            Mode::Insert
+        };
         self.cursor.desired_col = None;
     }
 
     pub(crate) fn exit_insert(&mut self, ctx: &mut Ctx) {
-        // back one char unless at the line start
+        // back one char unless at the line start (Replace mode too: vim
+        // leaves the cursor on the last replaced character)
         let line_start = ctx.buf.line_start(ctx.buf.offset_to_line(self.cursor.offset));
         if self.cursor.offset > line_start {
             if let Some(prev) = ctx.buf.prev_char_offset(self.cursor.offset) {
@@ -1544,7 +1554,7 @@ impl VimState {
     /// `start_insert` places the cursor per `InsertKind` then begins a session.
     pub(crate) fn start_insert(&mut self, ctx: &mut Ctx, kind: InsertKind) {
         match kind {
-            InsertKind::Insert | InsertKind::Change => {}
+            InsertKind::Insert | InsertKind::Change | InsertKind::Replace => {}
             InsertKind::Append => {
                 if !ctx.buf.at_line_end(self.cursor.offset) {
                     self.cursor.offset = ctx.buf.next_char_offset(self.cursor.offset).unwrap_or(self.cursor.offset);
