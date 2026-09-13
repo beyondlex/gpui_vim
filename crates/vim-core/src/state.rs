@@ -707,6 +707,12 @@ impl VimState {
         } else if !preserves_column {
             self.cursor.desired_col = None;
         }
+        if matches!(self.mode, Mode::Visual { .. }) {
+            if let Some(anchor) = self.visual_anchor {
+                let (a, c) = (anchor.min(self.cursor.offset), anchor.max(self.cursor.offset));
+                self.marks.active_visual = Some((a, c + 1));
+            }
+        }
         let line = ctx.buf.offset_to_line(self.cursor.offset);
         ctx.host.scroll_to_line(line);
     }
@@ -957,6 +963,7 @@ impl VimState {
     pub(crate) fn enter_visual(&mut self, kind: VisualKind) {
         self.visual_anchor = Some(self.cursor.offset);
         self.mode = Mode::Visual { kind };
+        self.marks.active_visual = Some((self.cursor.offset, self.cursor.offset));
     }
 
     pub(crate) fn exit_visual(&mut self, ctx: &mut Ctx) {
@@ -972,6 +979,7 @@ impl VimState {
             .visual_selection()
             .map(|(a, c, k)| (a.min(c), c.max(a), k));
         self.visual_anchor = None;
+        self.marks.active_visual = None;
         self.mode = Mode::Normal;
         self.discard_change_record();
         ctx.host.changed();
@@ -1266,6 +1274,11 @@ impl VimState {
                 }
                 KeyKind::Char(':') => {
                     self.begin_cmdline(':');
+                    // in visual mode, `:` seeds the cmdline with the last
+                    // selection's line range, like vim
+                    if matches!(self.mode, Mode::Visual { .. }) {
+                        self.cmdline.buffer.push_str("'<,'>");
+                    }
                     return ProcessOutcome::Consumed;
                 }
                 _ => {}
@@ -1396,6 +1409,12 @@ impl VimState {
         }
         if key.kind == KeyKind::Char('"') && key.modifiers.is_plain() {
             self.register_pending = true;
+            return ProcessOutcome::Consumed;
+        }
+        // `:` in visual mode seeds the cmdline with '<,'>
+        if key.modifiers.is_plain() && key.kind == KeyKind::Char(':') {
+            self.begin_cmdline(':');
+            self.cmdline.buffer.push_str("'<,'>");
             return ProcessOutcome::Consumed;
         }
         // visual-block I/A: insert at the block edge on every row

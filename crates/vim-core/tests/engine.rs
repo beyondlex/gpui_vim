@@ -1382,3 +1382,55 @@ fn host_layer_mapping_overrides_user_layer() {
     f.feed(["Q"]);
     assert_eq!(f.text(), ""); // dd won (whole line gone), not x ("eep")
 }
+
+// ---- Ex range syntax (tasks 1+2) -----------------------------------------------
+
+#[test]
+fn ex_range_numeric_and_offsets() {
+    // :1,2d deletes lines 1-2
+    let mut f = Fixture::at("a\nb\nc\nd\n", 0, 0);
+    f.feed([":", "1", ",", "2", "d", "<CR>"]);
+    assert_eq!(f.text(), "c\nd\n");
+    // :2,3s/x/y/ on remaining lines
+    let mut f = Fixture::at("a\nb\nb\nb\n", 0, 0);
+    f.feed([":", "2", ",", "3", "s", "/", "b", "/", "x", "/", "<CR>"]);
+    assert_eq!(f.text(), "a\nx\nx\nb\n");
+    // offset forms: :.,.+1d from the cursor line deletes lines 1-2
+    let mut f = Fixture::at("a\nb\nc\nd\n", 1, 0);
+    f.feed([":", ".", ",", ".", "+", "1", "d", "<CR>"]);
+    assert_eq!(f.text(), "a\nd\n");
+    // $ last line
+    let mut f = Fixture::at("a\nb\nc\n", 0, 0);
+    f.feed([":", "$", "d", "<CR>"]);
+    assert_eq!(f.text(), "a\nb\n");
+}
+
+#[test]
+fn ex_range_visual_marks() {
+    // '<,'>s applies to the last visual selection's lines
+    let mut f = Fixture::at("foo\nfoo\nfoo\n", 0, 0);
+    f.feed(["j", "V", "j", "<Esc>"]); // select lines 1-2
+    eprintln!("PROBE marks <={:?} >={:?}", f.vim.marks.resolve('<'), f.vim.marks.resolve('>'));
+    f.feed([":", "'", "<", ",", "'", ">", "s", "/", "f", "o", "o", "/", "x", "/", "<CR>"]);
+    assert_eq!(f.text(), "foo\nx\nx\n");
+}
+
+#[test]
+fn ex_range_invalid_bells_without_panic() {
+    let mut f = Fixture::at("a\n", 0, 0);
+    f.feed([":", "'", "z", "d", "<CR>"]); // unset mark
+    assert_eq!(f.text(), "a\n");
+    assert_eq!(f.vim.mode(), vim_core::Mode::Normal);
+}
+
+#[test]
+fn visual_colon_enters_range() {
+    // in visual mode `:` seeds the cmdline with '<,'>
+    let mut f = Fixture::at("foo\nfoo\nfoo\n", 0, 0);
+    f.feed(["j", "V", "j"]);
+    // simulate the visual ':' behavior through handle_key
+    f.feed([":"]);
+    assert_eq!(f.vim.cmdline.buffer, "'<,'>");
+    f.feed(["s", "/", "f", "o", "o", "/", "x", "/", "<CR>"]);
+    assert_eq!(f.text(), "foo\nx\nx\n");
+}

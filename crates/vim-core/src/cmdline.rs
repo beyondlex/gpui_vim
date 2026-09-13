@@ -208,6 +208,24 @@ impl VimState {
         if line.is_empty() {
             return;
         }
+        // the range prefix is parsed off before command dispatch
+        let (range_first, range_last, line) = match Self::parse_range(self, ctx, line) {
+            Some(parsed) => parsed,
+            None => {
+                ctx.host.status_message("E16: Invalid range");
+                ctx.host.bell();
+                return;
+            }
+        };
+        let range = if range_first == usize::MAX {
+            None
+        } else {
+            Some((range_first, range_last))
+        };
+        let line = line.trim();
+        if line.is_empty() {
+            return;
+        }
         match line {
             "noh" | "nohl" | "nohlsearch" => {
                 search::clear_highlights(self, ctx);
@@ -249,12 +267,155 @@ impl VimState {
             }
             return;
         }
-        if self.ex_substitute(ctx, line) {
+        eprintln!("PROBE line={:?} r=({}, {})", line, range_first, range_last);
+        // `:s` without a range defaults to the current line
+        let range = range.unwrap_or_else(|| {
+            let current = ctx.buf.offset_to_line(self.cursor.offset);
+            (current, current)
+        });
+        if self.ex_substitute(ctx, line, range) {
+            return;
+        }
+        // :{range}d[elete] — delete the range's lines
+        if let Some(rest) =
+            Self::boundary_cmd(line, "d").or_else(|| Self::boundary_cmd(line, "delete"))
+        {
+            let _register = rest.trim(); // named registers not supported
+            self.ex_delete_lines(ctx, range);
             return;
         }
         ctx.host
             .status_message(&format!("E492: Not an editor command: {line}"));
         ctx.host.bell();
+    }
+
+    /// `cmd` at the line start with a command boundary (end, space, `!`).
+    fn boundary_cmd<'a>(line: &'a str, cmd: &str) -> Option<&'a str> {
+        line.strip_prefix(cmd).filter(|rest| {
+            rest.is_empty() || rest.starts_with(' ') || rest.starts_with('!')
+        })
+    }
+
+    /// Parse an Ex range prefix: `%`, `.`, `$`, `'`, numbers, each with an
+    /// optional `+n`/`-n` offset, joined by `,` or `;`. Returns the resolved
+    /// inclusive line range and the remainder of the line (the command).
+    /// No prefix = an empty range (command decides its default).
+    fn parse_range<'a>(vim: &VimState, ctx: &Ctx, line: &'a str) -> Option<(usize, usize, &'a str)> {
+        fn base_line(spec: &str, vim: &VimState, ctx: &Ctx) -> Option<usize> {
+            match spec {
+                "." | "" => Some(ctx.buf.offset_to_line(vim.cursor.offset)),
+                "%" => return None, // handled by the caller
+                "$" => Some(ctx.buf.line_count().saturating_sub(1)),
+                "'<" => vim
+                    .marks
+                    .active_visual()
+                    .map(|(a, _)| ctx.buf.offset_to_line(a))
+                    .or_else(|| vim.marks.resolve('<').map(|off| ctx.buf.offset_to_line(off))),
+                "'>" => vim
+                    .marks
+                    .active_visual()
+                    .map(|(_, b)| ctx.buf.offset_to_line(b.saturating_sub(1)))
+                    .or_else(|| vim.marks.resolve('>').map(|off| ctx.buf.offset_to_line(off))),
+                other => other.parse::<usize>().ok().map(|n| n.saturating_sub(1)),
+            }
+        }
+        fn with_offset(base: usize, spec: &str) -> usize {
+            match spec.strip_prefix('-') {
+                Some(n) => base.saturating_sub(n.parse::<usize>().unwrap_or(0)),
+                None => match spec.strip_prefix('+') {
+                    Some(n) => base + n.parse::<usize>().unwrap_or(0),
+                    _ => base,
+                },
+            }
+        }
+        // split off the range part: a command starts at the first letter
+        // that is not part of a `'<` / `'>` mark spec. Scan the allowed
+        // range alphabet manually.
+        let bytes = line.as_bytes();
+        let mut range_end = 0usize;
+        let mut i = 0usize;
+        while i < bytes.len() {
+            let c = bytes[i] as char;
+            if c == '\'' {
+                // mark spec: ' + one char
+                i += 2;
+                range_end = i.min(bytes.len());
+                continue;
+            }
+            if c.is_ascii_digit() || matches!(c, '.' | '$' | '%' | ',' | ';' | '+' | '-' | '>' | ' ') {
+                i += 1;
+                range_end = i;
+                continue;
+            }
+            break;
+        }
+        let (range_part, rest) = line.split_at(range_end);
+        if range_part.is_empty() {
+            // no prefix: the command applies its own default (usize::MAX is
+            // not a real line number)
+            return Some((usize::MAX, usize::MAX, line));
+        }
+        if range_part.trim_end() == "%" {
+            let last = ctx.buf.line_count().saturating_sub(1);
+            return Some((0, last, rest.trim_start()));
+        }
+        let last = ctx.buf.line_count().saturating_sub(1);
+        let mut first: Option<usize> = None;
+        let mut last_line: Option<usize> = None;
+        let mut previous: Option<usize> = None;
+        for part in range_part.split([',', ';']) {
+            let part = part.trim();
+            if part.is_empty() {
+                continue;
+            }
+            let (base_str, off_str) = part
+                .find(['+', '-'])
+                .map(|i| part.split_at(i))
+                .unwrap_or((part, ""));
+            // a bare `+n` / `-n` offsets the PREVIOUS address (vim: `.,+1`
+            // is two addresses); an absent previous defaults to the cursor
+            let value = match base_line(base_str, vim, ctx) {
+                Some(base) => with_offset(base, off_str),
+                None if base_str.is_empty() => {
+                    let base = previous.unwrap_or_else(|| ctx.buf.offset_to_line(vim.cursor.offset));
+                    with_offset(base, off_str)
+                }
+                None => return None,
+            };
+            let value = value.min(last);
+            previous = Some(value);
+            if first.is_none() {
+                first = Some(value);
+            }
+            last_line = Some(value);
+        }
+        match (first, last_line) {
+            (Some(first), Some(last)) => {
+                Some((first.min(last), first.max(last), rest.trim_start()))
+            }
+            _ => None,
+        }
+    }
+
+    /// `:{range}d` — delete the lines of the range (single undo step),
+    /// cursor to the first non-blank of the line that took their place.
+    fn ex_delete_lines(&mut self, ctx: &mut Ctx, (first, last): (usize, usize)) {
+        let last = last.min(ctx.buf.line_count().saturating_sub(1));
+        let start = ctx.buf.line_start(first);
+        let end = ctx.buf.line_range(last).end;
+        if start >= end {
+            ctx.host.bell();
+            return;
+        }
+        self.begin_edit(ctx);
+        self.edit_delete(ctx, start..end);
+        self.bump(ctx);
+        let below = ctx.buf.line_count().saturating_sub(1);
+        let line = first.min(below);
+        self.cursor.offset = ctx.buf.first_non_blank(line);
+        self.cursor.desired_col = None;
+        ctx.host.changed();
+        self.commit_change_record();
     }
 
     /// `:set` with space-separated items: `name`, `noname`, `name!`,
@@ -290,12 +451,8 @@ impl VimState {
     /// (default: first match per line). Replacement follows Rust regex
     /// expansion (`$1`, documented divergence from vim's `\1`). Returns
     /// false when `line` is not a substitute command at all.
-    fn ex_substitute(&mut self, ctx: &mut Ctx, line: &str) -> bool {
-        let (whole_file, rest) = match line.strip_prefix('%') {
-            Some(rest) => (true, rest),
-            None => (false, line),
-        };
-        let Some(after_s) = rest.strip_prefix('s') else {
+    fn ex_substitute(&mut self, ctx: &mut Ctx, line: &str, range: (usize, usize)) -> bool {
+        let Some(after_s) = line.strip_prefix('s') else {
             return false;
         };
         let Some(sep) = after_s.chars().next() else {
@@ -340,16 +497,8 @@ impl VimState {
         };
         let global = flags.contains('g');
 
-        let first_line = if whole_file {
-            0
-        } else {
-            ctx.buf.offset_to_line(self.cursor.offset)
-        };
-        let last_line = if whole_file {
-            ctx.buf.line_count().saturating_sub(1)
-        } else {
-            first_line
-        };
+        let (first_line, last_line) = range;
+
 
         let range_start = ctx.buf.line_start(first_line);
         let range_end = ctx.buf.line_end(last_line);

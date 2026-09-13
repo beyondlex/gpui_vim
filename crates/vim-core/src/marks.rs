@@ -9,6 +9,9 @@ pub struct Marks {
     offsets: HashMap<char, usize>,
     /// Range of the last visual selection (`< .. >`).
     pub last_visual: Option<(usize, usize)>,
+    /// Live `(anchor, cursor_end)` of the current visual selection, kept in
+    /// sync by the engine (used for `'<`/`'>` inside visual mode).
+    pub(crate) active_visual: Option<(usize, usize)>,
     /// Position of the last change (`.`).
     pub last_change: Option<usize>,
     /// Position where the last insert session ended (`^`).
@@ -34,6 +37,13 @@ impl Marks {
         if name.is_ascii_alphabetic() || matches!(name, '^' | '.') {
             self.offsets.insert(name, offset);
         }
+    }
+
+    /// Live bounds of the ACTIVE visual selection (anchor..cursor+1), if any.
+    pub fn active_visual(&self) -> Option<(usize, usize)> {
+        // set by the engine each time the selection changes; keeps resolve()
+        // valid inside visual mode, before '< '/'> are written on exit
+        self.active_visual
     }
 
     /// Resolve special names used by `` ` ``/`'` jumps.
