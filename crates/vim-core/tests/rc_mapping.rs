@@ -41,6 +41,30 @@ impl VimHost for H {
 }
 
 #[test]
+fn user_style_three_key_leader_mapping_fires() {
+    // 复现用户场景：~/.config/pandagit/vimrc 里 `map <Leader>ah :action AcceptLeft<CR>`
+    //（文件内无 let mapleader → <Leader> = 库默认反斜杠）
+    let text = "map <Leader>ah :action AcceptLeft<CR>\nmap <Leader>al :action AcceptRight<CR>";
+    let cfg = vim_core::config::parse(text);
+    assert_eq!(cfg.mappings.len(), 4, "两条 map × Normal/Visual");
+
+    let mut vim = VimState::new();
+    vim.apply_config(&cfg);
+    let mut buf = B("x\n".to_string());
+    let mut host = H::default();
+    for k in ["\\", "a", "h"] {
+        let key = Key::parse(k);
+        let mut ctx = Ctx { buf: &mut buf, host: &mut host };
+        vim.handle_key(&mut ctx, key);
+    }
+    assert_eq!(
+        host.actions.borrow().as_slice(),
+        ["AcceptLeft"],
+        "三键 leader 和弦应派发 :action"
+    );
+}
+
+#[test]
 fn leader_mapping_parses_and_fires() {
     let cfg = vim_core::config::parse("noremap <Leader>d :action Foo<CR>");
     eprintln!("mappings={}", cfg.mappings.len());
