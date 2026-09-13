@@ -758,17 +758,30 @@ impl gpui::EntityInputHandler for Editor {
         _window: &mut Window,
         _cx: &mut Context<Self>,
     ) -> Option<Range<usize>> {
-        self.marked_range
-            .as_ref()
-            .map(|range| {
-                let start = self.buffer.byte_to_utf16(range.start);
-                let end = self.buffer.byte_to_utf16(range.end);
-                start..end
-            })
+        let range = self.marked_range.as_ref()?;
+        // An empty marked range means the composition has ended (the IME
+        // cancels with an empty setMarkedText). Reporting it as Some would
+        // keep gpui's `is_composing` true forever, routing every keystroke —
+        // including Esc — to the IME instead of the engine.
+        if range.is_empty() {
+            return None;
+        }
+        Some(self.buffer.byte_to_utf16(range.start)..self.buffer.byte_to_utf16(range.end))
     }
 
     fn unmark_text(&mut self, _window: &mut Window, _cx: &mut Context<Self>) {
-        self.marked_range = None;
+        // A direct unmark (commit tail, or a cancel path that skips the
+        // empty setMarkedText) leaves the composition text in the buffer —
+        // remove it so a discarded composition can't leak into the document.
+        // After a commit the range is already gone (the commit replaced it),
+        // so this is a no-op there.
+        if let Some(range) = self.marked_range.take() {
+            if range.start < range.end {
+                let (vim, buf, host) = gpui_vim::VimEditor::vim_parts(self);
+                let mut ctx = Ctx { buf, host };
+                vim.replace_range(&mut ctx, range, "");
+            }
+        }
     }
 
     fn replace_text_in_range(
@@ -789,7 +802,20 @@ impl gpui::EntityInputHandler for Editor {
             (start < end).then_some(start..end)
         });
 
-        if let Some(range) = explicit_range {
+        // Committing a composition (`insertText:` while marked pinyin is on
+        // screen) must REPLACE the marked range: the raw pinyin sitting there
+        // is a preview, not document text. The committed text also bypasses
+        // the key pipeline — dispatch_text here could fire insert-mode
+        // mappings (e.g. `jk`) from composed characters.
+        let committing = explicit_range.is_none()
+            && !text.is_empty()
+            && self.marked_range.as_ref().is_some_and(|r| !r.is_empty());
+        if committing {
+            let marked = self.marked_range.take().unwrap();
+            let (vim, buf, host) = gpui_vim::VimEditor::vim_parts(self);
+            let mut ctx = Ctx { buf, host };
+            vim.replace_range(&mut ctx, marked, text);
+        } else if let Some(range) = explicit_range {
             let (vim, buf, host) = gpui_vim::VimEditor::vim_parts(self);
             if matches!(vim.mode(), Mode::Insert | Mode::Replace) {
                 let mut ctx = Ctx { buf, host };
@@ -824,8 +850,12 @@ impl gpui::EntityInputHandler for Editor {
             let (vim, buf, host) = gpui_vim::VimEditor::vim_parts(self);
             let mut ctx = Ctx { buf, host };
             vim.replace_range(&mut ctx, previous.clone(), new_text);
-            let end = previous.start + new_text.len();
-            self.marked_range = Some(previous.start..end);
+            // An empty new_text is the IME cancelling the composition: drop
+            // the marker entirely (an empty Some would wedge gpui's
+            // is_composing high and steal every later keystroke).
+            let start = previous.start;
+            let end = start + new_text.len();
+            self.marked_range = (start < end).then_some(start..end);
         } else {
             let (vim, buf, host) = gpui_vim::VimEditor::vim_parts(self);
             let mut ctx = Ctx { buf, host };

@@ -66,6 +66,12 @@ cargo run -p gpui-vim-demo
 
 ### 任务 1：中文/日文 IME 合成输入完全不可用
 
+> **状态：代码已实现（commit 待验收）。** 四处修复都在 demo `editor.rs` 的
+> `EntityInputHandler` 实现里：`marked_text_range` 空区间返回 None、
+> `unmark_text` 删除残留合成文本、`replace_text_in_range` 提交时替换 marked
+> 区间（不经 `dispatch_text`）、`replace_and_mark_text_in_range` 不再存储空
+> 区间。等待下方「验收」一节的手动拼音输入法验证后可移除本状态行。
+
 **症状**（已由用户在中文拼音输入法下复现）：insert 模式中切换到拼音输入法后，
 (1) Esc 退不出 insert 模式；(2) 候选词上屏后，已输入的拼音字母残留在 buffer
 里，汉字出现在错误位置（形如 `nihao你好`）。
