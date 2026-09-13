@@ -14,7 +14,7 @@
 use crate::buffer::{clamp_to_line_end, VimBuffer, VimBufferMut};
 use crate::cmdline::Cmdline;
 use crate::host::VimHost;
-use crate::key::{Key, KeyKind};
+use crate::key::{Key, KeyKind, Modifiers};
 use crate::keymap::{self, Keymaps, MappingMatch};
 use crate::marks::Marks;
 use crate::mode::{Mode, VisualKind};
@@ -261,8 +261,16 @@ impl VimState {
     // ---- top-level entry ---------------------------------------------------
 
     /// Feed one keystroke into the engine.
-    pub fn handle_key(&mut self, ctx: &mut Ctx, key: Key) -> KeyResult {
-        // host command chords (Cmd-…) always pass through
+    pub fn handle_key(&mut self, ctx: &mut Ctx, mut key: Key) -> KeyResult {
+        // an escape is an escape no matter which modifiers the platform
+        // layered on top of it (hyper-key taps like caps-lock→Esc mappings
+        // can release their modifiers in the same event). This runs *before*
+        // the Cmd passthrough so `<D-Esc>` still exits insert mode.
+        if matches!(&key.kind, KeyKind::Named(name) if name == "escape") {
+            key.modifiers = Modifiers::NONE;
+        }
+
+        // other host command chords (Cmd-…) always pass through
         if key.modifiers.platform {
             return KeyResult::Unknown;
         }

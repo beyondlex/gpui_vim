@@ -458,6 +458,23 @@ fn user_mappings() {
 }
 
 #[test]
+fn escape_with_any_modifiers_exits_modes() {
+    // hyper-key taps (e.g. caps-lock -> Esc in Karabiner) can deliver the
+    // escape with command modifiers still attached
+    let mut f = Fixture::at("abc", 0, 0);
+    f.feed(["i"]);
+    assert_eq!(f.vim.mode(), vim_core::Mode::Insert);
+    f.feed(["<D-Esc>"]);
+    assert_eq!(f.vim.mode(), vim_core::Mode::Normal);
+
+    let mut f = Fixture::at("abc", 0, 0);
+    f.feed(["v"]);
+    assert_eq!(f.vim.mode(), vim_core::Mode::Visual { kind: vim_core::VisualKind::Char });
+    f.feed(["<C-M-S-Esc>"]);
+    assert_eq!(f.vim.mode(), vim_core::Mode::Normal);
+}
+
+#[test]
 fn unknown_keys_fall_through() {
     // ctrl chords the engine does not know go to the host
     let mut f = Fixture::at("abc", 0, 0);

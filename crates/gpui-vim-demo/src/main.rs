@@ -31,10 +31,12 @@ fn main() {
             },
             |window, cx| {
                 let editor = cx.new(|cx| Editor::new(SAMPLE, cx));
-                // the engine only intercepts keys while the editor is focused
                 window.focus(&editor.read(cx).focus_handle);
-                // route every keystroke through the vim engine first
-                let _subscription = gpui_vim::attach(&editor, cx);
+                // route every keystroke through the vim engine first.
+                // The Subscription MUST be kept alive — it unsubscribes on
+                // drop — so store it on the view instead of a local.
+                let subscription = gpui_vim::attach(&editor, cx);
+                editor.update(cx, |editor, _cx| editor.set_vim_subscription(subscription));
                 schedule_smoke_test(&editor, cx);
                 editor
             },

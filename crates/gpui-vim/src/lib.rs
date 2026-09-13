@@ -67,8 +67,15 @@ pub fn dispatch_key<E: VimEditor>(editor: &mut E, key: Key) -> KeyResult {
 pub fn attach<E: VimEditor>(entity: &Entity<E>, cx: &mut App) -> Subscription {
     let weak: WeakEntity<E> = entity.downgrade();
     cx.intercept_keystrokes(move |event, window, cx| {
+        if debug_keys() {
+            eprintln!("[gpui-vim] interceptor fired: {:?}", event.keystroke);
+        }
         let Some(editor) = weak.upgrade() else { return };
-        if !editor.read(cx).vim_accepts_keys(window, cx) {
+        let accepts = editor.read(cx).vim_accepts_keys(window, cx);
+        if debug_keys() {
+            eprintln!("[gpui-vim]   accepts={accepts}");
+        }
+        if !accepts {
             return;
         }
         let key = to_core_key(&event.keystroke);

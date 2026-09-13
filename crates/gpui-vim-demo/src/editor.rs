@@ -91,6 +91,11 @@ pub struct Editor {
     char_width: Cell<f32>,
     dragging: Cell<bool>,
     status_message: Option<String>,
+    /// Keeps the keystroke interceptor alive. `gpui::Subscription` detaches
+    /// on drop, so it must outlive the engine's use — storing it in the view
+    /// (instead of a local in `main`) is what makes the engine keep working
+    /// after window setup.
+    _vim_subscription: Option<gpui::Subscription>,
 }
 
 pub fn font() -> Font {
@@ -124,7 +129,13 @@ impl Editor {
             char_width: Cell::new(8.4),
             dragging: Cell::new(false),
             status_message: None,
+            _vim_subscription: None,
         }
+    }
+
+    /// Store the `attach()` subscription on the view (see field docs).
+    pub fn set_vim_subscription(&mut self, subscription: gpui::Subscription) {
+        self._vim_subscription = Some(subscription);
     }
 
     // ---- read helpers --------------------------------------------------------

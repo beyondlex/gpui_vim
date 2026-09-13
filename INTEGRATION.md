@@ -98,7 +98,13 @@ impl gpui_vim::VimEditor for Editor {
 cx.open_window(options, |window, cx| {
     let editor = cx.new(|cx| Editor::new(cx));
     window.focus(&editor.read(cx).focus_handle);   // engine needs focus to intercept
-    let _sub = gpui_vim::attach(&editor, cx);      // keystroke interceptor
+    let subscription = gpui_vim::attach(&editor, cx);
+    // KEEP THE SUBSCRIPTION ALIVE - it unsubscribes on drop! A local
+    // `let _sub = ...` inside this closure dies when the closure returns,
+    // silently detaching the engine: printable keys keep working (they
+    // arrive via the text path) but Esc / arrows / Ctrl-chords never reach
+    // the engine, so you can never leave insert mode. Store it on the view:
+    editor.update(cx, |editor, _cx| editor.set_vim_subscription(subscription));
     editor
 })?;
 ```
@@ -184,6 +190,11 @@ vim.search.pattern.clone();
 ```
 
 ## Notes & current limitations
+
+- **Esc through hyper keys**: the engine treats *any* `<Esc>` as escape,
+  regardless of modifiers (even `Cmd`), so caps-lock→Esc hyper taps
+  (Karabiner `to_if_alone`) exit insert/visual reliably even if modifier
+  release ordering attaches stray modifiers to the event.
 
 - The engine is single-caret; visual-block and multi-cursor are on the roadmap.
 - Search patterns use Rust `regex` syntax (covers most vim "magic" patterns).

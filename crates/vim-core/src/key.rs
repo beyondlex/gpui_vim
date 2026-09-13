@@ -175,10 +175,26 @@ impl Key {
     }
 
     fn parse_angle(inner: &str) -> Key {
-        let (modifiers, rest) = match inner.strip_prefix("C-") {
-            Some(rest) => (Modifiers::ctrl(), rest),
-            None => (Modifiers::NONE, inner),
-        };
+        // strip any combination of C- M- D- S- prefixes
+        let mut modifiers = Modifiers::NONE;
+        let mut rest = inner;
+        loop {
+            if let Some(r) = rest.strip_prefix("C-") {
+                modifiers.control = true;
+                rest = r;
+            } else if let Some(r) = rest.strip_prefix("M-") {
+                modifiers.alt = true;
+                rest = r;
+            } else if let Some(r) = rest.strip_prefix("D-") {
+                modifiers.platform = true;
+                rest = r;
+            } else if let Some(r) = rest.strip_prefix("S-") {
+                modifiers.shift = true;
+                rest = r;
+            } else {
+                break;
+            }
+        }
         let key = match rest.to_ascii_lowercase().as_str() {
             "esc" => Key::named("escape"),
             "cr" | "return" | "enter" => Key::named("enter"),
