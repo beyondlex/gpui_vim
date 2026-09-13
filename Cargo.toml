@@ -11,6 +11,7 @@ authors = ["Lex"]
 [workspace.dependencies]
 regex = "1"
 ropey = "1"
+unicode-width = "0.2"
 
 [profile.dev]
 opt-level = 1

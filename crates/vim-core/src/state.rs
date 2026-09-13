@@ -332,10 +332,7 @@ impl VimState {
     pub(crate) fn desired_column(&self, buf: &dyn VimBuffer) -> usize {
         match self.cursor.desired_col {
             Some(col) => col,
-            None => {
-                let line = buf.offset_to_line(self.cursor.offset);
-                self.cursor.offset - buf.line_start(line)
-            }
+            None => crate::buffer::display_column(buf, self.cursor.offset),
         }
     }
 
@@ -578,7 +575,9 @@ impl VimState {
         motion: Motion,
         result: crate::motions::MotionResult,
     ) {
-        self.cursor.offset = clamp_to_line_end(ctx.buf, result.offset);
+        // the goal column must be read BEFORE the cursor lands: once the
+        // cursor sits on a wide char that clamped it, the derived column
+        // would be the clamped one, not the original (vim's wv_col)
         let preserves_column = matches!(
             motion,
             Motion::Up
@@ -588,13 +587,19 @@ impl VimState {
                 | Motion::PageUp
                 | Motion::PageDown
         );
+        let desired = if preserves_column {
+            Some(self.desired_column(ctx.buf))
+        } else {
+            None
+        };
+        self.cursor.offset = clamp_to_line_end(ctx.buf, result.offset);
         if result.kind == crate::motions::MotionKind::Linewise {
             if preserves_column {
-                // keep desired column, clamp offset into the line
+                let desired = desired.unwrap();
+                self.cursor.desired_col = Some(desired);
                 let line = ctx.buf.offset_to_line(self.cursor.offset);
-                let desired = self.desired_column(ctx.buf);
-                let end = ctx.buf.line_end(line);
-                self.cursor.offset = ctx.buf.line_start(line) + desired.min(end - ctx.buf.line_start(line));
+                self.cursor.offset =
+                    crate::buffer::offset_for_display_column(ctx.buf, line, desired);
             } else {
                 let line = ctx.buf.offset_to_line(self.cursor.offset);
                 self.cursor.offset = ctx.buf.first_non_blank(line);
@@ -1673,7 +1678,11 @@ impl VimState {
             InsertKind::Insert | InsertKind::Change | InsertKind::Replace => {}
             InsertKind::Append => {
                 if !ctx.buf.at_line_end(self.cursor.offset) {
-                    self.cursor.offset = ctx.buf.next_char_offset(self.cursor.offset).unwrap_or(self.cursor.offset);
+                    self.cursor.offset = crate::buffer::next_grapheme_offset(
+                        ctx.buf,
+                        self.cursor.offset,
+                    )
+                    .unwrap_or(self.cursor.offset);
                 }
             }
             InsertKind::InsertFirstNonBlank => {

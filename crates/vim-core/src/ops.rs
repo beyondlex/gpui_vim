@@ -395,11 +395,10 @@ pub fn delete_chars(vim: &mut VimState, ctx: &mut Ctx, count: usize, backward: b
     let (lo, hi) = if backward {
         let mut lo = start;
         for _ in 0..count {
-            let Some(prev) = ctx.buf.prev_char_offset(lo) else { break };
-            if prev < line_start {
-                break;
+            match crate::buffer::prev_grapheme_offset(ctx.buf, lo) {
+                Some(prev) if prev >= line_start => lo = prev,
+                _ => break,
             }
-            lo = prev;
         }
         if lo == start {
             return;
@@ -409,15 +408,15 @@ pub fn delete_chars(vim: &mut VimState, ctx: &mut Ctx, count: usize, backward: b
         if start >= line_end {
             return;
         }
+        // advance over `count` graphemes (emoji clusters are atomic)
         let mut hi = start;
-        for _ in 0..count.saturating_sub(1) {
-            let next = ctx.buf.next_char_offset(hi).unwrap_or(hi);
-            if next >= line_end {
-                break;
+        for _ in 0..count {
+            match crate::buffer::next_grapheme_offset(ctx.buf, hi) {
+                Some(next) if next <= line_end => hi = next,
+                _ => break,
             }
-            hi = next;
         }
-        (start, ctx.buf.next_char_offset(hi).unwrap_or(hi))
+        (start, hi)
     };
     delete_span(
         vim,
@@ -442,9 +441,11 @@ pub fn replace_chars(vim: &mut VimState, ctx: &mut Ctx, ch: char, count: usize) 
         if o >= line_end {
             return;
         }
-        let Some(c) = ctx.buf.char_at(o) else { return };
         replacements.push(ch);
-        o += c.len_utf8();
+        match crate::buffer::next_grapheme_offset(ctx.buf, o) {
+            Some(next) if next <= line_end => o = next,
+            _ => break,
+        }
     }
     vim.edit_replace(ctx, start..o, &replacements);
     vim.cursor.offset = clamp_to_line_end(
@@ -467,7 +468,10 @@ pub fn toggle_chars(vim: &mut VimState, ctx: &mut Ctx, count: usize) {
         }
         let Some(c) = ctx.buf.char_at(o) else { break };
         mapped.push(crate::ops::toggle_case(c));
-        o += c.len_utf8();
+        match crate::buffer::next_grapheme_offset(ctx.buf, o) {
+            Some(next) if next <= line_end => o = next,
+            _ => break,
+        }
     }
     if mapped.is_empty() {
         return;

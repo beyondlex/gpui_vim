@@ -1086,3 +1086,45 @@ fn jumplist_ignores_local_motions() {
     f.feed(["<C-o>"]);
     assert_eq!(f.line(), 3);
 }
+
+// ---- wide-char display columns & graphemes (ROADMAP task 8) ---------------------
+
+#[test]
+fn cjk_vertical_moves_preserve_display_column() {
+    let mut f = Fixture::at("中文abc\nxyz中\n", 0, 0);
+    f.feed(["l", "l"]); // two chars right: on 'a' (byte 6, display col 4)
+    assert_eq!(f.cursor(), 6);
+    f.feed(["j"]);
+    // display col 4 on "xyz中" lands ON 中 (it spans cols 3..5)
+    assert_eq!(f.cursor(), 13);
+    f.feed(["k"]);
+    assert_eq!(f.cursor(), 6);
+}
+
+#[test]
+fn pipe_moves_by_display_column() {
+    let mut f = Fixture::at("中文ab\n", 0, 0);
+    f.feed(["5", "|"]);
+    assert_eq!(f.cursor(), 6); // column 5 = 'a' (中文 cover cols 1..4)
+    f.feed(["1", "|"]);
+    assert_eq!(f.cursor(), 0); // column 1 is inside 中: land on its start
+    f.feed(["3", "|"]);
+    assert_eq!(f.cursor(), 3); // column 3 is inside 文: land on its start
+}
+
+#[test]
+fn grapheme_motions_and_deletes() {
+    // e + combining accent = ONE grapheme: x deletes both, l skips both
+    let mut f = Fixture::at("\u{65}\u{301}x\n", 0, 0);
+    f.feed(["x"]);
+    assert_eq!(f.text(), "x\n");
+    let mut f = Fixture::at("\u{65}\u{301}x\n", 0, 0);
+    f.feed(["l"]);
+    assert_eq!(f.cursor(), 3); // straight to 'x', not onto the accent
+    // ZWJ emoji family = ONE grapheme
+    let mut f = Fixture::at("\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467} ok\n", 0, 0);
+    f.feed(["x"]);
+    assert_eq!(f.text(), " ok\n");
+    f.feed(["l"]);
+    assert_eq!(f.cursor(), 1); // on 'o'
+}

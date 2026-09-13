@@ -268,7 +268,22 @@ enum LastChange {
 
 ## P2 — 引擎核心演进（先定 trait 再加功能）
 
-### 任务 8：宽字符 / grapheme 列模型
+### 任务 8：宽字符 / grapheme 列模型 ✅ 已完成
+> 实现比原设计更好：**没有动 `VimBuffer` trait**。宽度与 grapheme 都由引擎从
+> `char_at` 推导（新依赖 `unicode-width`，纯表零传递依赖），宿主零迁移即可
+> 获得正确行为。要点：
+> - `desired_col` 从字节列改为**显示列**；关键修复是 `apply_motion_result`
+>   必须在光标落地**前**读取目标列（宽字符钳位后从落点推导会丢失原列，
+>   即 vim 的 `wv_col` 语义）
+> - `j`/`k` 跨宽字符行保列；`|` 按显示列（1-based，同 vim）；越界落在最后
+>   一个字符上
+> - grapheme 边界规则：宽度 0 的字符（组合符/变体选择符）附属于前字符，
+>   ZWJ 串联整个簇（覆盖重音、emoji 家庭）；`h`/`l`/`x`/`X`/`r`/`~`/`a`
+>   均按簇步进
+> - demo：鼠标点击与 IME 光标矩形改用 paint 时缓存的 shaped 几何
+>   （`closest_index_for_x`/`x_for_index`）精确反查，CJK/emoji 命中不再偏移
+> - 已知限制（文档化）：`w`/`b`/`e` 词运动仍按 char（对 emoji 串基本无感）；
+>   tab 宽度按 1 记（未按 tabstop 展开）
 
 > **状态：字节算术类光标 bug 已清零**（`p`/`~`/visual `p` 的 `len - 1` 光标、
 > demo 非边界插入静默追加、光标宽度 `byte+1`——见 `cjk_*` 回归测试）。本任务

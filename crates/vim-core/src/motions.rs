@@ -141,7 +141,7 @@ impl Motion {
             Motion::Left => {
                 let mut o = vim.cursor.offset;
                 for _ in 0..count {
-                    match buf.prev_char_offset(o) {
+                    match crate::buffer::prev_grapheme_offset(buf, o) {
                         Some(prev) if prev >= buf.line_start(buf.offset_to_line(o)) => o = prev,
                         _ => break,
                     }
@@ -157,10 +157,14 @@ impl Motion {
                 for _ in 0..count {
                     let line = buf.offset_to_line(o);
                     let end = buf.line_end(line);
-                    if end == buf.line_start(line) || o + 1 >= end {
+                    if end == buf.line_start(line) || o >= end {
                         break;
                     }
-                    o = buf.next_char_offset(o).unwrap_or(o);
+                    // `next < end`: never step onto the newline position
+                    match crate::buffer::next_grapheme_offset(buf, o) {
+                        Some(next) if next < end => o = next,
+                        _ => break,
+                    }
                 }
                 if o == vim.cursor.offset {
                     MotionResult::stuck(o)
@@ -173,9 +177,7 @@ impl Motion {
                 let start_line = buf.offset_to_line(vim.cursor.offset) as i64;
                 let target_line = (start_line + dir * count as i64).clamp(0, buf.line_count() as i64 - 1) as usize;
                 let desired = vim.desired_column(buf);
-                let line = buf.line_range(target_line);
-                let end = buf.line_end(target_line);
-                let o = line.start + desired.min(end - line.start);
+                let o = crate::buffer::offset_for_display_column(buf, target_line, desired);
                 let moved = target_line != start_line as usize;
                 if moved {
                     MotionResult::new(o, MotionKind::Linewise)
@@ -344,9 +346,12 @@ impl Motion {
             }
             Motion::Column => {
                 let line = buf.offset_to_line(vim.cursor.offset);
-                let start = buf.line_start(line);
-                let end = buf.line_end(line);
-                MotionResult::new((start + count - 1).min(end), MotionKind::Exclusive)
+                // `|` counts display columns (wide chars cover two)
+                let col = count.max(1) - 1;
+                MotionResult::new(
+                    crate::buffer::offset_for_display_column(buf, line, col),
+                    MotionKind::Exclusive,
+                )
             }
             Motion::ScreenTop | Motion::ScreenMiddle | Motion::ScreenBottom => {
                 let (first, last) = ctx.host.viewport();

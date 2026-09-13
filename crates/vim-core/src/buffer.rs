@@ -112,6 +112,101 @@ pub fn clamp_to_line_end(buf: &dyn VimBuffer, offset: usize) -> usize {
     offset.min(buf.line_end(line))
 }
 
+// ---- display columns & graphemes (wide-char aware) ---------------------------
+//
+// The engine's cursor and columns are BYTE offsets, but "column" semantics
+// (j/k preservation, `|`) are DISPLAY columns: CJK chars are 2 cells,
+// combining marks are 0. Grapheme boundaries keep multi-char clusters
+// (emoji families, accents) atomic under h/l/x/r/~.
+
+/// Display width of a char: 0 for combining marks, 2 for East Asian
+/// wide/fullwidth, 1 otherwise. Control chars count as 1 for bookkeeping.
+pub fn char_display_width(c: char) -> usize {
+    unicode_width::UnicodeWidthChar::width(c).unwrap_or(1)
+}
+
+/// The display column of `offset` within its line.
+pub fn display_column(buf: &dyn VimBuffer, offset: usize) -> usize {
+    let start = buf.line_start(buf.offset_to_line(offset));
+    let mut column = 0;
+    let mut o = start;
+    while o < offset {
+        match buf.char_at(o) {
+            Some(c) => {
+                column += char_display_width(c);
+                o += c.len_utf8();
+            }
+            None => break,
+        }
+    }
+    column
+}
+
+/// The byte offset of the char covering display column `col` in `line`
+/// (the line end when `col` is at or past the last char).
+pub fn offset_for_display_column(buf: &dyn VimBuffer, line: usize, col: usize) -> usize {
+    let start = buf.line_start(line);
+    let end = buf.line_end(line);
+    let mut covered = 0usize;
+    let mut o = start;
+    while o < end {
+        match buf.char_at(o) {
+            Some(c) => {
+                let w = char_display_width(c);
+                if covered + w > col {
+                    break;
+                }
+                covered += w;
+                o += c.len_utf8();
+            }
+            None => break,
+        }
+    }
+    if o >= end && end > start {
+        // past the last char: vim clamps `j`/`|` onto the last character
+        return buf.prev_char_offset(end).unwrap_or(start);
+    }
+    o
+}
+
+/// Next grapheme boundary: trailing width-0 chars (combining marks,
+/// variation selectors) attach to the base char, and a ZWJ glues the next
+/// char into the same cluster (emoji families).
+pub fn next_grapheme_offset(buf: &dyn VimBuffer, offset: usize) -> Option<usize> {
+    let mut o = buf.next_char_offset(offset)?;
+    while let Some(c) = buf.char_at(o) {
+        if c == '\u{200D}' {
+            // skip the ZWJ *and* the character it joins, then keep scanning:
+            // a family emoji is base-ZWJ-base-ZWJ-base
+            let Some(after) = buf.next_char_offset(o) else { break };
+            let Some(joined_end) = buf.next_char_offset(after) else { break };
+            o = joined_end;
+        } else if char_display_width(c) == 0 {
+            o += c.len_utf8();
+        } else {
+            break;
+        }
+    }
+    Some(o)
+}
+
+/// Previous grapheme boundary (the mirror of [`next_grapheme_offset`]).
+pub fn prev_grapheme_offset(buf: &dyn VimBuffer, offset: usize) -> Option<usize> {
+    let mut o = buf.prev_char_offset(offset)?;
+    while let Some(prev) = buf.prev_char_offset(o) {
+        let Some(c) = buf.char_at(prev) else { break };
+        if c == '\u{200D}' {
+            // the char before the ZWJ joins the cluster
+            o = buf.prev_char_offset(prev)?;
+        } else if char_display_width(c) == 0 {
+            o = prev;
+        } else {
+            break;
+        }
+    }
+    Some(o)
+}
+
 #[cfg(test)]
 pub(crate) mod testbuf {
     //! A `String`-backed buffer used by the engine's own tests.

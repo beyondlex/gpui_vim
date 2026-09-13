@@ -2,7 +2,8 @@
 //! and the clipboard. This is the file to copy when integrating the engine
 //! into your own gpui app.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::ops::Range;
 
 use gpui::prelude::*;
@@ -92,6 +93,11 @@ pub struct Editor {
     text_area_bounds: Cell<Bounds<Pixels>>,
     /// Width of one monospace character, measured each frame.
     char_width: Cell<f32>,
+    /// Shaped geometry per line number, captured at paint time: the line's
+    /// text origin X and the shaped line. Gives the mouse and the IME rect
+    /// exact positions for wide/clustered glyphs (a uniform cell width is
+    /// wrong for CJK and emoji).
+    shaped_lines: RefCell<HashMap<usize, (Pixels, gpui::ShapedLine)>>,
     dragging: Cell<bool>,
     /// Caret blink phase (demo-side cosmetics; the engine owns no timers).
     caret_visible: Cell<bool>,
@@ -134,6 +140,7 @@ impl Editor {
             visible_lines: Cell::new((0, 24)),
             text_area_bounds: Cell::new(Bounds::default()),
             char_width: Cell::new(8.4),
+            shaped_lines: RefCell::new(HashMap::new()),
             dragging: Cell::new(false),
             caret_visible: Cell::new(true),
             blink_phase_reset: Cell::new(false),
@@ -233,6 +240,16 @@ impl Editor {
         let line = (self.visible_lines.get().0 + row).min(self.buffer.line_count() - 1);
         let line_start = self.buffer.line_start(line);
         let line_end = self.buffer.line_end(line);
+
+        // Prefer the shaped geometry captured at paint time: exact hit
+        // testing for CJK/emoji (a uniform cell width is off by 2x there).
+        if let Some((origin_x, shaped)) = self.shaped_lines.borrow().get(&line) {
+            let index = shaped.closest_index_for_x(px(dx - f32::from(*origin_x)));
+            let offset = line_start + index.min(line_end - line_start);
+            return offset.min(line_end);
+        }
+
+        // fallback for lines that were not painted yet
         let col = (dx / self.char_width.get()).round().max(0.0) as usize;
         let mut offset = line_start;
         let mut visual = 0usize;
@@ -418,10 +435,11 @@ impl Editor {
                                 .visible_lines
                                 .set((visible.start, visible.end.saturating_sub(1)));
                         });
-                        let editor = view.read(cx);
                         visible
                             .clone()
-                            .map(|line| editor.render_line(line))
+                            .map(|line| {
+                                view.read(cx).render_line(line, view.clone())
+                            })
                             .collect::<Vec<_>>()
                     }
                 })
@@ -534,7 +552,7 @@ impl Editor {
         }
     }
 
-    fn render_line(&self, line: usize) -> impl IntoElement {
+    fn render_line(&self, line: usize, view: SharedView) -> impl IntoElement {
         let in_range = line < self.buffer.line_count();
         let text = if in_range {
             SharedString::from(self.buffer.line_content(line))
@@ -589,7 +607,9 @@ impl Editor {
                     .text_color(if in_range { text_color() } else { tilde_color() })
                     .child(canvas(
                         move |bounds, _window, _cx| bounds,
-                        move |bounds, _, window, cx| {                            // vim-style invert: the character under the block
+                        {
+                            let view = view.clone();
+                            move |bounds, _, window, cx| {                            // vim-style invert: the character under the block
                             // cursor is painted in the background color so it
                             // reads through the solid cursor block
                             let inverted = overlays
@@ -684,6 +704,13 @@ impl Editor {
                                 window,
                                 cx,
                             );
+                            view.update(cx, |editor, _| {
+                                editor.shaped_lines.borrow_mut().insert(
+                                    line,
+                                    (bounds.origin.x, shaped.clone()),
+                                );
+                            });
+                            }
                         },
                     )
                     // canvas has no intrinsic size; without this its bounds
@@ -910,7 +937,15 @@ impl gpui::EntityInputHandler for Editor {
         let line = self.buffer.offset_to_line(byte);
         let row = line.saturating_sub(self.visible_lines.get().0);
         let col = byte - self.buffer.line_start(line);
-        let x = f32::from(self.gutter_width()) + col as f32 * self.char_width.get();
+        // shaped geometry gives the exact x for wide/clustered glyphs;
+        // x_for_index is relative to the line text start (after the gutter)
+        let within_line = self
+            .shaped_lines
+            .borrow()
+            .get(&line)
+            .map(|(_, shaped)| f32::from(shaped.x_for_index(col)))
+            .unwrap_or(col as f32 * self.char_width.get());
+        let x = f32::from(self.gutter_width()) + within_line;
         let origin = Point::new(
             element_bounds.origin.x + px(x),
             element_bounds.origin.y + px(row as f32 * LINE_HEIGHT),
