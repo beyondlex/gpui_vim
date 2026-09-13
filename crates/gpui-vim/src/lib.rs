@@ -25,6 +25,8 @@
 //!    places the leftovers into the buffer in insert mode.
 
 use gpui::{App, Context, Entity, KeyContext, Keystroke, Subscription, WeakEntity, Window};
+
+pub mod render;
 use vim_core::buffer::VimBufferMut;
 use vim_core::host::VimHost;
 use vim_core::key::{Key, KeyKind, Modifiers};
@@ -202,7 +204,7 @@ mod tests {
     /// Minimal host fixture so tests can run keys through the full
     /// conversion → engine pipeline.
     #[derive(Clone)]
-    struct TestBuf(pub Rc<RefCell<String>>);
+    pub(crate) struct TestBuf(pub Rc<RefCell<String>>);
 
     impl VimBuffer for TestBuf {
         fn len(&self) -> usize {
@@ -269,7 +271,7 @@ mod tests {
         fn changed(&mut self) {}
     }
 
-    fn dispatch(vim: &mut VimState, buf: &mut TestBuf, key: Key) -> KeyResult {
+    pub(crate) fn dispatch(vim: &mut VimState, buf: &mut TestBuf, key: Key) -> KeyResult {
         let mut ctx = Ctx { buf, host: &mut NoopHost };
         vim.handle_key(&mut ctx, key)
     }
@@ -366,5 +368,119 @@ mod tests {
             vim.mode(),
             vim_core::Mode::Visual { kind: vim_core::VisualKind::Line }
         );
+    }
+}
+
+#[cfg(test)]
+mod render_tests {
+    use super::render::{compute_line_overlays, LineOverlayInputs, OverlayStyle};
+    use super::tests::{dispatch, TestBuf};
+    use gpui::{px, FontStyle, FontWeight, Hsla};
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    use vim_core::key::Key;
+    use vim_core::state::VimState;
+
+    fn style() -> OverlayStyle {
+        OverlayStyle {
+            font: gpui::Font {
+                family: "test".into(),
+                features: Default::default(),
+                fallbacks: None,
+                weight: FontWeight::NORMAL,
+                style: FontStyle::Normal,
+            },
+            font_size: px(14.0),
+            text: Hsla::default(),
+            background: Hsla::default(),
+            cursor: Hsla::default(),
+            selection: Hsla::default(),
+            search: Hsla::default(),
+            search_current: Hsla::default(),
+            mark: Hsla::default(),
+            caret_fallback_width: 8.0,
+        }
+    }
+
+    fn overlays(
+        vim: &VimState,
+        buf: &TestBuf,
+        line: usize,
+        highlights: &[std::ops::Range<usize>],
+        caret_visible: bool,
+    ) -> super::render::LineOverlays {
+        compute_line_overlays(&LineOverlayInputs {
+            vim,
+            buf,
+            line,
+            search_highlights: highlights,
+            search_current: None,
+            ime_marked: None,
+            caret_visible,
+            style: &style(),
+        })
+    }
+
+    #[test]
+    fn search_highlights_render_as_quads() {
+        let buf = TestBuf(Rc::new(RefCell::new("foo bar foo\n".into())));
+        let vim = VimState::new();
+        let highlights = vec![0..3, 8..11];
+        let o = overlays(&vim, &buf, 0, &highlights, true);
+        assert_eq!(o.quads.len(), 2);
+        assert_eq!(o.quads[0].0, 0..3);
+        assert_eq!(o.quads[1].0, 8..11);
+    }
+
+    #[test]
+    fn char_selection_and_caret_line_gating() {
+        let buf = TestBuf(Rc::new(RefCell::new("abcdef\ngh\n".into())));
+        let mut vim = VimState::new();
+        // enter charwise visual and extend to cover "bcde"
+        dispatch(&mut vim, &mut buf.clone(), Key::char('v'));
+        dispatch(&mut vim, &mut buf.clone(), Key::char('l'));
+        dispatch(&mut vim, &mut buf.clone(), Key::char('l'));
+        dispatch(&mut vim, &mut buf.clone(), Key::char('l'));
+        let o = overlays(&vim, &buf, 0, &[], true);
+        assert_eq!(o.quads.len(), 1);
+        assert_eq!(o.quads[0].0, 0..4); // v..cursor inclusive (cursor on 'd')
+        assert_eq!(o.cursor, Some(3));
+        assert!(o.cursor_block);
+
+        // another line: no quads, no cursor
+        let o = overlays(&vim, &buf, 1, &[], true);
+        assert!(o.quads.is_empty());
+        assert_eq!(o.cursor, None);
+
+        // caret hidden by the blink phase
+        let o = overlays(&vim, &buf, 0, &[], false);
+        assert_eq!(o.cursor, None);
+        assert!(!o.quads.is_empty());
+    }
+
+    #[test]
+    fn line_selection_is_full_width() {
+        let buf = TestBuf(Rc::new(RefCell::new("abcdef\ngh\n".into())));
+        let mut vim = VimState::new();
+        dispatch(&mut vim, &mut buf.clone(), Key::char('V'));
+        let o = overlays(&vim, &buf, 0, &[], true);
+        assert_eq!(o.quads.len(), 1);
+        assert!(o.quads[0].2, "linewise quad spans the full width");
+    }
+
+    #[test]
+    fn block_selection_quad_per_row() {
+        let buf = TestBuf(Rc::new(RefCell::new("abcd\nefgh\n".into())));
+        let mut vim = VimState::new();
+        // C-v j l: block cols 0..1 on lines 0-1
+        dispatch(&mut vim, &mut buf.clone(), vim_core::key::Key::ctrl_char('v'));
+        dispatch(&mut vim, &mut buf.clone(), Key::char('j'));
+        dispatch(&mut vim, &mut buf.clone(), Key::char('l'));
+        let o0 = overlays(&vim, &buf, 0, &[], true);
+        assert_eq!(o0.quads.len(), 1);
+        assert_eq!(o0.quads[0].0, 0..2);
+        let o1 = overlays(&vim, &buf, 1, &[], true);
+        assert_eq!(o1.quads.len(), 1);
+        assert_eq!(o1.quads[0].0, 0..2);
     }
 }

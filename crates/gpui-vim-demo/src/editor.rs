@@ -8,10 +8,9 @@ use std::ops::Range;
 
 use gpui::prelude::*;
 use gpui::{
-    actions, canvas, div, fill, px, rgba, Bounds, ClipboardItem, Context,
-    ElementInputHandler, FocusHandle, Font, FontStyle, FontWeight, MouseDownEvent,
-    MouseMoveEvent, Pixels, Point, Render, ScrollStrategy, SharedString, TextRun,
-    UniformListScrollHandle, Window,
+    actions, canvas, div, px, rgba, Bounds, ClipboardItem, Context, ElementInputHandler,
+    FocusHandle, Font, FontStyle, FontWeight, MouseDownEvent, MouseMoveEvent, Pixels, Point,
+    Render, ScrollStrategy, SharedString, UniformListScrollHandle, Window,
 };
 use vim_core::buffer::VimBuffer;
 use vim_core::state::{Ctx, KeyResult, VimState};
@@ -68,16 +67,7 @@ type SharedView = gpui::Entity<Editor>;
 
 actions!(demo, [Save, Copy, Paste]);
 
-/// Overlay geometry for one line, computed at render time (byte columns) and
-/// painted at paint time (via the shaped line).
-#[derive(Clone)]
-struct LineOverlays {
-    /// (byte range within line, color, full_width)
-    quads: Vec<(Range<usize>, gpui::Hsla, bool)>,
-    /// Cursor column in bytes, if this is the cursor line.
-    cursor: Option<usize>,
-    cursor_block: bool,
-}
+
 
 pub struct Editor {
     buffer: RopeBuffer,
@@ -99,10 +89,8 @@ pub struct Editor {
     /// wrong for CJK and emoji).
     shaped_lines: RefCell<HashMap<usize, (Pixels, gpui::ShapedLine)>>,
     dragging: Cell<bool>,
-    /// Caret blink phase (demo-side cosmetics; the engine owns no timers).
-    caret_visible: Cell<bool>,
-    /// Set on user input so the blink loop keeps the caret solid while typing.
-    blink_phase_reset: Cell<bool>,
+    /// Caret blink state (library helper; the engine owns no timers).
+    caret_blinker: std::rc::Rc<gpui_vim::render::CaretBlinker>,
     status_message: Option<String>,
     /// Keeps the keystroke interceptor alive. `gpui::Subscription` detaches
     /// on drop, so it must outlive the engine's use — storing it in the view
@@ -142,8 +130,7 @@ impl Editor {
             char_width: Cell::new(8.4),
             shaped_lines: RefCell::new(HashMap::new()),
             dragging: Cell::new(false),
-            caret_visible: Cell::new(true),
-            blink_phase_reset: Cell::new(false),
+            caret_blinker: gpui_vim::render::CaretBlinker::new(),
             status_message: None,
             _vim_subscription: None,
         };
@@ -153,31 +140,12 @@ impl Editor {
 
     /// Toggle the caret every 500ms; input keeps it solid (see `mark_caret_activity`).
     fn spawn_blink_loop(&self, cx: &mut Context<Self>) {
-        cx.spawn(async move |editor, cx| {
-            loop {
-                gpui::Timer::after(std::time::Duration::from_millis(500)).await;
-                let ok = editor
-                    .update(cx, |editor, cx| {
-                        if editor.blink_phase_reset.take() {
-                            editor.caret_visible.set(true);
-                        } else {
-                            editor.caret_visible.set(!editor.caret_visible.get());
-                        }
-                        cx.notify();
-                    })
-                    .is_ok();
-                if !ok {
-                    break;
-                }
-            }
-        })
-        .detach();
+        self.caret_blinker.spawn_loop(cx);
     }
 
     /// Keep the caret visible and restart the blink phase (on any user input).
     fn mark_caret_activity(&self) {
-        self.blink_phase_reset.set(true);
-        self.caret_visible.set(true);
+        self.caret_blinker.note_activity();
     }
 
     /// Store the `attach()` subscription on the view (see field docs).
@@ -485,126 +453,37 @@ impl Editor {
         format!("{label:>width$} ", width = self.gutter_cols() - 1)
     }
 
-    /// Build the paint-time overlay set for `line` from the engine state.
-    fn overlays_for_line(&self, line: usize) -> LineOverlays {
-        let line_start = self.buffer.line_start(line);
-        let line_end = self.buffer.line_end(line);
-        let mut quads: Vec<(Range<usize>, gpui::Hsla, bool)> = Vec::new();
-
-        // search highlights
-        if self.vim.options.hlsearch || !self.host.highlights.is_empty() {
-            for highlight in &self.host.highlights {
-                let is_current = self.host.current_highlight.as_ref() == Some(highlight);
-                let color = if is_current {
-                    current_search_color()
-                } else {
-                    search_color()
-                };
-                let start = highlight.start.clamp(line_start, line_end) - line_start;
-                let end = highlight.end.clamp(line_start, line_end) - line_start;
-                if start < end {
-                    quads.push((start..end, color, false));
-                }
-            }
+    /// Per-line style from the demo palette.
+    fn overlay_style(&self) -> gpui_vim::render::OverlayStyle {
+        gpui_vim::render::OverlayStyle {
+            font: font(),
+            font_size: px(FONT_SIZE),
+            text: text_color(),
+            background: editor_bg(),
+            cursor: cursor_color(),
+            selection: selection_color(),
+            search: search_color(),
+            search_current: current_search_color(),
+            mark: mark_color(),
+            caret_fallback_width: 8.4,
         }
+    }
 
-        // IME marked text
-        if let Some(marked) = &self.marked_range {
-            let start = marked.start.clamp(line_start, line_end) - line_start;
-            let end = marked.end.clamp(line_start, line_end) - line_start;
-            if start < end {
-                quads.push((start..end, mark_color(), false));
-            }
+    /// Build the paint-time overlay set for `line` (delegates to the library).
+    fn overlays_for_line(&self, line: usize) -> gpui_vim::render::LineOverlays {
+        if line >= self.buffer.line_count() {
+            return gpui_vim::render::LineOverlays::default();
         }
-
-        // visual selection
-        if let Some((sel_start, sel_end, kind)) = self.vim.visual_selection() {
-            let sel = sel_start..sel_end;
-            if kind == vim_core::VisualKind::Block {
-                // rectangular highlight: per-line byte range over the
-                // block's display-column span
-                let first_line = self.buffer.offset_to_line(sel.start.min(sel.end));
-                let last_line = self.buffer.offset_to_line(sel.start.max(sel.end));
-                if line >= first_line && line <= last_line {
-                    let a_col = vim_core::buffer::display_column(&self.buffer, sel.start);
-                    let c_col = vim_core::buffer::display_column(&self.buffer, sel.end);
-                    let (col_lo, col_hi) = if a_col <= c_col { (a_col, c_col) } else { (c_col, a_col) };
-                    let range = vim_core::ops::block_row_range(
-                        &self.buffer,
-                        line,
-                        col_lo,
-                        col_hi + 1, // the cursor char is part of the block
-                    );
-                    if !range.is_empty() {
-                        quads.push((
-                            range.start - line_start..range.end - line_start,
-                            selection_color(),
-                            false,
-                        ));
-                    }
-                }
-            } else if kind == vim_core::VisualKind::Line {
-                let selection = {
-                    let lo = sel.start.min(sel.end);
-                    let hi = sel.start.max(sel.end);
-                    let start = self.buffer.line_start(self.buffer.offset_to_line(lo));
-                    let end = self.buffer.line_range(self.buffer.offset_to_line(hi)).end;
-                    start..end
-                };
-                let first = self.buffer.offset_to_line(selection.start);
-                let last = self
-                    .buffer
-                    .offset_to_line(selection.end.saturating_sub(1).max(selection.start));
-                if line >= first && line <= last {
-                    quads.push((0..0, selection_color(), true));
-                }
-            } else {
-                let hi = sel.start.max(sel.end);
-                let end = hi + self.buffer.char_at(hi).map(|c| c.len_utf8()).unwrap_or(0);
-                let start = sel.start.clamp(line_start, line_end) - line_start;
-                let end = end.clamp(line_start, line_end) - line_start;
-                if start < end {
-                    quads.push((start..end, selection_color(), false));
-                }
-            }
-        } else if let Some((selection, linewise)) = self.selection_span() {
-            if linewise {
-                // only the lines the selection spans get the full-width quad
-                let first = self.buffer.offset_to_line(selection.start);
-                let last = self
-                    .buffer
-                    .offset_to_line(selection.end.saturating_sub(1).max(selection.start));
-                if line >= first && line <= last {
-                    quads.push((0..0, selection_color(), true));
-                }
-            } else {
-                let start = selection.start.clamp(line_start, line_end) - line_start;
-                let end = selection.end.clamp(line_start, line_end) - line_start;
-                if start < end {
-                    quads.push((start..end, selection_color(), false));
-                }
-            }
-        }
-
-        // cursor
-        let cursor_line = self.buffer.offset_to_line(self.vim.cursor_offset());
-        let cursor = if line == cursor_line {
-            let block = self.vim.cursor_is_block();
-            Some(if block {
-                self.vim.cursor_offset() - line_start
-            } else {
-                // bar cursor sits between characters
-                self.vim.cursor_offset() - line_start
-            })
-        } else {
-            None
-        };
-
-        LineOverlays {
-            quads,
-            cursor,
-            cursor_block: self.vim.cursor_is_block(),
-        }
+        gpui_vim::render::compute_line_overlays(&gpui_vim::render::LineOverlayInputs {
+            vim: &self.vim,
+            buf: &self.buffer,
+            line,
+            search_highlights: &self.host.highlights,
+            search_current: self.host.current_highlight.clone(),
+            ime_marked: self.marked_range.clone(),
+            caret_visible: self.caret_blinker.is_visible(),
+            style: &self.overlay_style(),
+        })
     }
 
     fn render_line(&self, line: usize, view: SharedView) -> impl IntoElement {
@@ -620,23 +499,13 @@ impl Editor {
             format!("{:>width$} ", "~", width = self.gutter_cols() - 1)
         };
         let gutter_active = in_range && line == self.buffer.offset_to_line(self.vim.cursor_offset());
+        // out-of-range lines (`~` placeholders) carry no overlays; the
+        // library computation handles the caret blink phase itself
+        let style = self.overlay_style();
         let overlays = if in_range {
             self.overlays_for_line(line)
         } else {
-            LineOverlays {
-                quads: Vec::new(),
-                cursor: None,
-                cursor_block: true,
-            }
-        };
-        // blink phase: hide the caret without touching the engine state
-        let overlays = if self.caret_visible.get() {
-            overlays
-        } else {
-            LineOverlays {
-                cursor: None,
-                ..overlays
-            }
+            gpui_vim::render::LineOverlays::default()
         };
 
         div()
@@ -664,107 +533,22 @@ impl Editor {
                         move |bounds, _window, _cx| bounds,
                         {
                             let view = view.clone();
-                            move |bounds, _, window, cx| {                            // vim-style invert: the character under the block
-                            // cursor is painted in the background color so it
-                            // reads through the solid cursor block
-                            let inverted = overlays
-                                .cursor
-                                .filter(|_| overlays.cursor_block)
-                                .and_then(|at| {
-                                    text.get(at..)
-                                        .and_then(|rest| rest.chars().next())
-                                        .map(|c| at..at + c.len_utf8())
-                                });
-                            let mut runs: Vec<TextRun> = Vec::new();
-                            let mut push_run = |len: usize, color: gpui::Hsla| {
-                                if len > 0 {
-                                    runs.push(TextRun {
-                                        len,
-                                        font: font(),
-                                        color,
-                                        background_color: None,
-                                        underline: None,
-                                        strikethrough: None,
-                                    });
-                                }
-                            };
-                            match inverted {
-                                Some(range) => {
-                                    push_run(range.start, text_color());
-                                    push_run(range.len(), editor_bg());
-                                    push_run(text.len() - range.end, text_color());
-                                }
-                                None => push_run(text.len(), text_color()),
-                            }
-                            let shaped = window
-                                .text_system()
-                                .shape_line(text.clone(), px(FONT_SIZE), &runs, None);
-
-                            // overlays under the text
-                            for (byte_range, color, full_width) in &overlays.quads {
-                                let x0 = if *full_width {
-                                    0.0
-                                } else {
-                                    f32::from(shaped.x_for_index(byte_range.start))
-                                };
-                                let x1 = if *full_width {
-                                    f32::from(bounds.size.width)
-                                } else {
-                                    f32::from(shaped.x_for_index(byte_range.end))
-                                };
-                                if x1 > x0 {
-                                    let quad_bounds = Bounds::from_corners(
-                                        point(bounds.origin.x + px(x0), bounds.origin.y),
-                                        point(
-                                            bounds.origin.x + px(x1),
-                                            bounds.origin.y + px(LINE_HEIGHT),
-                                        ),
+                            move |bounds, _, window, cx| {
+                                let shaped = gpui_vim::render::paint_vim_line(
+                                    window,
+                                    cx,
+                                    text.clone(),
+                                    bounds,
+                                    px(LINE_HEIGHT),
+                                    &overlays,
+                                    &style,
+                                );
+                                view.update(cx, |editor, _| {
+                                    editor.shaped_lines.borrow_mut().insert(
+                                        line,
+                                        (bounds.origin.x, shaped.clone()),
                                     );
-                                    window.paint_quad(fill(quad_bounds, *color));
-                                }
-                            }
-
-                            // cursor
-                            if let Some(cursor_byte) = overlays.cursor {
-                                let x = f32::from(shaped.x_for_index(cursor_byte));
-                                let width = if overlays.cursor_block {
-                                    // advance to the next char boundary —
-                                    // byte+1 is mid-char for multi-byte
-                                    // characters (x_for_index rounds up,
-                                    // which would give a zero-width quad)
-                                    let end_byte = text
-                                        .get(cursor_byte..)
-                                        .and_then(|rest| rest.chars().next())
-                                        .map(|c| (cursor_byte + c.len_utf8()).min(text.len()))
-                                        .unwrap_or(cursor_byte);
-                                    let next =
-                                        f32::from(shaped.x_for_index(end_byte)) - x;
-                                    if next > 0.5 { next } else { 8.4 }
-                                } else {
-                                    2.0
-                                };
-                                let quad_bounds = Bounds::from_corners(
-                                    point(bounds.origin.x + px(x), bounds.origin.y),
-                                    point(
-                                        bounds.origin.x + px(x + width),
-                                        bounds.origin.y + px(LINE_HEIGHT),
-                                    ),
-                                );
-                                window.paint_quad(fill(quad_bounds, cursor_color()));
-                            }
-
-                            let _ = shaped.paint(
-                                point(bounds.origin.x, bounds.origin.y),
-                                px(LINE_HEIGHT),
-                                window,
-                                cx,
-                            );
-                            view.update(cx, |editor, _| {
-                                editor.shaped_lines.borrow_mut().insert(
-                                    line,
-                                    (bounds.origin.x, shaped.clone()),
-                                );
-                            });
+                                });
                             }
                         },
                     )
@@ -815,11 +599,6 @@ impl Editor {
             .child(div().child(format!("{line}:{col}")))
     }
 }
-
-fn point(x: Pixels, y: Pixels) -> Point<Pixels> {
-    Point::new(x, y)
-}
-
 
 // ---- IME / text-input protocol -------------------------------------------------
 //
