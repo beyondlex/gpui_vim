@@ -1291,7 +1291,13 @@ impl VimState {
                     } else {
                         let at = self.cursor.offset.min(ctx.buf.len());
                         ctx.buf.insert_text(at, &repeated);
-                        self.cursor.offset = (at + repeated.len() - 1).min(ctx.buf.len());
+                        // cursor on the last pasted char's START — byte - 1
+                        // would sit inside a multi-byte character
+                        let end = at + repeated.len();
+                        self.cursor.offset = ctx
+                            .buf
+                            .prev_char_offset(end)
+                            .unwrap_or(at);
                     }
                 }
                 self.end_edit();

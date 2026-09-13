@@ -245,6 +245,11 @@ enum LastChange {
 
 ### 任务 8：宽字符 / grapheme 列模型
 
+> **状态：字节算术类光标 bug 已清零**（`p`/`~`/visual `p` 的 `len - 1` 光标、
+> demo 非边界插入静默追加、光标宽度 `byte+1`——见 `cjk_*` 回归测试）。本任务
+> 剩余部分是**列语义**（desired_col 的字节列 → 显示列、grapheme 步进、鼠标
+> 命中）。
+
 **现状**：`Cursor.desired_col`、`desired_column`、所有上下移动、`|`、`H/M/L`
 都用 **字节列**。CJK 双宽字符、emoji（多 char grapheme、ZWJ 序列）导致 j/k
 列漂移；鼠标点击（demo `byte_at_point` 用统一 `char_width`）在中文文本上

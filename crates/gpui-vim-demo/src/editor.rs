@@ -640,9 +640,17 @@ impl Editor {
                             if let Some(cursor_byte) = overlays.cursor {
                                 let x = f32::from(shaped.x_for_index(cursor_byte));
                                 let width = if overlays.cursor_block {
-                                    let next = f32::from(
-                                        shaped.x_for_index((cursor_byte + 1).min(text.len())),
-                                    ) - x;
+                                    // advance to the next char boundary —
+                                    // byte+1 is mid-char for multi-byte
+                                    // characters (x_for_index rounds up,
+                                    // which would give a zero-width quad)
+                                    let end_byte = text
+                                        .get(cursor_byte..)
+                                        .and_then(|rest| rest.chars().next())
+                                        .map(|c| (cursor_byte + c.len_utf8()).min(text.len()))
+                                        .unwrap_or(cursor_byte);
+                                    let next =
+                                        f32::from(shaped.x_for_index(end_byte)) - x;
                                     if next > 0.5 { next } else { 8.4 }
                                 } else {
                                     2.0

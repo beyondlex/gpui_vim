@@ -646,3 +646,47 @@ fn escape_clears_search_highlights_until_next_search() {
     f.feed(["<Esc>"]);
     assert!(f.host.highlights.is_empty());
 }
+
+// ---- CJK / multi-byte cursor placement ----------------------------------------
+
+#[test]
+fn cjk_put_repeats_stay_on_char_boundaries() {
+    // user repro: yank `三四`, put repeatedly — every cursor must sit on a
+    // char boundary and every paste must land after the cursor char. The old
+    // `end - 1` byte math parked the cursor INSIDE a char, and the next `p`
+    // then inserted mid-char (which the rope host turned into an append at
+    // buffer end).
+    let mut f = Fixture::at("三四五\n", 0, 0);
+    f.feed(["v", "l", "y"]); // yank 三四; cursor back on 四 (byte 3)
+    f.feed(["p"]);
+    assert_eq!(f.text(), "三四三四五\n");
+    assert_eq!(f.cursor(), 9); // START of the second 四 (was 11, mid-char)
+    f.feed(["p"]);
+    assert_eq!(f.text(), "三四三四三四五\n");
+    assert_eq!(f.cursor(), 15);
+    f.feed(["p"]);
+    assert_eq!(f.text(), "三四三四三四三四五\n");
+    assert_eq!(f.cursor(), 21);
+}
+
+#[test]
+fn cjk_toggle_case_cursor_moves_right() {
+    // vim's `~` toggles and moves right: 中文 with cursor on 中 lands on
+    // 文 (byte 3); the old `start + len - 1` kept it mid-buffer on CJK and
+    // on the toggled char for ASCII
+    let mut f = Fixture::at("中文\n", 0, 0);
+    f.feed(["~"]);
+    assert_eq!(f.cursor(), 3);
+    let mut f = edit("abc\n", 0, 0, &["~"]);
+    assert_eq!(f.cursor(), 1);
+}
+
+#[test]
+fn cjk_visual_put_replace_cursor_on_last_char() {
+    let mut f = Fixture::at("中文\nxy\n", 0, 0);
+    f.feed(["v", "l", "y"]); // yank 中文
+    f.feed(["j", "0"]); // line 1, col 0 (x)
+    f.feed(["v", "l", "p"]); // replace xy with it
+    assert_eq!(f.text(), "中文\n中文\n");
+    assert_eq!(f.cursor(), 10); // start of the pasted 文 (was 11, mid-char)
+}

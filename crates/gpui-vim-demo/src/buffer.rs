@@ -65,7 +65,6 @@ impl RopeBuffer {
     }
 
     /// Clamp a byte offset onto a char boundary (and into the buffer).
-    #[allow(dead_code)]
     pub fn clamp(&self, byte: usize) -> usize {
         let rope = self.0.borrow();
         let byte = byte.min(rope.len_bytes());
@@ -147,18 +146,21 @@ impl VimBuffer for RopeBuffer {
 
 impl VimBufferMut for RopeBuffer {
     fn insert_text(&mut self, offset: usize, text: &str) {
+        // A mid-char offset (shouldn't happen from the engine, but an
+        // upstream bug must not teleport text to the end of the buffer —
+        // that turned one wrong cursor into data landing on another line)
+        // rounds DOWN to the nearest char boundary.
+        let offset = self.clamp(offset);
         let mut rope = self.0.borrow_mut();
-        let offset = offset.min(rope.len_bytes());
-        let char_idx = rope.try_byte_to_char(offset).unwrap_or(rope.len_chars());
+        let char_idx = rope.byte_to_char(offset);
         rope.insert(char_idx, text);
     }
 
     fn delete_range(&mut self, range: Range<usize>) {
+        let end = self.clamp(range.end);
+        let start = self.clamp(range.start.min(end));
         let mut rope = self.0.borrow_mut();
-        let end = range.end.min(rope.len_bytes());
-        let start = range.start.min(end);
-        let start_char = rope.try_byte_to_char(start).unwrap_or(0);
-        let end_char = rope.try_byte_to_char(end).unwrap_or(start_char);
+        let (start_char, end_char) = (rope.byte_to_char(start), rope.byte_to_char(end));
         rope.remove(start_char..end_char);
     }
 }
@@ -190,5 +192,17 @@ mod tests {
         let byte = b.line_range(0).end;
         let utf16 = b.byte_to_utf16(byte);
         assert_eq!(b.utf16_to_byte(utf16), byte);
+    }
+
+    #[test]
+    fn non_boundary_insert_rounds_down_instead_of_appending() {
+        let mut b = buf("三四五");
+        // byte 4 is inside 四 (3..6): must insert before 四, never at the end
+        b.insert_text(4, "x");
+        assert_eq!(b.text(), "三x四五");
+
+        let mut b = buf("三四五");
+        b.delete_range(4..7); // 4 mid-四, 7 mid-五 (6..9)
+        assert_eq!(b.text(), "三五");
     }
 }

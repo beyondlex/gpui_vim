@@ -333,9 +333,12 @@ pub fn put(vim: &mut VimState, ctx: &mut Ctx, register: char, count: usize, afte
             at = ctx.buf.next_char_offset(at).unwrap_or(at);
         }
         ctx.buf.insert_text(at, &repeated);
-        // block cursor sits on the last pasted character
+        // block cursor sits on the last pasted character: step back to the
+        // START of the last char — `end - 1` is byte arithmetic and would
+        // park the cursor inside a multi-byte character
         let end = at + repeated.len();
-        vim.cursor.offset = clamp_to_line_end(ctx.buf, end - 1);
+        vim.cursor.offset =
+            clamp_to_line_end(ctx.buf, ctx.buf.prev_char_offset(end).unwrap_or(at));
     }
     vim.cursor.desired_col = None;
 }
@@ -466,6 +469,8 @@ pub fn toggle_chars(vim: &mut VimState, ctx: &mut Ctx, count: usize) {
         return;
     }
     ctx.buf.replace_range(start..start + mapped.len(), &mapped);
-    vim.cursor.offset = clamp_to_line_end(ctx.buf, start + mapped.len() - 1);
+    // vim's `~` moves right past the last toggled char (staying on it only
+    // at line end); plain byte arithmetic was wrong for multi-byte chars
+    vim.cursor.offset = clamp_to_line_end(ctx.buf, start + mapped.len());
     vim.cursor.desired_col = None;
 }
