@@ -1590,3 +1590,108 @@ fn visual_colon_execute_drops_to_normal_on_range() {
     // and '<,'> marks were written for a follow-up :'<,'>s
     assert_eq!(f.vim.marks.resolve('<'), Some(4));
 }
+
+// ---- incremental hlsearch splice (performance task) -----------------------------
+
+#[test]
+fn hlsearch_highlights_update_incrementally_and_match_full_rescan() {
+    // the invariant: after any single edit, the spliced highlights equal a
+    // full re-scan of the same buffer
+    let mut f = Fixture::at("fox cat fox\nbird fox tree\nfox fox fox\n", 0, 0);
+    f.feed(["/", "f", "o", "x", "<CR>"]);
+    let expected = |f: &Fixture| {
+        let text = f.text();
+        let mut v = Vec::new();
+        let mut off = 0;
+        while let Some(i) = text[off..].find("fox") {
+            v.push(off + i..off + i + 3);
+            off += i + 3;
+        }
+        v
+    };
+    assert_eq!(f.host.highlights, expected(&f));
+
+    // edit AFTER the first matches: spliced matches shift
+    f.feed(["A"]);
+    f.type_text(" fox");
+    f.feed(["<Esc>"]);
+    assert_eq!(f.host.highlights, expected(&f));
+
+    // edit BEFORE the matches: they shift down
+    f.feed(["g", "g"]);
+    f.feed(["r", "X"]); // fox -> Xox on line 0, kills that match
+    assert_eq!(f.host.highlights, expected(&f));
+
+    // delete a whole match region
+    f.feed(["g", "g"]);
+    f.feed(["d", "d"]);
+    assert_eq!(f.host.highlights, expected(&f));
+
+    // undo triggers a full rescan and republishes correct highlights
+    f.feed(["u"]);
+    assert_eq!(f.host.highlights, expected(&f));
+}
+
+#[test]
+fn hlsearch_incremental_matches_full_scan_under_random_edits() {
+    // seeded pseudo-random edit sequence: after every edit the spliced
+    // highlight set must equal a fresh full scan
+    use vim_core::VimBuffer as _;
+    let mut state: u64 = 0x9E3779B97F4A7C15;
+    let mut rng_move = |n: usize| {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        (state % n as u64) as usize
+    };
+
+    let mut f = Fixture::at("fox and cat and fox and bird and fox\n", 0, 0);
+    f.feed(["/", "f", "o", "x", "<CR>"]);
+    let expected = |f: &Fixture| {
+        let text = f.text();
+        let mut v = Vec::new();
+        let mut off = 0;
+        while let Some(i) = text[off..].find("fox") {
+            v.push(off + i..off + i + 3);
+            off += i + 3;
+        }
+        v
+    };
+
+    for round in 0..60 {
+        match rng_move(3) {
+            0 => {
+                // :{last-line}d deletes the LAST line (simple, no owned strs)
+                let last = f.buf.line_count();
+                let key = match last {
+                    0 | 1 => "$",
+                    _ => "$", // $d always deletes the final line
+                };
+                f.feed([":", key, "d", "<CR>"]);
+            }
+            1 => {
+                // insert text at a random-ish position via A + text
+                let word = ["fox", "ox", "f", "and fox"][rng_move(4)];
+                f.feed(["A"]);
+                f.type_text(word);
+                f.feed(["<Esc>"]);
+            }
+            _ => {
+                f.feed(["x"]); // delete char under cursor
+            }
+        }
+        assert_eq!(
+            f.host.highlights,
+            expected(&f),
+            "round {}: splice {:?} text {:?}",
+            round,
+            f.host.highlights,
+            f.text()
+        );
+        if f.buf.line_count() < 2 {
+            f.feed(["o"]);
+            f.type_text("reseed fox line");
+            f.feed(["<Esc>"]);
+        }
+    }
+}

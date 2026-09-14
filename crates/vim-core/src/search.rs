@@ -45,6 +45,12 @@ pub fn all_matches(vim: &VimState, buf: &dyn VimBuffer, pattern: &str) -> Vec<Ra
     let Ok(re) = builder.build() else {
         return Vec::new();
     };
+
+    // NOTE: scanning per-line through the VimBuffer trait was measured at
+    // ~20,000x SLOWER than one whole-buffer slice + scan (20k line_range
+    // trait calls + allocations dwarf one contiguous memcpy), so the
+    // whole-buffer scan stays. For per-edit cost control on huge files,
+    // hosts use set_hlsearch_live_update(false) + refresh_highlights.
     let text = buf.slice(0..buf.len());
     re.find_iter(&text)
         .filter(|m| !m.is_empty())

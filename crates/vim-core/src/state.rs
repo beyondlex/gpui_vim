@@ -191,6 +191,9 @@ pub struct VimState {
     /// Hosts sharing one rc file across apps set this while applying the
     /// user layer (mappings aimed at other apps are expected to miss).
     pub(crate) lenient_actions: bool,
+    /// Whether every edit re-runs the search highlight scan (default). Huge
+    /// file hosts turn this off and refresh on their own schedule.
+    hlsearch_live_update: bool,
     /// Visual-block `I`/`A`/`c`: the rows (insert offsets, descending) that
     /// receive the typed text when the session exits, and the text typed on
     /// the cursor row so far.
@@ -262,6 +265,7 @@ impl VimState {
             no_remap_left: 0,
             expanding_mapping: false,
             lenient_actions: false,
+            hlsearch_live_update: true,
             changes: Vec::new(),
             change_pos: 0,
             format_trigger: None,
@@ -457,7 +461,6 @@ impl VimState {
                 self.no_remap_left -= 1;
             } else if self.op.is_none() {
                 let contiguous: &[Key] = self.pending_keys.make_contiguous();
-                eprintln!("PROBE lookup queue={:?}", contiguous.iter().map(|k| k.notation()).collect::<Vec<_>>());
                 match keymap::lookup(self.keymaps.table(class), contiguous) {
                     MappingMatch::Match { used, expansion, noremap } => {
                         self.pending_keys.drain(..used);
@@ -671,9 +674,18 @@ impl VimState {
     /// while nothing is published (`:noh`, no pattern) — editing must not
     /// revive cleared highlights.
     fn republish_search(&mut self, ctx: &mut Ctx) {
-        if !self.options.hlsearch || self.search.last_matches.is_empty() {
+        // hosts embedding the engine in huge-file editors can turn this off
+        // (set_hlsearch_live_update(false)) and call refresh_highlights on
+        // their own schedule (e.g. 150ms after the last edit)
+        if !self.hlsearch_live_update {
             return;
         }
+        if !self.options.hlsearch {
+            return;
+        }
+        // NOTE: an empty last_matches cache must NOT early-return here —
+        // after a deletion removes the last match, later edits have to
+        // re-scan to notice the pattern matching again.
         let Some(pattern) = self.search.pattern.clone() else {
             return;
         };
@@ -948,6 +960,19 @@ impl VimState {
         self.cursor.offset = at + expanded.len();
         self.republish_search(ctx);
         ctx.host.changed();
+    }
+
+    /// Whether each edit re-runs the hlsearch scan (default true). Huge-file
+    /// hosts set false and call [`VimState::refresh_highlights`] on their own
+    /// schedule (debounce/interval), keeping per-keystroke cost O(edit).
+    pub fn set_hlsearch_live_update(&mut self, live: bool) {
+        self.hlsearch_live_update = live;
+    }
+
+    /// Re-run the highlight scan and publish to the host (for hosts that
+    /// disabled [`VimState::set_hlsearch_live_update`]).
+    pub fn refresh_highlights(&mut self, ctx: &mut Ctx) {
+        self.republish_search(ctx);
     }
 
     /// While set, `:action <unknown-id>` misses are silently ignored
@@ -1920,6 +1945,7 @@ impl VimState {
                         break;
                     }
                 }
+                self.republish_search(ctx);
                 ctx.host.changed();
             }
             NormalCmd::Redo => {
@@ -1932,6 +1958,7 @@ impl VimState {
                         break;
                     }
                 }
+                self.republish_search(ctx);
                 ctx.host.changed();
             }
             NormalCmd::MarkSet => {
