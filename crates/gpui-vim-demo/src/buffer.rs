@@ -168,7 +168,6 @@ impl VimBufferMut for RopeBuffer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use vim_core::buffer::VimBuffer as _;
 
     fn buf(text: &str) -> RopeBuffer {
         RopeBuffer(shared_rope(text))

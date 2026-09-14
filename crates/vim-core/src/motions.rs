@@ -312,9 +312,9 @@ impl Motion {
                         // re-publish the matches: after Esc dismissed the
                         // highlights (`:noh` semantics) `n`/`N` re-arms them
                         if vim.options.hlsearch {
-                            let matches = vim.search.last_matches.clone();
-                            let current = matches.iter().find(|m| m.start == o).cloned();
-                            ctx.host.set_search_highlights(&matches, current);
+                            let current =
+                                vim.search.last_matches.iter().find(|m| m.start == o).cloned();
+                            ctx.host.set_search_highlights(&vim.search.last_matches, current);
                         }
                         MotionResult::new(o, MotionKind::Exclusive)
                     }

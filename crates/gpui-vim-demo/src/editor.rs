@@ -95,8 +95,14 @@ pub struct Editor {
     /// Shaped geometry per line number, captured at paint time: the line's
     /// text origin X and the shaped line. Gives the mouse and the IME rect
     /// exact positions for wide/clustered glyphs (a uniform cell width is
-    /// wrong for CJK and emoji).
+    /// wrong for CJK and emoji). Evicted to the visible range every frame
+    /// (see `sync_visible_state`) so scrolling a large file can't grow it.
     shaped_lines: RefCell<HashMap<usize, (Pixels, gpui::ShapedLine)>>,
+    /// Search highlights pre-filtered to the visible byte range, refreshed
+    /// once per frame by the uniform_list callback. `compute_line_overlays`
+    /// clamps its input against every rendered line — a 10k-match hlsearch
+    /// list × ~40 visible lines would rescan all 10k per line, per frame.
+    visible_highlights: RefCell<std::rc::Rc<Vec<Range<usize>>>>,
     dragging: Cell<bool>,
     /// Caret blink state (library helper; the engine owns no timers).
     caret_blinker: std::rc::Rc<gpui_vim::render::CaretBlinker>,
@@ -128,6 +134,7 @@ impl Editor {
         let buffer = RopeBuffer::new(initial_text);
         let vim = VimState::new();
         let host = HostState::new(buffer.shared().clone());
+        let scratch = RopeBuffer::new("~ scratch buffer\n");
         let editor = Editor {
             tabs: vec![
                 BufferTab {
@@ -138,8 +145,10 @@ impl Editor {
                 },
                 BufferTab {
                     name: "scratch",
-                    buffer: RopeBuffer::new("~ scratch buffer\n"),
-                    host: HostState::new(RopeBuffer::new("").shared().clone()),
+                    // the host snapshots THIS rope for undo — a detached one
+                    // would restore empty text on the first `u`
+                    buffer: scratch.clone(),
+                    host: HostState::new(scratch.shared().clone()),
                     vim: VimState::new(),
                 },
             ],
@@ -151,6 +160,7 @@ impl Editor {
             text_area_bounds: Cell::new(Bounds::default()),
             char_width: Cell::new(8.4),
             shaped_lines: RefCell::new(HashMap::new()),
+            visible_highlights: RefCell::new(std::rc::Rc::new(Vec::new())),
             dragging: Cell::new(false),
             caret_blinker: gpui_vim::render::CaretBlinker::new(),
             status_message: None,
@@ -476,6 +486,7 @@ impl Editor {
                             editor
                                 .visible_lines
                                 .set((visible.start, visible.end.saturating_sub(1)));
+                            editor.sync_visible_state(visible.clone());
                         });
                         visible
                             .clone()
@@ -515,6 +526,37 @@ impl Editor {
             )
     }
 
+    /// Per-frame visible-state sync from the uniform_list callback (no
+    /// notify): filter search highlights to the visible byte range, evict
+    /// shaped-line cache entries outside the viewport, and mirror the
+    /// visible range into the host viewport the engine's scroll motions
+    /// read (C-d/C-f/C-b/H/M/L use it as the scroll amount — a stale value
+    /// makes them scroll by the wrong distance).
+    fn sync_visible_state(&mut self, visible: Range<usize>) {
+        let buf = &self.tab().buffer;
+        let line_count = buf.line_count();
+        if visible.start >= line_count {
+            *self.visible_highlights.borrow_mut() = std::rc::Rc::new(Vec::new());
+            return;
+        }
+        let first = visible.start;
+        let last = (visible.end.saturating_sub(1)).min(line_count - 1);
+        let lo = buf.line_start(first);
+        let hi = buf.line_range(last).end;
+        let highlights: Vec<Range<usize>> = self.tab()
+            .host
+            .highlights
+            .iter()
+            .filter(|r| r.end > lo && r.start < hi)
+            .cloned()
+            .collect();
+        *self.visible_highlights.borrow_mut() = std::rc::Rc::new(highlights);
+        self.shaped_lines
+            .borrow_mut()
+            .retain(|&line, _| line >= first && line <= last);
+        self.tab_mut().host.viewport = (first, last);
+    }
+
     fn gutter_text(&self, line: usize) -> String {
         let current = self.tab().buffer.offset_to_line(self.tab().vim.cursor_offset());
         let label = if self.tab().vim.options.relativenumber && line != current {
@@ -546,11 +588,12 @@ impl Editor {
         if line >= self.tab().buffer.line_count() {
             return gpui_vim::render::LineOverlays::default();
         }
+        let highlights = self.visible_highlights.borrow();
         gpui_vim::render::compute_line_overlays(&gpui_vim::render::LineOverlayInputs {
             vim: &self.tab().vim,
             buf: &self.tab().buffer,
             line,
-            search_highlights: &self.tab().host.highlights,
+            search_highlights: highlights.as_slice(),
             search_current: self.tab().host.current_highlight.clone(),
             ime_marked: self.marked_range.clone(),
             caret_visible: self.caret_blinker.is_visible(),
@@ -609,17 +652,17 @@ impl Editor {
                                 let shaped = gpui_vim::render::paint_vim_line(
                                     window,
                                     cx,
-                                    text.clone(),
+                                    text,
                                     bounds,
                                     px(LINE_HEIGHT),
                                     &overlays,
                                     &style,
                                 );
                                 view.update(cx, |editor, _| {
-                                    editor.shaped_lines.borrow_mut().insert(
-                                        line,
-                                        (bounds.origin.x, shaped.clone()),
-                                    );
+                                    editor
+                                        .shaped_lines
+                                        .borrow_mut()
+                                        .insert(line, (bounds.origin.x, shaped));
                                 });
                             }
                         },

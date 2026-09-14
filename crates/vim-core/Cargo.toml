@@ -9,3 +9,8 @@ authors.workspace = true
 [dependencies]
 regex = { workspace = true }
 unicode-width = { workspace = true }
+
+[dev-dependencies]
+# ropey-backed buffer for the probe's "good host" cases (the naive B above
+# demonstrates the bad-host cost; see PERFORMANCE.md §1)
+ropey = { workspace = true }

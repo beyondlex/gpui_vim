@@ -463,6 +463,7 @@ impl VimState {
             ctx.host.bell();
             return;
         }
+        let mut applied = false;
         for arg in args.split_whitespace() {
             let ok = if let Some(name) = arg.strip_suffix('!') {
                 match self.options.bool_option(name) {
@@ -480,6 +481,12 @@ impl VimState {
                 ctx.host.bell();
                 return;
             }
+            applied = true;
+        }
+        // search options (ic/isd/…) change how the next scan must run: drop
+        // the cached match list so `n` re-scans under the new options
+        if applied {
+            self.search.matches_generation = None;
         }
     }
 

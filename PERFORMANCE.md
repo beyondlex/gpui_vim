@@ -18,11 +18,18 @@
 | `:%s/foo/bar/g`（600KB，5 万行） | 2.5ms | 一次性 |
 | `gqG` 重排 200 行 | 2.5ms | 一次性 |
 | **hlsearch 高亮重扫**（900KB，1 万匹配） | **0.3 ms/次编辑** | 见下文 |
+| `n` 连跳（900KB，1 万匹配，ropey buffer） | **3.4 μs/键**（缓存未命中时 ~308 μs） | 匹配列表按编辑代次缓存 |
 
 **唯一随文件大小线性增长的按键路径**是 hlsearch 高亮重扫：开启
 `hlsearch` 且有搜索词时，每次编辑（insert 打字的每个字符）都会全文件
 正则重扫。900KB 时 0.3ms/键无感；10MB 约 3ms/键开始可感；更大文件需要
 节流（见宿主清单第 5 条）。
+
+`n`/`N` 不在其中：匹配列表带编辑代次缓存，任何编辑（`edit_*` 三个
+入口）或引擎驱动的 undo/redo、`:set` 都会失效它。缓存命中时连续
+`n` 只走列表，不重扫——优化前每次 `n` 全文件重扫约 308 μs，命中后
+3.4 μs（约 90 倍）。空列表永不信任（`:noh` 清空后 `n` 仍要能跳转并
+重新点亮高亮），所以空结果场景每次 `n` 仍会重扫。
 
 引擎语义保证（宿主可以依赖）：
 
@@ -31,6 +38,8 @@
 - 引擎把所有 buffer 变更收敛到 `edit_insert/edit_delete/edit_replace`
   三个入口（`VimState` 内部），marks、可视选区、搜索高亮随之平移
 - 搜索匹配上限 10,000 条（防病态正则拖垮渲染）
+- `n`/`N` 的匹配列表按编辑代次缓存（`SearchState::matches_generation`），
+  宿主只需保证 buffer 变更全部经由引擎（undo/redo 由引擎发起，已覆盖）
 
 一个实测教训（写进代码注释了）：通过 `VimBuffer` trait **逐行**扫描
 替代整缓冲 `slice` + 扫描，实测慢约 20,000 倍（2 万次 trait 调用 +
@@ -57,25 +66,35 @@ O(offset) 每次调用，在大文件上一次按键就是毫秒级（基准里�
 insert 模式下每个 undo 组只快照一次（引擎保证），尚可接受；但更大的
 问题是 redo 栈同样翻倍。建议直接用 ropey。
 
-### 3. 文本渲染：shaped line 缓存（生产化的最大一项）
+### 3. 文本渲染：shape 有 gpui 内部缓存，剩余成本在每帧的小额分配
 
-文本整形（font shaping）是渲染最贵的步骤。`gpui_vim::render::paint_vim_line`
-返回 `gpui::ShapedLine`——**缓存它**：
+文本整形（font shaping）是渲染最贵的步骤。gpui（0.2 起）的
+`LineLayoutCache` 已经跨帧缓存 layout，键是（text、font_size、run 切分），
+所以同一行在内容与样式不变时不会重复整形；光标移动/闪烁只影响光标
+所在那一行的 run 切分，成本可忽略。宿主层再缓存 `ShapedLine` 的收益
+主要在绕开每次调用的键哈希与 `ShapedLine` 构造，属可选优化。
 
-- 键：行号 + 文本内容代次（或行内容 hash）
-- 失效：收到引擎编辑后，只失效编辑行区间内的缓存行（引擎的
-  `edit_*` 语义保证其余行的字节偏移由 marks/匹配平移处理，行内容不变）
-- 数量：只缓存可见行（viewport 内 + 少量余量），滚动时淘汰
+真正值得做的是把**每行每帧**的固定开销压住（demo 已照此实现，可照抄）：
 
-demo（`gpui-vim-demo/src/editor.rs`）为简单起见每帧重新 shape 且
-`shaped_lines` 缓存不淘汰——**这是参考实现的刻意简化，生产宿主不要照抄**。
+- `paint_vim_line` 把文本按所有权移交 `shape_line`（gpui 的
+  `SharedString` clone 是堆拷贝，一行一帧一次已经足够）
+- paint 回调里 `shaped` 直接 move 进命中测试缓存，不再 clone
+- 搜索高亮按可见行区间**每帧预过滤一次**（`sync_visible_state`），
+  不要把 1 万条高亮交给 `compute_line_overlays` 对每条可见行做 clamp
+- 行几何缓存（`shaped_lines`）按可见范围每帧淘汰（见第 7 条）
 
-### 4. 重绘粒度
+### 4. 重绘粒度与 viewport 同步
 
 编辑后调用一次 `cx.notify()` 即可让 gpui 重绘可见区（uniform_list
 只渲染可见行，天然按视口裁剪）。避免在高频事件（鼠标移动、滚动）里
 做全量状态重算。IME 合成期间的 `replace_and_mark_text_in_range` 每个
 音节都会触发 notify——这是预期行为，不要在路径上加额外工作。
+
+**滚动 motion 依赖宿主回报 viewport**：`C-d`/`C-f`/`C-b`/`H`/`M`/`L`
+的步长与定位读 `VimHost::viewport()`。宿主必须在滚动/尺寸变化时把
+实际可见行区间同步进去（demo 在 uniform_list 回调里随 `visible_lines`
+一起写 `host.viewport`），否则这些键按默认值 (0, 24) 滚动，窗口越高
+错得越多。
 
 ### 5. hlsearch 重扫节流（大文件必须）
 
@@ -108,9 +127,9 @@ if idle_for(150.ms()) {
 
 ### 7. 缓存卫生
 
-凡是"按行缓存渲染产物"的结构都要有淘汰策略（demo 的 `shaped_lines`
-没有，是已知简化）。按可见范围 + LRU 或直接在 uniform_list 回调里
-重建都行。
+凡是"按行缓存渲染产物"的结构都要有淘汰策略。demo 的 `shaped_lines`
+在每帧的 uniform_list 回调里 retain 到可见区间——滚动大文件时缓存
+大小恒定在"一屏 + 漂移"，不会随行数增长。
 
 ## 什么时候不需要担心
 

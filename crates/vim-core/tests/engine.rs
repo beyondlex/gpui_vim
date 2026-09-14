@@ -406,6 +406,51 @@ fn search_and_nN() {
     assert_eq!(f.cursor(), 18); // next "two"
 }
 
+// ---- n/N match cache: reuse across keystrokes, invalidated by edits/undo ------
+
+#[test]
+fn n_uses_shifted_offsets_after_edit() {
+    // an edit before the matches must shift the cached offsets
+    let mut f = Fixture::at("foo bar foo baz", 0, 0);
+    f.feed(["/", "f", "o", "o", "<CR>"]);
+    assert_eq!(f.cursor(), 8);
+    f.feed(["I"]);
+    f.type_text("xx");
+    f.feed(["<Esc>"]); // "xxfoo bar foo baz", cursor 1
+    f.feed(["n"]);
+    assert_eq!(f.cursor(), 2); // the shifted FIRST foo, not the stale offset 8
+}
+
+#[test]
+fn n_rescans_after_edits_when_live_hlsearch_update_is_off() {
+    // with live highlight updates off, `n` is the only consumer of the
+    // cached list — it must notice the appended match through the
+    // edit-generation bump
+    let mut f = Fixture::at("foo bar", 0, 0);
+    f.vim.set_hlsearch_live_update(false);
+    f.feed(["/", "f", "o", "o", "<CR>"]); // matches [0..3]
+    f.feed(["A"]);
+    f.type_text(" foo"); // "foo bar foo", cursor 10
+    f.feed(["<Esc>"]);
+    f.feed(["N"]);
+    assert_eq!(f.cursor(), 8); // the stale list [0..3] would park it on 0
+}
+
+#[test]
+fn n_rescans_after_undo() {
+    let mut f = Fixture::at("foo bar foo", 0, 0);
+    f.vim.set_hlsearch_live_update(false);
+    f.feed(["/", "f", "o", "o", "<CR>"]); // cursor on the second foo
+    assert_eq!(f.cursor(), 8);
+    f.feed(["x"]); // "foo bar oo" — the second match is gone
+    f.feed(["n"]);
+    assert_eq!(f.cursor(), 0); // wraps to the only remaining match
+    f.feed(["u"]); // "foo bar foo", cursor restored to 8
+    f.feed(["g", "g"]); // cursor 0: the restored second foo is strictly ahead
+    f.feed(["n"]);
+    assert_eq!(f.cursor(), 8); // the restored second foo is findable again
+}
+
 #[test]
 fn marks() {
     let f = {

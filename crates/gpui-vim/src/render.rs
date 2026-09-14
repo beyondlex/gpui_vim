@@ -194,6 +194,17 @@ pub fn paint_vim_line(
                 .and_then(|rest| rest.chars().next())
                 .map(|c| at..at + c.len_utf8())
         });
+    // block-caret width needs the char under the cursor; compute before
+    // `text` moves into the shaper (per visible line, per frame — a
+    // SharedString clone is a heap copy, so keep it single-ownership)
+    let caret_end_byte = overlays
+        .cursor
+        .filter(|_| overlays.cursor_block)
+        .and_then(|at| {
+            text.get(at..)
+                .and_then(|rest| rest.chars().next())
+                .map(|c| (at + c.len_utf8()).min(text.len()))
+        });
     let mut runs: Vec<TextRun> = Vec::new();
     let mut push_run = |len: usize, color: Hsla| {
         if len > 0 {
@@ -217,7 +228,7 @@ pub fn paint_vim_line(
     }
     let shaped = window
         .text_system()
-        .shape_line(text.clone(), style.font_size, &runs, None);
+        .shape_line(text, style.font_size, &runs, None);
 
     // overlay quads under the text
     for (byte_range, color, full_width) in &overlays.quads {
@@ -247,11 +258,7 @@ pub fn paint_vim_line(
             // advance to the next char boundary — byte+1 is mid-char for
             // multi-byte characters (x_for_index rounds up, which would
             // give a zero-width quad)
-            let end_byte = text
-                .get(cursor_byte..)
-                .and_then(|rest| rest.chars().next())
-                .map(|c| (cursor_byte + c.len_utf8()).min(text.len()))
-                .unwrap_or(cursor_byte);
+            let end_byte = caret_end_byte.unwrap_or(cursor_byte);
             let next = f32::from(shaped.x_for_index(end_byte)) - x;
             if next > 0.5 {
                 next

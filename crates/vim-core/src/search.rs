@@ -16,6 +16,13 @@ pub struct SearchState {
     /// The match under the cursor for `n`/`N` stepping.
     pub last_matches: Vec<Range<usize>>,
     pub last_index: Option<usize>,
+    /// Buffer edit generation `last_matches` was computed at. Every edit
+    /// funnels through `VimState::edit_*` (or engine-driven undo/redo), which
+    /// bumps the generation, so consecutive `n`/`N` keystrokes walk the
+    /// cached list instead of re-scanning the buffer per keypress. An empty
+    /// `last_matches` is never trusted from the cache: `:noh` empties it
+    /// without an edit, and `n` must still jump (and re-arm highlights).
+    pub matches_generation: Option<u64>,
 }
 
 impl Default for SearchState {
@@ -25,6 +32,7 @@ impl Default for SearchState {
             forward: true,
             last_matches: Vec::new(),
             last_index: None,
+            matches_generation: None,
         }
     }
 }
@@ -73,13 +81,13 @@ pub fn set_pattern_inner(
     forward: bool,
 ) {
     let matches = all_matches(vim, buf, &pattern);
-    let publish = matches.clone();
     vim.search.pattern = Some(pattern);
     vim.search.forward = forward;
     vim.search.last_matches = matches;
+    vim.search.matches_generation = Some(vim.edit_generation);
     vim.search.last_index = None;
     if vim.options.hlsearch {
-        host.set_search_highlights(&publish, None);
+        host.set_search_highlights(&vim.search.last_matches, None);
     } else {
         host.set_search_highlights(&[], None);
     }
@@ -88,6 +96,7 @@ pub fn set_pattern_inner(
 /// Clear highlights (`:noh`).
 pub fn clear_highlights(vim: &mut VimState, ctx: &mut Ctx) {
     vim.search.last_matches.clear();
+    vim.search.matches_generation = None;
     vim.search.last_index = None;
     ctx.host.set_search_highlights(&[], None);
 }
@@ -96,7 +105,15 @@ pub fn clear_highlights(vim: &mut VimState, ctx: &mut Ctx) {
 /// by the caller for `N`). Also used after `*`.
 pub fn jump_to_match(vim: &mut VimState, buf: &dyn VimBuffer, forward: bool, count: usize) -> Option<usize> {
     let pattern = vim.search.pattern.clone()?;
-    let mut matches = all_matches(vim, buf, &pattern);
+    // The full-buffer scan runs only when the text changed since the matches
+    // were computed; a run of `n`/`N` keystrokes walks the cached list, which
+    // keeps per-keypress cost O(1) instead of O(buffer) on large files.
+    if vim.search.matches_generation != Some(vim.edit_generation) {
+        let matches = all_matches(vim, buf, &pattern);
+        vim.search.matches_generation = Some(vim.edit_generation);
+        vim.search.last_matches = matches;
+    }
+    let matches = &vim.search.last_matches;
     if matches.is_empty() {
         return None;
     }
@@ -111,9 +128,7 @@ pub fn jump_to_match(vim: &mut VimState, buf: &dyn VimBuffer, forward: bool, cou
             .unwrap_or(matches.len() - 1)
     };
     let index = (start_index as u64 + (count as u64 - 1)) as usize;
-    let chosen = matches.get(index % matches.len())?.start;
-    vim.search.last_matches = std::mem::take(&mut matches);
-    Some(chosen)
+    Some(matches.get(index % matches.len())?.start)
 }
 
 /// `*` / `#`: build a whole-word pattern from the word under the cursor and

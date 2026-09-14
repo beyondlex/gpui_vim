@@ -34,6 +34,56 @@ impl VimBufferMut for B {
     fn insert_text(&mut self, o: usize, t: &str) { self.0.borrow_mut().insert_str(o, t) }
     fn delete_range(&mut self, r: Range<usize>) { self.0.borrow_mut().replace_range(r, "") }
 }
+
+/// ropey-backed buffer: the "good host" (O(log n) line lookups), mirroring
+/// the demo's `RopeBuffer`
+#[derive(Clone)]
+struct R(Rc<RefCell<ropey::Rope>>);
+impl VimBuffer for R {
+    fn len(&self) -> usize { self.0.borrow().len_bytes() }
+    fn line_count(&self) -> usize { self.0.borrow().len_lines() }
+    fn char_at(&self, o: usize) -> Option<char> {
+        let rope = self.0.borrow();
+        let ci = rope.try_byte_to_char(o).ok()?;
+        rope.get_char(ci)
+    }
+    fn prev_char_offset(&self, o: usize) -> Option<usize> {
+        let rope = self.0.borrow();
+        if o == 0 || o > rope.len_bytes() { return None }
+        let ci = rope.try_byte_to_char(o).ok()?;
+        if ci == 0 { return None }
+        let prev = rope.get_char(ci - 1)?;
+        Some(o - prev.len_utf8())
+    }
+    fn line_range(&self, line: usize) -> Range<usize> {
+        let rope = self.0.borrow();
+        if line >= rope.len_lines() { return rope.len_bytes()..rope.len_bytes() }
+        let start = rope.line_to_byte(line);
+        let end = if line + 1 < rope.len_lines() { rope.line_to_byte(line + 1) } else { rope.len_bytes() };
+        start..end
+    }
+    fn offset_to_line(&self, o: usize) -> usize {
+        let rope = self.0.borrow();
+        rope.try_byte_to_line(o.min(rope.len_bytes())).unwrap_or(0)
+    }
+    fn slice(&self, r: Range<usize>) -> String {
+        let rope = self.0.borrow();
+        let (s, e) = (rope.try_byte_to_char(r.start).unwrap_or(0), rope.try_byte_to_char(r.end).unwrap_or(0));
+        rope.slice(s..e).to_string()
+    }
+}
+impl VimBufferMut for R {
+    fn insert_text(&mut self, o: usize, t: &str) {
+        let mut rope = self.0.borrow_mut();
+        let ci = rope.byte_to_char(o);
+        rope.insert(ci, t);
+    }
+    fn delete_range(&mut self, r: Range<usize>) {
+        let mut rope = self.0.borrow_mut();
+        let (s, e) = (rope.byte_to_char(r.start), rope.byte_to_char(r.end));
+        rope.remove(s..e);
+    }
+}
 #[derive(Default)]
 struct H { hl: Vec<Range<usize>> }
 impl VimHost for H {
@@ -49,7 +99,7 @@ impl VimHost for H {
     fn status_message(&mut self, _: &str) {}
 }
 
-fn feed(vim: &mut VimState, buf: &mut B, h: &mut H, keys: &[Key]) {
+fn feed<B: VimBufferMut>(vim: &mut VimState, buf: &mut B, h: &mut H, keys: &[Key]) {
     for k in keys {
         let mut ctx = Ctx { buf, host: h };
         vim.handle_key(&mut ctx, k.clone());
@@ -121,4 +171,17 @@ fn main() {
     let t = Instant::now();
     feed(&mut vim, &mut buf, &mut h, &keys);
     println!("100x 'x' delete (10k lines):     {:>8.2?}  ({:.1} us/key)", t.elapsed(), t.elapsed().as_micros() as f64 / 100.0);
+
+    // ---- 7. n 连跳（900KB、1 万匹配，ropey buffer）----
+    // hlsearch 常驻后连按 n：未命中缓存时每次都是全文件 slice + 正则重扫；
+    // ropey buffer 隔离掉朴素 line-lookup 的宿主成本，反映引擎自身开销
+    let lines: String = "the quick brown fox jumps over the lazy dog\n".repeat(20_000); // ~900KB
+    let mut buf = R(Rc::new(RefCell::new(ropey::Rope::from(lines))));
+    let mut vim = VimState::new();
+    let mut h = H::default();
+    feed(&mut vim, &mut buf, &mut h, &[Key::parse("/"), Key::char('f'), Key::char('o'), Key::char('x'), Key::named("enter")]);
+    let keys: Vec<Key> = std::iter::repeat(Key::parse("n")).take(200).collect();
+    let t = Instant::now();
+    feed(&mut vim, &mut buf, &mut h, &keys);
+    println!("200x 'n' jump (900KB ropey):    {:>8.2?}  ({:.1} us/key)", t.elapsed(), t.elapsed().as_micros() as f64 / 200.0);
 }

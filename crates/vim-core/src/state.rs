@@ -218,6 +218,10 @@ pub struct VimState {
 
     undo_seq: u64,
     open_undo: Option<u64>,
+    /// Bumped by every buffer mutation (the `edit_*` funnels, engine-driven
+    /// undo/redo, option changes through `:set`). Lets `n`/`N` tell whether
+    /// the cached match list still describes the current text.
+    pub(crate) edit_generation: u64,
     /// Platform plumbing (gpui-vim): the last printable char the key
     /// interceptor declined in insert mode. On Linux/Windows the platform
     /// delivers that same char again through the text-input path, where it
@@ -284,6 +288,7 @@ impl VimState {
             tables: CommandTables::build(),
             undo_seq: 0,
             open_undo: None,
+            edit_generation: 0,
             pending_unknown_char: None,
         }
     }
@@ -766,9 +771,11 @@ impl VimState {
             .or_else(|| matches.last())
             .cloned();
         let index = current.as_ref().and_then(|c| matches.iter().position(|m| m == c));
-        self.search.last_matches = matches.clone();
+        self.search.last_matches = matches;
+        self.search.matches_generation = Some(self.edit_generation);
         self.search.last_index = index;
-        ctx.host.set_search_highlights(&matches, current);
+        let matches = &self.search.last_matches;
+        ctx.host.set_search_highlights(matches, current);
     }
 
     // ---- buffer edits (the ONLY mutation paths; keep marks in sync) -------
@@ -783,6 +790,7 @@ impl VimState {
         ctx.buf.insert_text(at, text);
         let len = text.len();
         self.marks.adjust_insert(at, len);
+        self.edit_generation += 1;
         if let Some((a, b, _)) = &mut self.last_visual {
             if *a > at {
                 *a += len;
@@ -799,6 +807,7 @@ impl VimState {
         }
         ctx.buf.delete_range(range.clone());
         self.marks.adjust_delete(range.clone());
+        self.edit_generation += 1;
         if let Some((a, b, _)) = &mut self.last_visual {
             if *a >= range.end {
                 *a -= range.len();
@@ -820,6 +829,7 @@ impl VimState {
         ctx.buf.replace_range(range.clone(), text);
         let new_len = text.len();
         self.marks.adjust_replace(range.clone(), new_len);
+        self.edit_generation += 1;
         let delta = new_len as isize - range.len() as isize;
         if let Some((a, b, _)) = &mut self.last_visual {
             let apply = |pos: &mut usize| {
@@ -2003,6 +2013,9 @@ impl VimState {
                 let count = self.take_total_count();
                 for _ in 0..count {
                     if let Some(offset) = ctx.host.undo() {
+                        // the host swapped the text underneath the engine:
+                        // cached match offsets are stale until a re-scan
+                        self.edit_generation += 1;
                         self.cursor.offset = clamp_to_line_end(ctx.buf, offset.min(ctx.buf.len()));
                     } else {
                         ctx.host.bell();
@@ -2016,6 +2029,7 @@ impl VimState {
                 let count = self.take_total_count();
                 for _ in 0..count {
                     if let Some(offset) = ctx.host.redo() {
+                        self.edit_generation += 1;
                         self.cursor.offset = clamp_to_line_end(ctx.buf, offset.min(ctx.buf.len()));
                     } else {
                         ctx.host.bell();
