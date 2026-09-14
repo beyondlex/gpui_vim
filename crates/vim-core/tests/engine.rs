@@ -1744,3 +1744,29 @@ fn unknown_leader_prefix_waits_for_its_mapping() {
     f.feed(["\\", "a"]);
     assert_eq!(f.host.actions, vec!["Test.Lehrer".to_owned()]);
 }
+
+// ---- `,` builtin (repeat-find) vs `,` mapping prefix (default mapleader) ------
+
+#[test]
+fn leader_comma_mapping_fires_despite_repeat_find_builtin() {
+    // `,` alone is a complete builtin (repeat-find reverse) AND the default
+    // mapleader: with a `,d` mapping installed, the first `,` must keep
+    // waiting instead of firing the builtin, so `,d` completes the mapping.
+    let mut f = Fixture::at(MULTI, 1, 0);
+    f.vim
+        .keymaps_mut()
+        .map_str_noremap(vim_core::keymap::ModeClass::Normal, ",d", ":action Test.Leader<CR>", true);
+    f.feed([",", "d"]);
+    assert_eq!(f.host.actions, vec!["Test.Leader".to_owned()]);
+}
+
+#[test]
+fn comma_repeat_find_still_fires_without_comma_mapping() {
+    // without any `,`-prefixed mapping, `,` keeps its repeat-find semantics
+    let mut f = Fixture::at("a x b x c\n", 0, 0);
+    f.feed(["f", "x"]); // first x at col 2
+    f.feed([";"]);      // next x at col 6
+    assert_eq!(f.cursor(), 6);
+    f.feed([","]);      // back to the previous x at col 2
+    assert_eq!(f.cursor(), 2);
+}

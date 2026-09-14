@@ -497,6 +497,23 @@ impl VimState {
                         };
                         match self.tables.trie(phase).get(&combined) {
                             keymap::Walk::Hit(kind) => {
+                                // `,` is both a complete builtin (repeat-find
+                                // reverse) and a live mapping prefix
+                                // (`<Leader>d` with the default mapleader):
+                                // vim without 'timeout' keeps waiting while
+                                // the combined input can still grow into a
+                                // mapping — fire the builtin only when no
+                                // mapping can extend it.
+                                let class = mapping_class_for(self.mode);
+                                let mapping_can_extend = match self.keymaps.table(class) {
+                                    Some(table) => {
+                                        matches!(table.get(&combined), keymap::Walk::Pending)
+                                    }
+                                    None => false,
+                                };
+                                if mapping_can_extend {
+                                    return KeyResult::Consumed;
+                                }
                                 let queued: Vec<Key> =
                                     self.pending_keys.drain(..).collect();
                                 self.cmd_seq.clear();
