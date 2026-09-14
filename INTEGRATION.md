@@ -65,6 +65,11 @@ impl VimHost for HostState {
     fn redo(&mut self) -> Option<usize> { todo!() }
     fn changed(&mut self) { }
     fn bell(&mut self) { /* visual feedback for ignored keys */ }
+    // The trait also has defaulted members you can override as needed:
+    // save / request_close / status_message / buffer_name / cycle_buffer /
+    // scroll_to_line_anchored / dispatch_host_action_hinted — these power
+    // `:w`, `:q`, `:bn`/`:bp`, zz/zt/zb anchors, error messages and the
+    // IdeaVim-style `:action <id>` bridge. See crates/vim-core/src/host.rs.
 }
 ```
 
@@ -203,10 +208,13 @@ vim.search.pattern.clone();
   release ordering attaches stray modifiers to the event.
 
 - The engine is single-caret; visual-block and multi-cursor are on the roadmap.
-- Search patterns use Rust `regex` syntax (covers most vim "magic" patterns).
-- `:` ex commands, `:s`, macros (`q`/`@`), dot repeat (`.`) and folds are not
-  implemented yet; the command table is data-driven so adding them is
-  additive (see `crates/vim-core/src/tables.rs`).
+- Search patterns use Rust `regex` syntax (covers most vim "magic" patterns;
+  replacement in `:s` follows Rust `$1` expansion, not vim's `\1`).
+- Macros (`q`/`@`), dot repeat (`.`) and `:` ex commands (`:noh`, `:set`,
+  `:%s`, ranges, `:d`, `:w`/`:q`/`:wq`, `:bn`/`:bp`, `:action`) ARE
+  implemented. Folds and external `:!` commands are not; the command table
+  is data-driven so adding commands is additive (see
+  `crates/vim-core/src/tables.rs`).
 - The clipboard hook is synchronous but gpui's clipboard needs `&mut App`:
   stage writes in the host and flush them in `vim_did_process_key`, and sync
   the system clipboard into the host on window focus / paste (see demo).

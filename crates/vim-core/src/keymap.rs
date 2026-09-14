@@ -56,8 +56,13 @@ impl<T> Trie<T> {
                 Some(child) => node = child,
                 None => return Walk::Miss,
             }
+            // A terminal node with no children ends EVERY sequence passing
+            // through it, so hitting one before the last key can only be a
+            // dead end: e.g. for stored `gg`, the input `gxq` must Miss on
+            // the `x` (waiting would never resolve — no sequence continues
+            // a leaf). Leaves WITH children (a sequence that is also a
+            // prefix, like `g` of `gg`) do not trip this and stay Pending.
             if i + 1 < keys.len() && node.value.is_some() && node.children.is_empty() {
-                // dead end before the sequence finished
                 return Walk::Miss;
             }
         }
@@ -163,10 +168,12 @@ pub fn lookup(table: Option<&Trie<Mapping>>, queue: &[Key]) -> MappingMatch {
         },
         Walk::Pending => MappingMatch::Waiting,
         Walk::Miss => {
-            // a shorter prefix of the queue may still be waiting (e.g. the
-            // queue holds "jk" while "j" is unmapped): only relevant when
-            // the *last* keys form a pending prefix — handled by Waiting
-            // during incremental feeding, so a miss here is final.
+            // Miss = the whole queue cannot grow into any mapping. Shorter
+            // suffixes are the callers' concern: keys were fed one at a
+            // time, so a waitable prefix was already reported as Waiting on
+            // an earlier feed — and a mapping that becomes complete mid-
+            // queue surfaces via the engine's combined-trie check. Nothing
+            // mapping-related is possible: fall through to builtins.
             MappingMatch::None
         }
     }

@@ -83,15 +83,12 @@ impl Registers {
     /// Yank semantics: explicit register, else `"0` + unnamed.
     pub fn store_yank(&mut self, explicit: Option<char>, text: String, kind: RegisterKind) {
         match explicit {
-            Some(name) if name != UNNAMED => {
-                self.store(name, text.clone(), kind);
-                self.last = Some(Register { text, kind });
-            }
-            _ => {
-                self.store(YANK, text.clone(), kind);
-                self.last = Some(Register { text, kind });
-            }
+            Some(name) if name != UNNAMED => self.store(name, text.clone(), kind),
+            _ => self.store(YANK, text.clone(), kind),
         }
+        // `store` skips `last` for the blackhole register; a yank there still
+        // records it (matches this engine's paste path, though vim would not).
+        self.last = Some(Register { text, kind });
     }
 
     /// Delete semantics: explicit register, else the numbered ring for

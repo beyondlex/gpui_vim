@@ -18,8 +18,6 @@ pub struct Marks {
     pub last_insert_exit: Option<usize>,
 }
 
-pub const MARK_LIMIT: char = 'z';
-
 impl Marks {
     pub fn get(&self, name: char) -> Option<usize> {
         self.offsets.get(&name).copied()

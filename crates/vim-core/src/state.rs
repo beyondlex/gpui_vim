@@ -79,6 +79,19 @@ struct BlockInsert {
 /// `Key::parse`, so it can never collide with real keys or mappings.
 pub(crate) const DOT_TEXT_MARKER: &str = "\u{0}dot-text";
 
+/// Safety valve for the pending-key pipeline: one keystroke may legitimately
+/// enqueue hundreds of keys (a mapping RHS, a replayed macro), but a live
+/// lock (e.g. a mapping that expands to itself despite the `:noremap`
+/// accounting) must not hang the host. On trip the queue is dropped.
+const MAX_PIPELINE_STEPS: usize = 500;
+
+/// Depth limit for nested mapping expansions. A `:map x y` + `:map y x` pair
+/// would otherwise ping-pong forever; vim errors out the same way.
+const MAX_MAP_DEPTH: usize = 100;
+
+/// Cap for the jumplist (`C-o`/`C-i` history) and the changelist (`g;`/`g,`).
+const LIST_LIMIT: usize = 100;
+
 /// One recorded step of the last change, for `.` repeat. Typed text is
 /// recorded as [`RecordedStep::Text`] (it never goes through the key
 /// pipeline — on macOS it arrives via the IME — so replay must not feed it
@@ -110,19 +123,12 @@ pub struct Cursor {
     pub desired_col: Option<usize>,
 }
 
-/// An in-progress insert session: one undo group + `'^` bookkeeping.
+/// Marker for an in-progress insert session. The session's undo group lives
+/// in `open_undo` and its exit point in `marks.last_insert_exit`; the engine
+/// only needs to know *whether* a session is open (exit behavior is currently
+/// uniform across insert kinds).
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct InsertSession {
-    /// Kept for future per-kind behaviors (e.g. `{count}R` repeating the
-    /// entered text); exit behavior is currently uniform across kinds.
-    #[allow(dead_code)]
-    kind: InsertKind,
-    #[allow(dead_code)]
-    start_offset: usize,
-    /// The undo group id (the host merges all session edits into one group).
-    #[allow(dead_code)]
-    group_id: u64,
-}
+pub(crate) struct InsertSession;
 
 /// The vim engine. Hosts embed one per buffer/editor.
 pub struct VimState {
@@ -432,22 +438,18 @@ impl VimState {
             // the pipeline loop never runs in cmdline mode — record here so
             // `.` can replay Ex commands typed into the prompt
             if !self.replaying {
-                self.recording.push(RecordedStep::Key(key.clone()));
-                if let Some((_, keys)) = &mut self.macro_capture {
-                    keys.push(RecordedStep::Key(key.clone()));
-                }
+                self.record_key(&key);
             }
             return self.cmdline_key(ctx, key);
         }
 
         self.pending_keys.push_back(key.clone());
-        let class = mapping_class_for(self.mode);
         let mut guard = 0usize;
         let mut any_unknown = false;
 
         while let Some(front) = self.pending_keys.front().cloned() {
             guard += 1;
-            if guard > 500 {
+            if guard > MAX_PIPELINE_STEPS {
                 self.pending_keys.clear();
                 self.reset_pending();
                 self.discard_change_record();
@@ -456,103 +458,12 @@ impl VimState {
                 return KeyResult::Consumed;
             }
 
-            // user mappings (not while an operator is pending: vim uses
-            // :omap there, which we do not support yet). Suppressed while a
-            // :noremap expansion is being consumed (no recursive remap).
-            // Waiting keeps the key IN the queue: insert-mode printables are
-            // declined by the pipeline and delivered by the host later, so
-            // popping them here would lose them.
-            if self.no_remap_left > 0 {
-                self.no_remap_left -= 1;
-            } else if self.op.is_none() {
-                let contiguous: &[Key] = self.pending_keys.make_contiguous();
-                match keymap::lookup(self.keymaps.table(class), contiguous) {
-                    MappingMatch::Match { used, expansion, noremap } => {
-                        self.pending_keys.drain(..used);
-                        if noremap {
-                            self.no_remap_left = expansion.len();
-                        }
-                        self.expanding_mapping = true;
-                        for key in expansion.into_iter().rev() {
-                            self.pending_keys.push_front(key);
-                        }
-                        self.map_depth += 1;
-                        if self.map_depth > 100 {
-                            self.pending_keys.clear();
-                            self.reset_pending();
-                            ctx.host.bell();
-                            return KeyResult::Consumed;
-                        }
-                        continue;
-                    }
-                    // a longer mapping may still follow — BUT if the
-                    // built-in command trie already resolves the combined
-                    // input, prefer it: `gg` must fire on the second press
-                    // even when a `gt` mapping exists (vim resolves the
-                    // moment the input stops being a mapping prefix)
-                    MappingMatch::Waiting => {
-                        if matches!(self.mode, Mode::Insert | Mode::Replace) {
-                            return KeyResult::Consumed;
-                        }
-                        let mut combined: Vec<Key> = self.cmd_seq.clone();
-                        combined.extend(self.pending_keys.iter().cloned());
-                        let phase = match self.mode {
-                            Mode::Visual { .. } => Phase::Visual,
-                            _ => Phase::Normal,
-                        };
-                        match self.tables.trie(phase).get(&combined) {
-                            keymap::Walk::Hit(kind) => {
-                                // `,` is both a complete builtin (repeat-find
-                                // reverse) and a live mapping prefix
-                                // (`<Leader>d` with the default mapleader):
-                                // vim without 'timeout' keeps waiting while
-                                // the combined input can still grow into a
-                                // mapping — fire the builtin only when no
-                                // mapping can extend it.
-                                let class = mapping_class_for(self.mode);
-                                let mapping_can_extend = match self.keymaps.table(class) {
-                                    Some(table) => {
-                                        matches!(table.get(&combined), keymap::Walk::Pending)
-                                    }
-                                    None => false,
-                                };
-                                if mapping_can_extend {
-                                    return KeyResult::Consumed;
-                                }
-                                let queued: Vec<Key> =
-                                    self.pending_keys.drain(..).collect();
-                                self.cmd_seq.clear();
-                                if !self.replaying {
-                                    for k in &queued {
-                                        self.recording
-                                            .push(RecordedStep::Key(k.clone()));
-                                        if let Some((_, mk)) =
-                                            &mut self.macro_capture
-                                        {
-                                            mk.push(RecordedStep::Key(k.clone()));
-                                        }
-                                    }
-                                }
-                                // a resolved command consumes cleanly;
-                                // Feed can't occur for a terminal trie hit
-                                match self.execute_command(ctx, *kind) {
-                                    ProcessOutcome::Consumed => {
-                                        return KeyResult::Consumed;
-                                    }
-                                    _ => return KeyResult::Consumed,
-                                }
-                            }
-                            // no builtin for the combined input either:
-                            // WAIT — the queued keys must stay for the
-                            // mapping to complete (e.g. `<Leader>a`)
-                            // ambiguous on BOTH sides: wait for more keys
-                            keymap::Walk::Pending | keymap::Walk::Miss => {
-                                return KeyResult::Consumed;
-                            }
-                        }
-                    }
-                    MappingMatch::None => {}
-                }
+            match self.mapping_step(ctx) {
+                MappingStep::Expanded => continue,
+                // both end the pipeline with the queue preserved for the next
+                // keystroke (a mapping or builtin still waiting for more keys)
+                MappingStep::Wait | MappingStep::Done => return KeyResult::Consumed,
+                MappingStep::FallThrough => {}
             }
 
             self.pending_keys.pop_front();
@@ -569,17 +480,11 @@ impl VimState {
             // the Text step instead, exactly once. Otherwise every typed
             // char would replay twice.
             if !self.replaying {
-                self.recording.push(RecordedStep::Key(front.clone()));
-                if let Some((_, keys)) = &mut self.macro_capture {
-                    keys.push(RecordedStep::Key(front.clone()));
-                }
+                self.record_key(&front);
             }
             let outcome = self.process_key(ctx, front);
             if !self.replaying && outcome == ProcessOutcome::Unknown {
-                self.recording.pop();
-                if let Some((_, keys)) = &mut self.macro_capture {
-                    keys.pop();
-                }
+                self.unrecord_key();
             }
             match outcome {
                 ProcessOutcome::Consumed => {}
@@ -617,6 +522,144 @@ impl VimState {
         }
     }
 
+    /// Try to resolve the queue front through the user's mappings.
+    ///
+    /// Skipped while an operator is pending (vim uses `:omap` there, which
+    /// is not supported yet) and while a `:noremap` expansion is being
+    /// consumed (no recursive remap).
+    fn mapping_step(&mut self, ctx: &mut Ctx) -> MappingStep {
+        if self.no_remap_left > 0 {
+            self.no_remap_left -= 1;
+            return MappingStep::FallThrough;
+        }
+        if self.op.is_some() {
+            return MappingStep::FallThrough;
+        }
+        let class = mapping_class_for(self.mode);
+        // Waiting keeps the key IN the queue: insert-mode printables are
+        // declined by the pipeline and delivered by the host later, so
+        // popping them here would lose them.
+        let contiguous: &[Key] = self.pending_keys.make_contiguous();
+        match keymap::lookup(self.keymaps.table(class), contiguous) {
+            MappingMatch::Match { used, expansion, noremap } => {
+                self.pending_keys.drain(..used);
+                if noremap {
+                    self.no_remap_left = expansion.len();
+                }
+                self.expanding_mapping = true;
+                for key in expansion.into_iter().rev() {
+                    self.pending_keys.push_front(key);
+                }
+                self.map_depth += 1;
+                if self.map_depth > MAX_MAP_DEPTH {
+                    self.pending_keys.clear();
+                    self.reset_pending();
+                    ctx.host.bell();
+                    return MappingStep::Done;
+                }
+                MappingStep::Expanded
+            }
+            // a longer mapping may still follow — BUT if the built-in
+            // command trie already resolves the combined input, prefer it:
+            // `gg` must fire on the second press even when a `gt` mapping
+            // exists (vim resolves the moment the input stops being a
+            // mapping prefix)
+            MappingMatch::Waiting => {
+                if matches!(self.mode, Mode::Insert | Mode::Replace) {
+                    return MappingStep::Wait;
+                }
+                let mut combined: Vec<Key> = self.cmd_seq.clone();
+                combined.extend(self.pending_keys.iter().cloned());
+                let phase = match self.mode {
+                    Mode::Visual { .. } => Phase::Visual,
+                    _ => Phase::Normal,
+                };
+                let builtin = self.tables.trie(phase).get(&combined);
+                if !matches!(builtin, keymap::Walk::Hit(_)) {
+                    // no builtin for the combined input either — the queued
+                    // keys must stay for the mapping to complete (e.g.
+                    // `<Leader>a`, ambiguous on BOTH sides)
+                    return MappingStep::Wait;
+                }
+                // `,` is both a complete builtin (repeat-find reverse) and a
+                // live mapping prefix (`<Leader>d` with the default
+                // mapleader): vim without 'timeout' keeps waiting while the
+                // combined input can still grow into a mapping — fire the
+                // builtin only when no mapping can extend it.
+                let mapping_can_extend = match self.keymaps.table(class) {
+                    Some(table) => matches!(table.get(&combined), keymap::Walk::Pending),
+                    None => false,
+                };
+                if mapping_can_extend {
+                    return MappingStep::Wait;
+                }
+                let keymap::Walk::Hit(kind) = builtin else {
+                    unreachable!("checked Hit above");
+                };
+                let kind = *kind;
+                let queued: Vec<Key> = self.pending_keys.drain(..).collect();
+                self.cmd_seq.clear();
+                if !self.replaying {
+                    for k in &queued {
+                        self.record_key(k);
+                    }
+                }
+                // a resolved command consumes cleanly; Feed can't occur for
+                // a terminal trie hit
+                let _ = self.execute_command(ctx, kind);
+                MappingStep::Done
+            }
+            MappingMatch::None => MappingStep::FallThrough,
+        }
+    }
+
+    /// Push one key onto the `.` recording and the active macro capture.
+    /// Callers gate on `replaying`: a replay must not append to the
+    /// recording (its steps come FROM the recording).
+    fn record_key(&mut self, key: &Key) {
+        self.recording.push(RecordedStep::Key(key.clone()));
+        if let Some((_, keys)) = &mut self.macro_capture {
+            keys.push(RecordedStep::Key(key.clone()));
+        }
+    }
+
+    /// Undo [`VimState::record_key`] when the engine declines the key.
+    fn unrecord_key(&mut self) {
+        self.recording.pop();
+        if let Some((_, keys)) = &mut self.macro_capture {
+            keys.pop();
+        }
+    }
+
+    /// Enter replay mode (`.` repeat / `@` macro): pipeline results are no
+    /// longer recorded, and the stale recording accumulated so far is
+    /// dropped (the `.` key itself must not become the first step of the
+    /// next change).
+    fn begin_replay(&mut self) {
+        // replay through the pipeline with `.` recording suppressed; the
+        // pipeline guard handles recursive macros
+        self.replaying = true;
+        self.recording.clear();
+        self.recording_mutated = false;
+    }
+
+    /// Queue `steps` for replay, `count` times. Plain keys re-enter the key
+    /// pipeline; recorded text is applied inline via the synthetic
+    /// [`DOT_TEXT_MARKER`] key.
+    fn enqueue_replay(&mut self, steps: &[RecordedStep], count: usize) {
+        for _ in 0..count {
+            for step in steps {
+                match step {
+                    RecordedStep::Key(key) => self.pending_keys.push_back(key.clone()),
+                    RecordedStep::Text(text) => {
+                        self.replay_texts.push_back(text.clone());
+                        self.pending_keys.push_back(Key::named(DOT_TEXT_MARKER));
+                    }
+                }
+            }
+        }
+    }
+
     fn process_key(&mut self, ctx: &mut Ctx, key: Key) -> ProcessOutcome {
         match self.mode {
             Mode::Normal => self.normal_key(ctx, key),
@@ -642,17 +685,27 @@ impl VimState {
 
     // ---- undo grouping -----------------------------------------------------
 
+    /// Open a new undo group unless one is already open for the current
+    /// logical command, and return its id.
+    fn open_undo_group(&mut self, ctx: &mut Ctx) -> u64 {
+        match self.open_undo {
+            Some(id) => id,
+            None => {
+                self.undo_seq += 1;
+                let id = self.undo_seq;
+                self.open_undo = Some(id);
+                ctx.host.begin_undo_group(id, self.cursor.offset);
+                id
+            }
+        }
+    }
+
     /// Open (or reuse) the undo group for the current logical command.
     pub(crate) fn begin_edit(&mut self, ctx: &mut Ctx) {
         if !self.replaying {
             self.recording_mutated = true;
         }
-        if self.open_undo.is_none() {
-            self.undo_seq += 1;
-            let id = self.undo_seq;
-            self.open_undo = Some(id);
-            ctx.host.begin_undo_group(id, self.cursor.offset);
-        }
+        self.open_undo_group(ctx);
     }
 
     /// Close any open undo group (end of a logical command or insert session).
@@ -729,7 +782,7 @@ impl VimState {
         if self.changes.last() != Some(&self.cursor.offset) {
             self.changes.truncate(self.change_pos + 1);
             self.changes.push(self.cursor.offset);
-            if self.changes.len() > 100 {
+            if self.changes.len() > LIST_LIMIT {
                 self.changes.remove(0);
             }
             self.change_pos = self.changes.len() - 1;
@@ -920,7 +973,7 @@ impl VimState {
         if self.jumps.last() != Some(&dest) {
             self.jumps.push(dest);
         }
-        while self.jumps.len() > 100 {
+        while self.jumps.len() > LIST_LIMIT {
             self.jumps.remove(0);
         }
         self.jump_pos = self.jumps.len() - 1;
@@ -934,21 +987,8 @@ impl VimState {
         // deletion + subsequent typing must undo as ONE step. Without this the
         // host would snapshot between deletion and typing, so the first `u`
         // only undid the typing and a second one was needed for the deletion.
-        let group_id = match self.open_undo {
-            Some(id) => id,
-            None => {
-                self.undo_seq += 1;
-                let id = self.undo_seq;
-                self.open_undo = Some(id);
-                ctx.host.begin_undo_group(id, self.cursor.offset);
-                id
-            }
-        };
-        self.insert_session = Some(InsertSession {
-            kind,
-            start_offset: self.cursor.offset,
-            group_id,
-        });
+        self.open_undo_group(ctx);
+        self.insert_session = Some(InsertSession);
         self.mode = if kind == InsertKind::Replace {
             Mode::Replace
         } else {
@@ -1150,7 +1190,6 @@ impl VimState {
 
     // ---- visual helpers ---------------------------------------------------------
 
-    #[allow(dead_code)]
     pub(crate) fn enter_visual(&mut self, kind: VisualKind) {
         self.visual_anchor = Some(self.cursor.offset);
         self.mode = Mode::Visual { kind };
@@ -1158,12 +1197,11 @@ impl VimState {
     }
 
     pub(crate) fn exit_visual(&mut self, ctx: &mut Ctx) {
-        if let Some((anchor, cursor, kind)) = self.visual_selection() {
+        if let Some((anchor, cursor, _)) = self.visual_selection() {
             let (lo, hi) = if anchor <= cursor { (anchor, cursor) } else { (cursor, anchor) };
             self.marks.last_visual = Some((lo, hi + 1));
             self.marks.set('<', lo);
             self.marks.set('>', hi);
-            let _ = kind;
             self.cursor.offset = lo;
         }
         self.last_visual = self
@@ -1346,8 +1384,69 @@ pub(crate) enum ProcessOutcome {
     Feed(Vec<Key>),
 }
 
+/// What the mapping layer decided for the key at the front of the pending
+/// queue (see [`VimState::mapping_step`]).
+#[derive(Debug, PartialEq, Eq)]
+enum MappingStep {
+    /// A mapping matched: the front keys were replaced by its expansion —
+    /// run the pipeline again on the expansion.
+    Expanded,
+    /// The pipeline is finished for this keystroke: either the
+    /// builtin-vs-mapping ambiguity resolved to the builtin (which was
+    /// executed), or a runaway mapping expansion was aborted.
+    Done,
+    /// Input may still grow into a mapping (or is declined in insert
+    /// mode): keep the queue and wait for more keys.
+    Wait,
+    /// No mapping applies — pop the front key and run it through the mode
+    /// handlers.
+    FallThrough,
+}
+
 impl VimState {
     // ---- normal mode -----------------------------------------------------
+
+    // normal_key and visual_key share four pipeline stages (char-argument
+    // completion, the `"{reg}` prefix, count digits and the final trie walk)
+    // but DELIBERATELY differ elsewhere:
+    // * Esc sits before the trie walk in visual (it must always abort the
+    //   selection) but after it in normal (a partial prefix like `g` must
+    //   first get its chance to miss);
+    // * a missed multi-key sequence retries without its first key in normal,
+    //   while visual just clears (the retry would re-run visual commands);
+    // * operator doubling and the gq/gw spelling bookkeeping only exist in
+    //   normal mode.
+
+    /// Complete a pending `"{reg}` prefix: the next printable key names the
+    /// register for the following command; anything else cancels it with a
+    /// bell (vim keeps the pending count, so only the register is dropped).
+    fn register_pending_key(&mut self, ctx: &mut Ctx, key: &Key) -> ProcessOutcome {
+        self.register_pending = false;
+        if let Some(c) = key.printable_char() {
+            self.register = Some(c);
+        } else {
+            self.register = None;
+            ctx.host.bell();
+        }
+        ProcessOutcome::Consumed
+    }
+
+    /// Absorb a count digit (`3` → count 3, `30` → count 30). A leading `0`
+    /// is not a count — it falls through to the trie as the line-start
+    /// motion. Returns `None` when the key is not a count digit.
+    fn count_digit_key(&mut self, key: &Key) -> Option<ProcessOutcome> {
+        if let KeyKind::Char(c) = &key.kind {
+            if key.modifiers.is_plain() && c.is_ascii_digit() {
+                let d = c.to_digit(10).unwrap() as usize;
+                if !(d == 0 && self.count.is_none()) {
+                    self.count = Some(self.count.unwrap_or(0) * 10 + d);
+                    return Some(ProcessOutcome::Consumed);
+                }
+                // 0 falls through to the trie (line-start motion)
+            }
+        }
+        None
+    }
 
     fn normal_key(&mut self, ctx: &mut Ctx, key: Key) -> ProcessOutcome {
         // 1. complete a pending char-argument
@@ -1355,14 +1454,7 @@ impl VimState {
             return self.complete_char_arg(ctx, key);
         }
         if self.register_pending {
-            self.register_pending = false;
-            if let Some(c) = key.printable_char() {
-                self.register = Some(c);
-                return ProcessOutcome::Consumed;
-            }
-            self.register = None;
-            ctx.host.bell();
-            return ProcessOutcome::Consumed;
+            return self.register_pending_key(ctx, &key);
         }
 
         // 2. operator doubling: dd / yy / >> / guu / g~~ / gqq / gww ...
@@ -1427,12 +1519,11 @@ impl VimState {
                         return ProcessOutcome::Feed(rest);
                     }
                     // nothing matched: drop the first key, retry the rest
-                    let first = self.cmd_seq.remove(0);
+                    self.cmd_seq.remove(0);
                     let mut rest = self.cmd_seq.clone();
                     self.cmd_seq.clear();
                     rest.push(key);
                     ctx.host.bell();
-                    let _ = first;
                     if rest.is_empty() {
                         return ProcessOutcome::Consumed;
                     }
@@ -1442,15 +1533,8 @@ impl VimState {
         }
 
         // 4. count digits
-        if let KeyKind::Char(c) = &key.kind {
-            if key.modifiers.is_plain() && c.is_ascii_digit() {
-                let d = c.to_digit(10).unwrap() as usize;
-                if !(d == 0 && self.count.is_none()) {
-                    self.count = Some(self.count.unwrap_or(0) * 10 + d);
-                    return ProcessOutcome::Consumed;
-                }
-                // 0 falls through to the trie (line-start motion)
-            }
+        if let Some(outcome) = self.count_digit_key(&key) {
+            return outcome;
         }
 
         // 5. register prefix
@@ -1484,11 +1568,6 @@ impl VimState {
                 }
                 KeyKind::Char(':') => {
                     self.begin_cmdline(':');
-                    // in visual mode, `:` seeds the cmdline with the last
-                    // selection's line range, like vim
-                    if matches!(self.mode, Mode::Visual { .. }) {
-                        self.cmdline.buffer.push_str("'<,'>");
-                    }
                     return ProcessOutcome::Consumed;
                 }
                 _ => {}
@@ -1562,16 +1641,11 @@ impl VimState {
             return self.complete_char_arg(ctx, key);
         }
         if self.register_pending {
-            self.register_pending = false;
-            if let Some(c) = key.printable_char() {
-                self.register = Some(c);
-                return ProcessOutcome::Consumed;
-            }
-            self.register = None;
-            ctx.host.bell();
-            return ProcessOutcome::Consumed;
+            return self.register_pending_key(ctx, &key);
         }
 
+        // Esc aborts the selection unconditionally — even with a partial
+        // prefix pending (unlike normal mode, where the trie walk runs first)
         if key == Key::escape() || key == Key::ctrl_char('[') {
             self.reset_pending();
             self.exit_visual(ctx);
@@ -1608,14 +1682,8 @@ impl VimState {
             }
         }
 
-        if let KeyKind::Char(c) = &key.kind {
-            if key.modifiers.is_plain() && c.is_ascii_digit() {
-                let d = c.to_digit(10).unwrap() as usize;
-                if !(d == 0 && self.count.is_none()) {
-                    self.count = Some(self.count.unwrap_or(0) * 10 + d);
-                    return ProcessOutcome::Consumed;
-                }
-            }
+        if let Some(outcome) = self.count_digit_key(&key) {
+            return outcome;
         }
         if key.kind == KeyKind::Char('"') && key.modifiers.is_plain() {
             self.register_pending = true;
@@ -1701,6 +1769,16 @@ impl VimState {
         }
         match kind {
             CmdKind::Motion(mut motion) => {
+                // `1G` lands on line 1 while a bare `G` lands on the last
+                // line — but both reach `Motion::target` as count==1 (absent
+                // counts are defaulted there). Rewrite the explicit-`1` case
+                // to `gg` before the count collapses.
+                if motion == (Motion::GoToLine { first: false })
+                    && self.count == Some(1)
+                    && self.op_count.is_none()
+                {
+                    motion = Motion::GoToLine { first: true };
+                }
                 let count = self.take_total_count();
                 // `cw` on a word char acts like `ce` (keeps trailing space)
                 if self.op == Some(Operator::Change) {
@@ -1881,23 +1959,30 @@ impl VimState {
         }
     }
 
-    /// The operator's own key, for `dd`/`yy`/`>>` and `guu`/`g~~` doubling.
+    /// The operator's own key, for `dd`/`yy`/`>>` and `guu`/`g~~` doubling —
+    /// derived from [`op_keys`] so the two spellings can't drift apart.
+    /// `Format` has none: its trigger letter (`q`/`w`) is remembered
+    /// separately because either spelling starts the same operator.
     pub(crate) fn operator_trigger(op: Operator) -> Option<char> {
         match op {
-            Operator::Delete => Some('d'),
-            Operator::Change => Some('c'),
-            Operator::Yank => Some('y'),
-            Operator::IndentLeft => Some('<'),
-            Operator::IndentRight => Some('>'),
-            Operator::Lowercase => Some('u'),
-            Operator::Uppercase => Some('U'),
-            Operator::ToggleCase => Some('~'),
             Operator::Format => None,
+            other => op_keys(other).chars().last(),
         }
     }
 
+    /// Execute a resolved Normal-mode command (the `CmdKind::Normal` arms of
+    /// the command table). Conventions across the arms:
+    /// * `take_total_count` collapses `[3]d[d]`-style prefix counts into the
+    ///   command's own repeat count (absent count = 1);
+    /// * every buffer mutation is bracketed by `begin_edit`/`end_edit` so a
+    ///   whole command is ONE host undo group, and `bump` afterwards updates
+    ///   marks/jumplist bookkeeping;
+    /// * the char-argument commands (`r`, `m`, `q`, `@`, `` ` ``/`'`) only
+    ///   arm the pending state here — the next keystroke completes them in
+    ///   `complete_char_arg`.
     pub(crate) fn execute_normal_cmd(&mut self, ctx: &mut Ctx, cmd: NormalCmd) {
         match cmd {
+            // x: delete count chars starting at the cursor
             NormalCmd::DeleteCharForward => {
                 let count = self.take_total_count();
                 self.begin_edit(ctx);
@@ -1905,6 +1990,8 @@ impl VimState {
                 self.end_edit();
                 self.bump(ctx);
             }
+            // X: delete count chars before the cursor (never crosses the
+            // line start)
             NormalCmd::DeleteCharBackward => {
                 let count = self.take_total_count();
                 self.begin_edit(ctx);
@@ -1912,6 +1999,9 @@ impl VimState {
                 self.end_edit();
                 self.bump(ctx);
             }
+            // s: like x, but drop into insert (one undo group covers the
+            // delete AND the typed replacement via `begin_insert`'s group
+            // reuse)
             NormalCmd::SubstituteChar => {
                 let count = self.take_total_count();
                 self.begin_edit(ctx);
@@ -1919,6 +2009,8 @@ impl VimState {
                 self.start_insert(ctx, InsertKind::Change);
                 self.bump(ctx);
             }
+            // S: clear the whole line's content but keep the line itself
+            // (linewise `cc` — ops::apply preserves the indent)
             NormalCmd::SubstituteLine => {
                 let line = ctx.buf.offset_to_line(self.cursor.offset);
                 let span = ops::OpSpan {
@@ -1930,6 +2022,8 @@ impl VimState {
                 ops::apply(self, ctx, Operator::Change, &span, self.register);
                 self.bump(ctx);
             }
+            // C: change to end of line; on an empty tail (`C` at line end)
+            // there is nothing to delete — behave like `A`
             NormalCmd::ChangeToEnd => {
                 let line = ctx.buf.offset_to_line(self.cursor.offset);
                 let span = ops::OpSpan {
@@ -1945,6 +2039,7 @@ impl VimState {
                     self.start_insert(ctx, InsertKind::AppendLineEnd);
                 }
             }
+            // D: delete to end of line (no-op when already at it)
             NormalCmd::DeleteToEnd => {
                 let line = ctx.buf.offset_to_line(self.cursor.offset);
                 let span = ops::OpSpan {
@@ -1958,6 +2053,7 @@ impl VimState {
                     self.bump(ctx);
                 }
             }
+            // Y: yank count whole lines (linewise, so `p` opens lines)
             NormalCmd::YankLine => {
                 let count = self.take_total_count();
                 let line = ctx.buf.offset_to_line(self.cursor.offset);
@@ -1969,9 +2065,11 @@ impl VimState {
                 };
                 ops::yank_span(self, ctx, &span, self.register);
             }
+            // r{char}: the replacement char arrives as a char argument
             NormalCmd::ReplaceChar => {
                 self.char_arg_cmd = Some(CharArgCmd::Replace);
             }
+            // ~: swap case under the cursor, advancing per char
             NormalCmd::ToggleChar => {
                 let count = self.take_total_count();
                 self.begin_edit(ctx);
@@ -1979,6 +2077,7 @@ impl VimState {
                 self.end_edit();
                 self.bump(ctx);
             }
+            // p: put after the cursor / below the current line
             NormalCmd::PutAfter => {
                 let count = self.take_total_count();
                 let register = self.register.unwrap_or(crate::registers::UNNAMED);
@@ -1987,6 +2086,7 @@ impl VimState {
                 self.end_edit();
                 self.bump(ctx);
             }
+            // P: put before the cursor / above the current line
             NormalCmd::PutBefore => {
                 let count = self.take_total_count();
                 let register = self.register.unwrap_or(crate::registers::UNNAMED);
@@ -1995,6 +2095,8 @@ impl VimState {
                 self.end_edit();
                 self.bump(ctx);
             }
+            // J: join with separator logic (space unless line ends in
+            // whitespace or next starts with `)`)
             NormalCmd::Join => {
                 let count = self.take_total_count();
                 self.begin_edit(ctx);
@@ -2002,6 +2104,7 @@ impl VimState {
                 self.end_edit();
                 self.bump(ctx);
             }
+            // gJ: join without any separator, keep the next line's indent
             NormalCmd::JoinLiteral => {
                 let count = self.take_total_count();
                 self.begin_edit(ctx);
@@ -2009,6 +2112,10 @@ impl VimState {
                 self.end_edit();
                 self.bump(ctx);
             }
+            // u: step the HOST undo stack back count times. The host swaps
+            // the buffer text underneath the engine, so the cached search
+            // match offsets go stale and must be re-scanned (generation
+            // bump) before the next `n`/highlight refresh.
             NormalCmd::Undo => {
                 let count = self.take_total_count();
                 for _ in 0..count {
@@ -2025,6 +2132,7 @@ impl VimState {
                 self.republish_search(ctx);
                 ctx.host.changed();
             }
+            // <C-r>: undo's mirror image
             NormalCmd::Redo => {
                 let count = self.take_total_count();
                 for _ in 0..count {
@@ -2039,18 +2147,25 @@ impl VimState {
                 self.republish_search(ctx);
                 ctx.host.changed();
             }
+            // m{char}: mark set is completed by the char argument
             NormalCmd::MarkSet => {
                 self.char_arg_cmd = Some(CharArgCmd::MarkSet);
             }
+            // q{reg}: record; the SAME `q` command stops it (see
+            // execute_command's early handling)
             NormalCmd::RecordMacro => {
                 self.char_arg_cmd = Some(CharArgCmd::MacroRecord);
             }
+            // @{reg} / @@: play; replay goes through the key pipeline
             NormalCmd::PlayMacro => {
                 self.char_arg_cmd = Some(CharArgCmd::MacroPlay);
             }
+            // `{char} (linewise=false) / '{char} (linewise): jump to mark
             NormalCmd::JumpMark { linewise } => {
                 self.char_arg_cmd = Some(CharArgCmd::JumpMark { linewise });
             }
+            // doubled case/indent operators (guu, g~~, >> with count, ...):
+            // linewise application over count lines
             NormalCmd::LinewiseOp(op) => {
                 let count = self.take_total_count();
                 let line = ctx.buf.offset_to_line(self.cursor.offset);
@@ -2065,6 +2180,8 @@ impl VimState {
                 self.end_edit();
                 self.bump(ctx);
             }
+            // zz / zt / zb: hosts own actual scrolling; the engine only
+            // reports which line should land where in the viewport
             NormalCmd::ScrollCenter | NormalCmd::ScrollTop | NormalCmd::ScrollBottom => {
                 let line = ctx.buf.offset_to_line(self.cursor.offset);
                 // hosts implement the actual scroll; notify with the line
@@ -2076,6 +2193,9 @@ impl VimState {
                 };
                 ctx.host.scroll_to_line_anchored(line, anchor);
             }
+            // `.`: replay the last recorded change, count times. Steps are
+            // queued, not executed inline, so each step flows back through
+            // the normal key pipeline (mappings off while replaying).
             NormalCmd::RepeatChange => {
                 let count = self.take_total_count().max(1);
                 if self.last_change.is_empty() {
@@ -2083,32 +2203,11 @@ impl VimState {
                     return;
                 }
                 let steps = self.last_change.clone();
-                self.replaying = true;
-                // the `.` key itself is already in the recording — drop it
-                // so the next change doesn't start with a stale `.` step
-                self.recording.clear();
-                self.recording_mutated = false;
-                for _ in 0..count {
-                    for step in &steps {
-                        match step {
-                            RecordedStep::Key(key) => self.pending_keys.push_back(key.clone()),
-                            RecordedStep::Text(text) => {
-                                self.replay_texts.push_back(text.clone());
-                                self.pending_keys
-                                    .push_back(Key::named(DOT_TEXT_MARKER));
-                            }
-                        }
-                    }
-                }
+                self.begin_replay();
+                self.enqueue_replay(&steps, count);
             }
-            NormalCmd::InsertAtLastChange => {
-                // `gi`: insert where the last insert session ended ('^)
-                if let Some(offset) = self.marks.get('^') {
-                    self.cursor.offset = offset.min(ctx.buf.len());
-                    self.cursor.desired_col = None;
-                }
-                self.start_insert(ctx, InsertKind::Insert);
-            }
+            // g; / g,: walk the changelist. Hits the edge → vim's E662/E664
+            // style message + bell, cursor stays at the last valid entry.
             NormalCmd::OlderChange | NormalCmd::NewerChange => {
                 let older = cmd == NormalCmd::OlderChange;
                 let count = self.take_total_count().max(1);
@@ -2146,6 +2245,8 @@ impl VimState {
                     .scroll_to_line(ctx.buf.offset_to_line(self.cursor.offset));
                 ctx.host.changed();
             }
+            // <C-a> / <C-x>: increment/decrement the number at or after the
+            // cursor (a count adds that many)
             NormalCmd::IncrementNumber | NormalCmd::DecrementNumber => {
                 let delta: i64 = if cmd == NormalCmd::IncrementNumber {
                     self.take_total_count().max(1) as i64
@@ -2157,6 +2258,9 @@ impl VimState {
                     ctx.host.bell();
                 }
             }
+            // <C-o> / <C-i>: walk the jumplist backwards/forwards. The list
+            // behaves like browser history: a fresh jump discards the
+            // forward entries (see record_jump).
             NormalCmd::JumpBackward | NormalCmd::JumpForward => {
                 let backward = cmd == NormalCmd::JumpBackward;
                 let count = self.take_total_count().max(1);
@@ -2186,6 +2290,7 @@ impl VimState {
                 }
                 ctx.host.changed();
             }
+            // gv: re-select the last visual range (its kind, too)
             NormalCmd::RestoreVisual => {
                 if let Some((lo, hi, kind)) = self.last_visual {
                     self.visual_anchor = Some(lo);
@@ -2193,6 +2298,7 @@ impl VimState {
                     self.mode = Mode::Visual { kind };
                 }
             }
+            // ZZ / ZQ: the host owns persistence and window lifetime
             NormalCmd::WriteQuit => {
                 ctx.host.save();
                 ctx.host.request_close();
@@ -2271,10 +2377,9 @@ impl VimState {
                 }
             }
             VisualCmd::SwapEnds => {
-                if let Some((anchor, cursor, kind)) = self.visual_selection() {
+                if let Some((anchor, cursor, _)) = self.visual_selection() {
                     self.visual_anchor = Some(cursor);
                     self.cursor.offset = anchor;
-                    let _ = kind;
                 }
             }
             VisualCmd::PutReplace => {
@@ -2388,6 +2493,11 @@ impl VimState {
 
     // ---- char-argument commands -------------------------------------------------
 
+    /// The `char_arg_cmd` set by the command table is completed here: the
+    /// next key supplies the argument (a register name for `@`/`q`, a mark
+    /// for `` ` ``/`'`/`m`, a replacement char for `r`). Esc cancels the
+    /// whole pending command; a non-printable key is swallowed as "still
+    /// waiting" (vim ignores it too, e.g. `r` followed by a stray arrow).
     fn complete_char_arg(&mut self, ctx: &mut Ctx, key: Key) -> ProcessOutcome {
         let Some(cmd) = self.char_arg_cmd.take() else {
             return ProcessOutcome::Consumed;
@@ -2442,24 +2552,8 @@ impl VimState {
                         // key is '@' itself, which is not a stored macro
                         self.last_macro_played = Some(r);
                         let count = self.take_total_count().max(1);
-                        // replay through the pipeline with `.` recording
-                        // suppressed; the key guard handles recursive macros
-                        self.replaying = true;
-                        self.recording.clear();
-                        self.recording_mutated = false;
-                        for _ in 0..count {
-                            for step in &keys {
-                                match step {
-                                    RecordedStep::Key(key) => {
-                                        self.pending_keys.push_back(key.clone())
-                                    }
-                                    RecordedStep::Text(text) => {
-                                        self.replay_texts.push_back(text.clone());
-                                        self.pending_keys.push_back(Key::named(DOT_TEXT_MARKER));
-                                    }
-                                }
-                            }
-                        }
+                        self.begin_replay();
+                        self.enqueue_replay(&keys, count);
                     }
                     None => ctx.host.bell(),
                 }

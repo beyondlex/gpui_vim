@@ -9,6 +9,7 @@ use crate::key::{Key, KeyKind};
 use crate::mode::Mode;
 use crate::motions::Motion;
 use crate::state::{Ctx, ProcessOutcome, VimState};
+use crate::word;
 
 impl VimState {
     pub(crate) fn insert_key(&mut self, ctx: &mut Ctx, key: Key) -> ProcessOutcome {
@@ -30,63 +31,68 @@ impl VimState {
         }
 
         if key.modifiers.is_plain() {
-            if let KeyKind::Named(name) = &key.kind { match name.as_str() {
-                "enter" => {
-                    self.insert_text_at_cursor(ctx, "\n");
-                    return ProcessOutcome::Consumed;
-                }
-                "backspace" => {
-                    self.insert_backspace(ctx);
-                    return ProcessOutcome::Consumed;
-                }
-                "tab" => {
-                    self.insert_tab(ctx);
-                    return ProcessOutcome::Consumed;
-                }
-                "delete" => {
-                    let at = self.cursor.offset;
-                    if let Some(c) = ctx.buf.char_at(at) {
-                        self.begin_edit(ctx);
-                        self.edit_delete(ctx, at..at + c.len_utf8());
-                        ctx.host.changed();
+            if let KeyKind::Named(name) = &key.kind {
+                match name.as_str() {
+                    "enter" => {
+                        self.insert_text_at_cursor(ctx, "\n");
+                        return ProcessOutcome::Consumed;
                     }
-                    return ProcessOutcome::Consumed;
+                    "backspace" => {
+                        self.insert_backspace(ctx);
+                        return ProcessOutcome::Consumed;
+                    }
+                    "tab" => {
+                        self.insert_tab(ctx);
+                        return ProcessOutcome::Consumed;
+                    }
+                    "delete" => {
+                        let at = self.cursor.offset;
+                        if let Some(c) = ctx.buf.char_at(at) {
+                            self.begin_edit(ctx);
+                            self.edit_delete(ctx, at..at + c.len_utf8());
+                            ctx.host.changed();
+                        }
+                        return ProcessOutcome::Consumed;
+                    }
+                    "up" | "down" => {
+                        let motion = if name == "up" { Motion::Up } else { Motion::Down };
+                        self.goto_motion(ctx, motion, 1);
+                        return ProcessOutcome::Consumed;
+                    }
+                    "left" | "right" => {
+                        let motion = if name == "left" { Motion::Left } else { Motion::Right };
+                        self.goto_motion(ctx, motion, 1);
+                        return ProcessOutcome::Consumed;
+                    }
+                    "home" => {
+                        self.cursor.offset =
+                            ctx.buf.line_start(ctx.buf.offset_to_line(self.cursor.offset));
+                        return ProcessOutcome::Consumed;
+                    }
+                    "end" => {
+                        let line = ctx.buf.offset_to_line(self.cursor.offset);
+                        self.cursor.offset = ctx.buf.line_end(line);
+                        return ProcessOutcome::Consumed;
+                    }
+                    "pageup" => {
+                        self.goto_motion(ctx, Motion::PageUp, 1);
+                        return ProcessOutcome::Consumed;
+                    }
+                    "pagedown" => {
+                        self.goto_motion(ctx, Motion::PageDown, 1);
+                        return ProcessOutcome::Consumed;
+                    }
+                    _ => {}
                 }
-                "up" | "down" => {
-                    let motion = if name == "up" { Motion::Up } else { Motion::Down };
-                    self.goto_motion(ctx, motion, 1);
-                    return ProcessOutcome::Consumed;
-                }
-                "left" | "right" => {
-                    let motion = if name == "left" { Motion::Left } else { Motion::Right };
-                    self.goto_motion(ctx, motion, 1);
-                    return ProcessOutcome::Consumed;
-                }
-                "home" => {
-                    self.cursor.offset = ctx.buf.line_start(ctx.buf.offset_to_line(self.cursor.offset));
-                    return ProcessOutcome::Consumed;
-                }
-                "end" => {
-                    let line = ctx.buf.offset_to_line(self.cursor.offset);
-                    self.cursor.offset = ctx.buf.line_end(line);
-                    return ProcessOutcome::Consumed;
-                }
-                "pageup" => {
-                    self.goto_motion(ctx, Motion::PageUp, 1);
-                    return ProcessOutcome::Consumed;
-                }
-                "pagedown" => {
-                    self.goto_motion(ctx, Motion::PageDown, 1);
-                    return ProcessOutcome::Consumed;
-                }
-                _ => {}
-            } }
+            }
         }
 
-        // Ctrl chords inside insert
-        if key.modifiers.control && key.modifiers.is_plain() {
+        // Ctrl chords inside insert. Only alt/platform (cmd) disqualify a
+        // chord — `is_plain()` additionally excludes control itself, which
+        // made this whole block unreachable once.
+        if key.modifiers.control && !key.modifiers.alt && !key.modifiers.platform {
             match &key.kind {
-                KeyKind::Char('w') => {
+                KeyKind::Char('w') | KeyKind::Char('W') => {
                     self.insert_delete_word_before(ctx);
                     return ProcessOutcome::Consumed;
                 }
@@ -143,27 +149,18 @@ impl VimState {
         }
     }
 
+    /// `<C-w>`: delete the word before the cursor, like typing `b` then
+    /// deleting. Word classes follow normal mode (`(`, `bar`, `)` are three
+    /// separate words), and the deletion never crosses back over the line
+    /// start.
     fn insert_delete_word_before(&mut self, ctx: &mut Ctx) {
         let at = self.cursor.offset;
         let line_start = ctx.buf.line_start(ctx.buf.offset_to_line(at));
-        let mut cursor = at;
-        // skip whitespace backwards, then the word/punct run
-        let mut seen_non_blank = false;
-        while cursor > line_start {
-            let Some(prev) = ctx.buf.prev_char_offset(cursor) else { break };
-            match ctx.buf.char_at(prev) {
-                Some(c) if c.is_whitespace() && !seen_non_blank => cursor = prev,
-                Some(c) if !c.is_whitespace() => {
-                    seen_non_blank = true;
-                    cursor = prev;
-                }
-                _ => break,
-            }
-        }
-        if cursor < at {
+        let target = word::prev_word_start(ctx.buf, at, false).max(line_start);
+        if target < at {
             self.begin_edit(ctx);
-            self.edit_delete(ctx, cursor..at);
-            self.cursor.offset = cursor;
+            self.edit_delete(ctx, target..at);
+            self.cursor.offset = target;
             ctx.host.changed();
         }
     }

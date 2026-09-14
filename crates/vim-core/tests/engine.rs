@@ -1,6 +1,7 @@
 mod common;
 
 use common::{edit, Fixture};
+use vim_core::buffer::VimBuffer;
 
 const THREE_LINES: &str = "one two three\nhello world\nrust vim engine\n";
 const WORDS: &str = "foo bar baz\n";
@@ -10,91 +11,91 @@ const MULTI: &str = "alpha\nbeta\ngamma\ndelta\n";
 
 #[test]
 fn motions_hjkl() {
-    let mut f = edit(THREE_LINES, 0, 0, &["l", "l"]);
+    let f = edit(THREE_LINES, 0, 0, &["l", "l"]);
     assert_eq!(f.cursor(), 2);
 
-    let mut f = edit(THREE_LINES, 0, 0, &["j"]);
+    let f = edit(THREE_LINES, 0, 0, &["j"]);
     assert_eq!(f.line(), 1);
     assert_eq!(f.cursor(), 14); // column preserved
 
-    let mut f = edit(THREE_LINES, 1, 4, &["k"]);
+    let f = edit(THREE_LINES, 1, 4, &["k"]);
     assert_eq!(f.line(), 0);
     assert_eq!(f.cursor(), 4);
 
-    let mut f = edit(WORDS, 0, 0, &["h"]);
+    let f = edit(WORDS, 0, 0, &["h"]);
     assert_eq!(f.cursor(), 0); // stuck at line start
 
-    let mut f = edit(WORDS, 0, 10, &["l"]);
+    let f = edit(WORDS, 0, 10, &["l"]);
     assert_eq!(f.cursor(), 10); // stuck on 'z', never on the newline
 }
 
 #[test]
 fn motions_word_family() {
-    let mut f = edit(WORDS, 0, 0, &["w"]);
+    let f = edit(WORDS, 0, 0, &["w"]);
     assert_eq!(f.cursor(), 4); // 'bar'
 
-    let mut f = edit(WORDS, 0, 0, &["e"]);
+    let f = edit(WORDS, 0, 0, &["e"]);
     assert_eq!(f.cursor(), 2); // end of foo
 
-    let mut f = edit(WORDS, 0, 0, &["b"]);
+    let f = edit(WORDS, 0, 0, &["b"]);
     assert_eq!(f.cursor(), 0); // stuck
 
-    let mut f = edit("foo   bar", 0, 0, &["w"]);
+    let f = edit("foo   bar", 0, 0, &["w"]);
     assert_eq!(f.cursor(), 6); // skips spaces
 
     // w stops on a blank line
-    let mut f = edit("ab\n\ncd\n", 0, 0, &["w"]);
+    let f = edit("ab\n\ncd\n", 0, 0, &["w"]);
     assert_eq!(f.line(), 1);
 }
 
 #[test]
 fn motions_line() {
-    let mut f = edit(THREE_LINES, 0, 4, &["0"]);
+    let f = edit(THREE_LINES, 0, 4, &["0"]);
     assert_eq!(f.cursor(), 0);
 
-    let mut f = edit("  indented", 0, 5, &["^"]);
+    let f = edit("  indented", 0, 5, &["^"]);
     assert_eq!(f.cursor(), 2);
 
-    let mut f = edit("  indented", 0, 0, &["$"]);
+    let f = edit("  indented", 0, 0, &["$"]);
     assert_eq!(f.cursor(), 9);
 
-    let mut f = edit(MULTI, 0, 0, &["G"]);
+    let f = edit(MULTI, 0, 0, &["G"]);
     assert_eq!(f.line(), 3);
     assert_eq!(f.cursor(), 17); // first non-blank of last line... 'delta' start
 
-    let mut f = edit(MULTI, 0, 0, &["g", "g"]);
+    let f = edit(MULTI, 0, 0, &["g", "g"]);
     assert_eq!(f.line(), 0);
 
-    let mut f = edit(MULTI, 0, 0, &["2", "G"]);
+    let f = edit(MULTI, 0, 0, &["2", "G"]);
     assert_eq!(f.line(), 1);
 }
 
 #[test]
 fn motions_find_char() {
-    let mut f = edit("hello world", 0, 0, &["f", "o"]);
+    let f = edit("hello world", 0, 0, &["f", "o"]);
     assert_eq!(f.cursor(), 4);
 
-    let mut f = edit("hello world", 0, 0, &["t", "o"]);
+    let f = edit("hello world", 0, 0, &["t", "o"]);
     assert_eq!(f.cursor(), 3);
 
     // ; repeats, , reverses
-    let mut f = edit("a b a b a b", 0, 0, &["f", "b", ";", ";"]);
+    let f = edit("a b a b a b", 0, 0, &["f", "b", ";", ";"]);
     assert_eq!(f.cursor(), 10);
-    let mut f = edit("a b a b a b", 0, 0, &["f", "b", ";", ","]);
+    let f = edit("a b a b a b", 0, 0, &["f", "b", ";", ","]);
     assert_eq!(f.cursor(), 2);
 
     // find wraps within the line only
-    let mut f = edit("abc\ndef", 0, 0, &["f", "f"]);
+    let f = edit("abc\ndef", 0, 0, &["f", "f"]);
     assert_eq!(f.cursor(), 0);
 }
 
 #[test]
 fn motions_percent() {
     // from `a` the first bracket ahead is `)`; % jumps to its match `(`
-    let mut f = edit("fn main(a, b) {}", 0, 8, &["%"]);
+    let f = edit("fn main(a, b) {}", 0, 8, &["%"]);
     assert_eq!(f.cursor(), 7);
 
-    let mut f = edit("fn main(a, b) {}", 0, 0, &["f", "(", "%"]);
+    let f = edit("fn main(a, b) {}", 0, 0, &["f", "(", "%"]);
     assert_eq!(f.cursor(), 12);
 }
 
@@ -103,50 +104,50 @@ fn motions_percent() {
 #[test]
 fn delete_dw_and_special_cases() {
     // plain dw
-    let mut f = edit(WORDS, 0, 0, &["d", "w"]);
+    let f = edit(WORDS, 0, 0, &["d", "w"]);
     assert_eq!(f.text(), "bar baz\n");
     assert_eq!(f.cursor(), 0);
 
     // dw never joins lines
-    let mut f = edit("foo\nbar", 0, 0, &["d", "w"]);
+    let f = edit("foo\nbar", 0, 0, &["d", "w"]);
     assert_eq!(f.text(), "\nbar");
 
     // trailing whitespace is eaten
-    let mut f = edit("foo   \nbar", 0, 0, &["d", "w"]);
+    let f = edit("foo   \nbar", 0, 0, &["d", "w"]);
     assert_eq!(f.text(), "\nbar");
 
     // on whitespace before a word: linewise-style (deletes the blanks+nl)
-    let mut f = edit("  \nbar", 0, 0, &["d", "w"]);
+    let f = edit("  \nbar", 0, 0, &["d", "w"]);
     assert_eq!(f.text(), "bar");
 }
 
 #[test]
 fn delete_counts_and_motions() {
-    let mut f = edit(WORDS, 0, 0, &["d", "2", "w"]);
+    let f = edit(WORDS, 0, 0, &["d", "2", "w"]);
     assert_eq!(f.text(), "baz\n");
 
-    let mut f = edit("hello world", 0, 5, &["d", "$"]);
+    let f = edit("hello world", 0, 5, &["d", "$"]);
     assert_eq!(f.text(), "hello");
 
-    let mut f = edit("hello world", 0, 0, &["d", "f", "o"]);
+    let f = edit("hello world", 0, 0, &["d", "f", "o"]);
     assert_eq!(f.text(), " world");
 
-    let mut f = edit("hello world", 0, 0, &["d", "t", "o"]);
+    let f = edit("hello world", 0, 0, &["d", "t", "o"]);
     assert_eq!(f.text(), "lo world");
 }
 
 #[test]
 fn delete_dd_linewise() {
-    let mut f = edit(MULTI, 1, 2, &["d", "d"]);
+    let f = edit(MULTI, 1, 2, &["d", "d"]);
     assert_eq!(f.text(), "alpha\ngamma\ndelta\n");
     assert_eq!(f.line(), 1);
     assert_eq!(f.cursor(), 6);
 
-    let mut f = edit(MULTI, 0, 1, &["2", "d", "d"]);
+    let f = edit(MULTI, 0, 1, &["2", "d", "d"]);
     assert_eq!(f.text(), "gamma\ndelta\n");
 
     // 2dd via doubling with count after
-    let mut f = edit(MULTI, 0, 0, &["d", "2", "d"]);
+    let f = edit(MULTI, 0, 0, &["d", "2", "d"]);
     assert_eq!(f.text(), "gamma\ndelta\n");
 }
 
@@ -181,23 +182,23 @@ fn change_cw_ciw_cc() {
 #[test]
 fn yank_and_put() {
     // yy + j + p: linewise paste below the line under the cursor
-    let mut f = edit(MULTI, 0, 0, &["y", "y", "j", "p"]);
+    let f = edit(MULTI, 0, 0, &["y", "y", "j", "p"]);
     assert_eq!(f.text(), "alpha\nbeta\nalpha\ngamma\ndelta\n");
 
     // P pastes above
-    let mut f = edit(MULTI, 1, 0, &["y", "y", "P"]);
+    let f = edit(MULTI, 1, 0, &["y", "y", "P"]);
     assert_eq!(f.text(), "alpha\nbeta\nbeta\ngamma\ndelta\n");
 
     // yiw + p: charwise
-    let mut f = edit("foo bar", 0, 0, &["y", "i", "w", "w", "p"]);
+    let f = edit("foo bar", 0, 0, &["y", "i", "w", "w", "p"]);
     assert_eq!(f.text(), "foo bfooar");
 
     // xp swap
-    let mut f = edit("ab", 0, 0, &["x", "p"]);
+    let f = edit("ab", 0, 0, &["x", "p"]);
     assert_eq!(f.text(), "ba");
 
     // p then 2p repeats
-    let mut f = edit("x\n", 0, 0, &["y", "i", "w", "p", "2", "p"]);
+    let f = edit("x\n", 0, 0, &["y", "i", "w", "p", "2", "p"]);
     assert_eq!(f.text(), "xxxx\n");
 }
 
@@ -209,64 +210,64 @@ fn registers_explicit() {
     assert_eq!(f.text(), "one tonewo");
 
     // blackhole register discards
-    let mut f = edit("hello", 0, 0, &["\"", "_", "d", "i", "w"]);
+    let f = edit("hello", 0, 0, &["\"", "_", "d", "i", "w"]);
     assert_eq!(f.text(), "");
 }
 
 #[test]
 fn indent_operators() {
-    let mut f = edit("a\nb\nc\n", 0, 0, &["2", ">", ">"]);
+    let f = edit("a\nb\nc\n", 0, 0, &["2", ">", ">"]);
     assert_eq!(f.text(), "    a\n    b\nc\n");
 
-    let mut f = edit("    a\nb\n", 0, 0, &["<", "<"]);
+    let f = edit("    a\nb\n", 0, 0, &["<", "<"]);
     assert_eq!(f.text(), "a\nb\n");
 
-    let mut f = edit(MULTI, 0, 0, &[">", "j"]);
+    let f = edit(MULTI, 0, 0, &[">", "j"]);
     assert_eq!(f.text(), "    alpha\n    beta\ngamma\ndelta\n");
 }
 
 #[test]
 fn case_operators() {
-    let mut f = edit("hello world", 0, 0, &["g", "U", "i", "w"]);
+    let f = edit("hello world", 0, 0, &["g", "U", "i", "w"]);
     assert_eq!(f.text(), "HELLO world");
 
-    let mut f = edit("hello world", 0, 0, &["g", "u", "i", "w"]);
+    let f = edit("hello world", 0, 0, &["g", "u", "i", "w"]);
     let _ = f;
-    let mut f = edit("HELLO world", 0, 0, &["g", "~", "i", "w"]);
+    let f = edit("HELLO world", 0, 0, &["g", "~", "i", "w"]);
     assert_eq!(f.text(), "hello world");
 
     // guu / gUU line variants
-    let mut f = edit("MiXeD", 0, 0, &["g", "u", "u"]);
+    let f = edit("MiXeD", 0, 0, &["g", "u", "u"]);
     assert_eq!(f.text(), "mixed");
-    let mut f = edit("mixed", 0, 0, &["g", "U", "U"]);
+    let f = edit("mixed", 0, 0, &["g", "U", "U"]);
     assert_eq!(f.text(), "MIXED");
 }
 
 #[test]
 fn misc_edit_commands() {
     // x
-    let mut f = edit("abc", 0, 1, &["x"]);
+    let f = edit("abc", 0, 1, &["x"]);
     assert_eq!(f.text(), "ac");
     // X
-    let mut f = edit("abc", 0, 1, &["X"]);
+    let f = edit("abc", 0, 1, &["X"]);
     assert_eq!(f.text(), "bc");
     // r
-    let mut f = edit("abc", 0, 1, &["r", "Z"]);
+    let f = edit("abc", 0, 1, &["r", "Z"]);
     assert_eq!(f.text(), "aZc");
     // 3r
-    let mut f = edit("abcdef", 0, 0, &["3", "r", "-"]);
+    let f = edit("abcdef", 0, 0, &["3", "r", "-"]);
     assert_eq!(f.text(), "---def");
     // ~
-    let mut f = edit("aBc", 0, 0, &["~"]);
+    let f = edit("aBc", 0, 0, &["~"]);
     assert_eq!(f.text(), "ABc");
     // J joins with a space
-    let mut f = edit("foo\nbar\nbaz", 0, 0, &["J"]);
+    let f = edit("foo\nbar\nbaz", 0, 0, &["J"]);
     assert_eq!(f.text(), "foo bar\nbaz");
     // gJ literal join
-    let mut f = edit("foo\nbar", 0, 0, &["g", "J"]);
+    let f = edit("foo\nbar", 0, 0, &["g", "J"]);
     assert_eq!(f.text(), "foobar");
     // D / C / Y
-    let mut f = edit("hello world", 0, 5, &["D"]);
+    let f = edit("hello world", 0, 5, &["D"]);
     assert_eq!(f.text(), "hello");
     let mut f = edit("keep tail", 0, 4, &["Y"]);
     f.feed(["p"]);
@@ -298,12 +299,12 @@ fn undo_redo() {
 #[test]
 fn visual_mode_ops() {
     // v e d
-    let mut f = edit("foo bar", 0, 0, &["v", "e", "d"]);
+    let f = edit("foo bar", 0, 0, &["v", "e", "d"]);
     assert_eq!(f.text(), " bar");
     assert_eq!(f.vim.mode(), vim_core::Mode::Normal);
 
     // V j d
-    let mut f = edit(MULTI, 0, 0, &["V", "j", "d"]);
+    let f = edit(MULTI, 0, 0, &["V", "j", "d"]);
     assert_eq!(f.text(), "gamma\ndelta\n");
 
     // viw y + p: paste goes after the char under the cursor
@@ -312,15 +313,15 @@ fn visual_mode_ops() {
     assert_eq!(f.text(), "copy mcopye");
 
     // visual ~
-    let mut f = edit("hello", 0, 0, &["v", "e", "~"]);
+    let f = edit("hello", 0, 0, &["v", "e", "~"]);
     assert_eq!(f.text(), "HELLO");
 
     // visual indent
-    let mut f = edit("a\nb\n", 0, 0, &["V", "j", ">"]);
+    let f = edit("a\nb\n", 0, 0, &["V", "j", ">"]);
     assert_eq!(f.text(), "    a\n    b\n");
 
     // o swaps ends
-    let mut f = edit("abcdef", 0, 0, &["v", "3", "l", "o"]);
+    let f = edit("abcdef", 0, 0, &["v", "3", "l", "o"]);
     assert_eq!(f.cursor(), 0);
 
     // gv restores selection
@@ -340,16 +341,16 @@ fn insert_commands() {
     f.type_text("X");
     f.feed(["<Esc>"]);
     assert_eq!(f.text(), "abcX");
-    let mut f = edit("   abc", 0, 4, &["I"]);
+    let f = edit("   abc", 0, 4, &["I"]);
     assert_eq!(f.cursor(), 3);
-    let mut f = edit("abc", 0, 0, &["A"]);
+    let f = edit("abc", 0, 0, &["A"]);
     assert_eq!(f.cursor(), 3);
 
     // o / O with autoindent
-    let mut f = edit("  foo\nbar", 0, 2, &["o"]);
+    let f = edit("  foo\nbar", 0, 2, &["o"]);
     assert_eq!(f.text(), "  foo\n  \nbar");
     assert_eq!(f.cursor(), 8);
-    let mut f = edit("  foo", 0, 2, &["O"]);
+    let f = edit("  foo", 0, 2, &["O"]);
     assert_eq!(f.text(), "  \n  foo");
 
     // s / S / C
@@ -383,7 +384,7 @@ fn insert_commands() {
 }
 
 #[test]
-fn search_and_nN() {
+fn search_and_n_n() {
     let mut f = Fixture::at("foo bar foo baz foo", 0, 0);
     f.feed(["/", "f", "o", "o", "<CR>"]);
     assert_eq!(f.cursor(), 8); // search moves strictly past the cursor
@@ -531,7 +532,7 @@ fn unknown_keys_fall_through() {
 // ---- I / A insert entry ------------------------------------------------------
 
 #[test]
-fn insert_entry_I_and_A() {
+fn insert_entry_i_and_a() {
     // `I`: first non-blank of the line + insert mode
     let mut f = edit("    indented line\nsecond\n", 0, 8, &["I"]);
     assert_eq!(f.vim.mode(), vim_core::Mode::Insert);
@@ -547,7 +548,7 @@ fn insert_entry_I_and_A() {
     assert_eq!(f.text(), "tail!\n");
 
     // `a` on a non-empty line moves one char right; at line end it stays
-    let mut f = edit("abc\n", 0, 2, &["a"]);
+    let f = edit("abc\n", 0, 2, &["a"]);
     assert_eq!(f.vim.mode(), vim_core::Mode::Insert);
     assert_eq!(f.cursor(), 3);
 }
@@ -555,7 +556,7 @@ fn insert_entry_I_and_A() {
 // ---- V linewise visual -------------------------------------------------------
 
 #[test]
-fn visual_line_V() {
+fn visual_line_v() {
     // `V` enters visual-line mode from normal mode
     let mut f = Fixture::at(MULTI, 1, 0);
     f.feed(["V"]);
@@ -627,7 +628,7 @@ fn cmdline_backspace_arriving_as_text_still_deletes() {
 // ---- undo grouping: change family and open-line are single undo steps --------
 
 #[test]
-fn change_C_types_and_undoes_in_one_step() {
+fn change_c_types_and_undoes_in_one_step() {
     let mut f = Fixture::at("hello world\nsecond\n", 0, 0);
     f.feed(["C"]);
     assert_eq!(f.vim.mode(), vim_core::Mode::Insert);
@@ -723,7 +724,7 @@ fn cjk_toggle_case_cursor_moves_right() {
     let mut f = Fixture::at("中文\n", 0, 0);
     f.feed(["~"]);
     assert_eq!(f.cursor(), 3);
-    let mut f = edit("abc\n", 0, 0, &["~"]);
+    let f = edit("abc\n", 0, 0, &["~"]);
     assert_eq!(f.cursor(), 1);
 }
 
@@ -987,7 +988,7 @@ fn dot_ignores_visual_canceled_and_non_changes() {
 // ---- R replace mode (ROADMAP task 6) -------------------------------------------
 
 #[test]
-fn replace_mode_R_overwrites_and_keeps_cursor() {
+fn replace_mode_r_overwrites_and_keeps_cursor() {
     let mut f = Fixture::at("hello world\n", 0, 0);
     f.feed(["R"]);
     assert_eq!(f.vim.mode(), vim_core::Mode::Replace);
@@ -1814,4 +1815,82 @@ fn comma_repeat_find_still_fires_without_comma_mapping() {
     assert_eq!(f.cursor(), 6);
     f.feed([","]);      // back to the previous x at col 2
     assert_eq!(f.cursor(), 2);
+}
+
+// ---- regression: vertical motions on wide-char lines & explicit counts -----
+
+#[test]
+fn ctrl_d_keeps_display_column_across_wide_chars() {
+    // `<C-d>` must keep the DISPLAY column like j/k do. The cursor sits on
+    // 文 of "中文x" (display col 2: 中 covers cells 0-1); on the target line
+    // "中文ef" cell 2 is again the start of 文 (byte offset +3). The old
+    // byte arithmetic produced line_start+2 — mid-character.
+    let text = "中文x\nl1\nl2\nl3\n中文ef\nl5\nl6\nl7\nl8\nl9\n";
+    let mut f = Fixture::at(text, 0, 3); // on 文, display col 2
+    f.feed(["<C-d>"]); // half of the 9-row viewport = 4 rows down
+    assert_eq!(f.line(), 4);
+    assert_eq!(f.cursor(), f.buf.line_start(4) + 3);
+}
+
+#[test]
+fn ctrl_f_keeps_display_column_across_wide_chars() {
+    let text = "中文x\nl1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\n中文ef\n";
+    let mut f = Fixture::at(text, 0, 3);
+    f.feed(["<C-f>"]); // a full viewport = 9 rows down
+    assert_eq!(f.line(), 9);
+    assert_eq!(f.cursor(), f.buf.line_start(9) + 3);
+}
+
+#[test]
+#[allow(non_snake_case)] // the test names quote vim's `1G` / `G` keys
+fn one_G_is_line_one_not_the_last_line() {
+    // explicit `1G` means line 1; only a BARE `G` means the last line
+    let f = edit(MULTI, 3, 0, &["1", "G"]);
+    assert_eq!(f.line(), 0);
+}
+
+#[test]
+#[allow(non_snake_case)]
+fn bare_G_still_goes_to_the_last_line() {
+    let f = edit(MULTI, 0, 0, &["G"]);
+    assert_eq!(f.line(), 3);
+}
+
+// ---- regression: insert-mode ctrl chords -----------------------------------
+
+#[test]
+fn insert_ctrl_w_deletes_word_before_cursor() {
+    // `control && is_plain()` used to make this branch unreachable
+    let mut f = edit("foo bar baz", 0, 11, &["i"]);
+    f.feed(["<C-w>"]);
+    assert_eq!(f.text(), "foo bar ");
+    assert_eq!(f.cursor(), 8);
+}
+
+#[test]
+fn insert_ctrl_w_treats_punctuation_as_its_own_word() {
+    // vim semantics: `)`, `bar` and `(` are separate word classes, so the
+    // second `<C-w>` eats only `) ` — not the whole `(bar)`
+    let mut f = edit("foo (bar) baz", 0, 13, &["i"]);
+    f.feed(["<C-w>"]); // deletes "baz"
+    assert_eq!(f.text(), "foo (bar) ");
+    f.feed(["<C-w>"]); // deletes ") "
+    assert_eq!(f.text(), "foo (bar");
+}
+
+#[test]
+fn insert_ctrl_u_deletes_to_line_start() {
+    let mut f = edit("hello world", 0, 5, &["i"]);
+    f.feed(["<C-u>"]);
+    assert_eq!(f.text(), " world");
+    assert_eq!(f.cursor(), 0);
+}
+
+#[test]
+fn insert_ctrl_r_inserts_register_content() {
+    let mut f = Fixture::at("foo bar", 0, 0);
+    f.feed(["y", "i", "w"]); // yank "foo" into the unnamed register
+    f.feed(["A"]); // append after the last char
+    f.feed(["<C-r>", "\""]);
+    assert_eq!(f.text(), "foo barfoo");
 }

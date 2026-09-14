@@ -57,14 +57,13 @@ fn feed(vim: &mut VimState, buf: &mut B, host: &mut H, keys: &[&str]) {
             vim.handle_key(&mut ctx, key.clone())
         };
         // host-side placement for insert-mode printables (dispatch_text's job)
-        if result == vim_core::state::KeyResult::Unknown {
-            if matches!(vim.mode(), vim_core::mode::Mode::Insert) {
+        if result == vim_core::state::KeyResult::Unknown
+            && matches!(vim.mode(), vim_core::mode::Mode::Insert) {
                 if let Some(c) = key.printable_char() {
                     let mut ctx = Ctx { buf, host };
                     vim.insert_text_at_cursor(&mut ctx, &c.to_string());
                 }
             }
-        }
     }
 }
 

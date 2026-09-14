@@ -76,16 +76,24 @@ pub fn parse(text: &str) -> Config {
 
         if let Some(rest) = line.strip_prefix("set").filter(|r| r.is_empty() || r.starts_with(' ')) {
             for arg in rest.split_whitespace() {
-                let setting = if let Some(name) = arg.strip_suffix('!') {
-                    Some(Setting::Toggle(name.to_owned()))
-                } else if let Some(name) = arg.strip_prefix("no") {
-                    Some(Setting::Off(name.to_owned()))
-                } else if let Some((name, value)) = arg.split_once('=') {
-                    Some(Setting::Value(name.to_owned(), value.to_owned()))
+                // Branch order matters twice over: `=` must win over `no`
+                // (`set no=3`? unlikely, but `name=value` is never a negation),
+                // and a leading `no` is only negation when the remainder names
+                // a real boolean option — otherwise `set number` would parse
+                // as `Off("mber")`.
+                let setting = if let Some((name, value)) = arg.split_once('=') {
+                    Setting::Value(name.to_owned(), value.to_owned())
+                } else if let Some(name) = arg.strip_suffix('!') {
+                    Setting::Toggle(name.to_owned())
+                } else if let Some(name) = arg
+                    .strip_prefix("no")
+                    .filter(|n| crate::options::is_bool_option(n))
+                {
+                    Setting::Off(name.to_owned())
                 } else {
-                    Some(Setting::On(arg.to_owned()))
+                    Setting::On(arg.to_owned())
                 };
-                config.settings.push(setting.unwrap());
+                config.settings.push(setting);
             }
             continue;
         }
@@ -167,3 +175,48 @@ fn resolve_leader(text: &str, leader: &Key) -> String {
     }
 }
 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn set_number_is_on_not_off_mber() {
+        // regression: `no` used to be stripped before anything else, so
+        // `set number` parsed as `Off("mber")`
+        let config = parse("set number");
+        assert_eq!(config.settings, vec![Setting::On("number".to_owned())]);
+    }
+
+    #[test]
+    fn set_no_prefix_negates_known_boolean_options() {
+        let config = parse("set nonumber\nset nonu");
+        assert_eq!(
+            config.settings,
+            vec![
+                Setting::Off("number".to_owned()),
+                Setting::Off("nu".to_owned()),
+            ]
+        );
+    }
+
+    #[test]
+    fn set_value_and_toggle_forms() {
+        let config = parse("set tabstop=8\nset number!");
+        assert_eq!(
+            config.settings,
+            vec![
+                Setting::Value("tabstop".to_owned(), "8".to_owned()),
+                Setting::Toggle("number".to_owned()),
+            ]
+        );
+    }
+
+    #[test]
+    fn set_unknown_option_falls_through_to_on() {
+        // `wrap` is not in the engine's option subset: it parses as `On` and
+        // is silently ignored at apply time (like IdeaVim's unknown sets)
+        let config = parse("set wrap");
+        assert_eq!(config.settings, vec![Setting::On("wrap".to_owned())]);
+    }
+}

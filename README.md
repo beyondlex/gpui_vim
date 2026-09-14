@@ -104,7 +104,7 @@ let subscription = gpui_vim::attach(&editor_entity, cx); // 必须保活（存�
 （含反色块光标、三种可视选区、搜索高亮、caret 闪烁 `CaretBlinker`），返回的
 `ShapedLine` 供鼠标/IME 反查。配置支持 `~/.gpui-vimrc`（`set`、`:map` 家族含
 `noremap`/`<Leader>`、`source`、`"` 注释），映射 RHS 里的 `:action SomeId<CR>`
-会调用宿主 action 系统（`VimHost::dispatch_host_action`）。
+会调用宿主 action 系统（`VimHost::dispatch_host_action_hinted`）。
 
 支持的功能：`hjkl w b e f t % gg G 0 ^ $`、算子 `d c y > < gu gU g~`、text
 objects `iw aw i" a( it ...`、`C-v` 块可视（含块 `I/A/c/p`）、`R`、`.`、宏

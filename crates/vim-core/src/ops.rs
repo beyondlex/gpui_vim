@@ -297,7 +297,7 @@ pub fn apply(
             delete_span(vim, ctx, &effective, register);
             if !indent_text.is_empty() {
                 let at = vim.cursor.offset;
-            vim.edit_insert(ctx, at, &indent_text);
+                vim.edit_insert(ctx, at, &indent_text);
                 vim.cursor.offset = at + indent_text.len();
             }
             vim.begin_insert(ctx, InsertKind::Change);
@@ -394,32 +394,13 @@ pub fn format_lines(vim: &mut VimState, ctx: &mut Ctx, start: usize, last_line: 
     let mut paragraph: Vec<String> = Vec::new();
     let mut indent = String::new();
 
-    fn flush(paragraph: &mut Vec<String>, indent: &str, width: usize, out: &mut String) {
-        let mut col = indent.chars().count();
-        let mut line = String::from(indent);
-        for word in paragraph.drain(..) {
-            let w = word.chars().count();
-            if col > indent.chars().count() && col + w > width {
-                out.push_str(line.trim_end());
-                out.push('\n');
-                line = String::from(indent);
-                col = indent.chars().count();
-            }
-            line.push_str(&word);
-            line.push(' ');
-            col += w + 1;
-        }
-        out.push_str(line.trim_end());
-        out.push('\n');
-    }
-
     for line in start..=last_line {
         let ls = ctx.buf.line_start(line);
         let le = ctx.buf.line_end(line);
         let text = ctx.buf.slice(ls..le);
         let (ind, blank) = ctx.buf.line_indent(line);
         if blank || text.trim().is_empty() {
-            flush(&mut paragraph, &indent, width, &mut out);
+            flush_paragraph(&mut paragraph, &indent, width, &mut out);
             out.push('\n'); // keep the blank separator line
         } else {
             if paragraph.is_empty() {
@@ -430,7 +411,7 @@ pub fn format_lines(vim: &mut VimState, ctx: &mut Ctx, start: usize, last_line: 
             }
         }
     }
-    flush(&mut paragraph, &indent, width, &mut out);
+    flush_paragraph(&mut paragraph, &indent, width, &mut out);
 
     // each flushed paragraph ends with one newline; drop only the final
     // terminator (it belongs to the buffer structure, not the text)
@@ -440,6 +421,30 @@ pub fn format_lines(vim: &mut VimState, ctx: &mut Ctx, start: usize, last_line: 
     vim.edit_replace(ctx, start..span_end, &out);
     vim.cursor.offset = clamp_to_line_end(ctx.buf, start);
     vim.cursor.desired_col = None;
+}
+
+/// Wrap the queued words to `width` under `indent` and append them to `out`.
+///
+/// Contract: exactly one trailing `'\n'` is appended per call — callers
+/// joining several paragraphs are responsible for dropping the final
+/// terminator before writing back to the buffer.
+fn flush_paragraph(paragraph: &mut Vec<String>, indent: &str, width: usize, out: &mut String) {
+    let mut col = indent.chars().count();
+    let mut line = String::from(indent);
+    for word in paragraph.drain(..) {
+        let w = word.chars().count();
+        if col > indent.chars().count() && col + w > width {
+            out.push_str(line.trim_end());
+            out.push('\n');
+            line = String::from(indent);
+            col = indent.chars().count();
+        }
+        line.push_str(&word);
+        line.push(' ');
+        col += w + 1;
+    }
+    out.push_str(line.trim_end());
+    out.push('\n');
 }
 
 /// `p` / `P`: paste a register.
@@ -529,6 +534,32 @@ pub fn join_lines(vim: &mut VimState, ctx: &mut Ctx, count: usize, literal: bool
     vim.cursor.desired_col = None;
 }
 
+/// Advance over up to `count` grapheme clusters (emoji and combining-mark
+/// sequences move atomically), never crossing `limit` — normally the line
+/// end. Returns the new offset, which may be short of `count` steps.
+fn advance_graphemes(buf: &dyn VimBuffer, offset: usize, count: usize, limit: usize) -> usize {
+    let mut o = offset;
+    for _ in 0..count {
+        match crate::buffer::next_grapheme_offset(buf, o) {
+            Some(next) if next <= limit => o = next,
+            _ => break,
+        }
+    }
+    o
+}
+
+/// [`advance_graphemes`] backwards, never crossing back over `limit`.
+fn retreat_graphemes(buf: &dyn VimBuffer, offset: usize, count: usize, limit: usize) -> usize {
+    let mut o = offset;
+    for _ in 0..count {
+        match crate::buffer::prev_grapheme_offset(buf, o) {
+            Some(prev) if prev >= limit => o = prev,
+            _ => break,
+        }
+    }
+    o
+}
+
 /// `x` / `X`: delete `count` chars under/before the cursor.
 pub fn delete_chars(vim: &mut VimState, ctx: &mut Ctx, count: usize, backward: bool) {
     let start = vim.cursor.offset;
@@ -536,13 +567,7 @@ pub fn delete_chars(vim: &mut VimState, ctx: &mut Ctx, count: usize, backward: b
     let line_start = ctx.buf.line_start(line);
     let line_end = ctx.buf.line_end(line);
     let (lo, hi) = if backward {
-        let mut lo = start;
-        for _ in 0..count {
-            match crate::buffer::prev_grapheme_offset(ctx.buf, lo) {
-                Some(prev) if prev >= line_start => lo = prev,
-                _ => break,
-            }
-        }
+        let lo = retreat_graphemes(ctx.buf, start, count, line_start);
         if lo == start {
             return;
         }
@@ -551,15 +576,7 @@ pub fn delete_chars(vim: &mut VimState, ctx: &mut Ctx, count: usize, backward: b
         if start >= line_end {
             return;
         }
-        // advance over `count` graphemes (emoji clusters are atomic)
-        let mut hi = start;
-        for _ in 0..count {
-            match crate::buffer::next_grapheme_offset(ctx.buf, hi) {
-                Some(next) if next <= line_end => hi = next,
-                _ => break,
-            }
-        }
-        (start, hi)
+        (start, advance_graphemes(ctx.buf, start, count, line_end))
     };
     delete_span(
         vim,
@@ -582,13 +599,16 @@ pub fn replace_chars(vim: &mut VimState, ctx: &mut Ctx, ch: char, count: usize) 
     let mut o = start;
     for _ in 0..count {
         if o >= line_end {
+            // `3rx` with only two chars left on the line: vim cancels the
+            // whole replace instead of partially filling it
             return;
         }
         replacements.push(ch);
-        match crate::buffer::next_grapheme_offset(ctx.buf, o) {
-            Some(next) if next <= line_end => o = next,
-            _ => break,
+        let next = advance_graphemes(ctx.buf, o, 1, line_end);
+        if next == o {
+            break;
         }
+        o = next;
     }
     vim.edit_replace(ctx, start..o, &replacements);
     vim.cursor.offset = clamp_to_line_end(
@@ -611,10 +631,11 @@ pub fn toggle_chars(vim: &mut VimState, ctx: &mut Ctx, count: usize) {
         }
         let Some(c) = ctx.buf.char_at(o) else { break };
         mapped.push(crate::ops::toggle_case(c));
-        match crate::buffer::next_grapheme_offset(ctx.buf, o) {
-            Some(next) if next <= line_end => o = next,
-            _ => break,
+        let next = advance_graphemes(ctx.buf, o, 1, line_end);
+        if next == o {
+            break;
         }
+        o = next;
     }
     if mapped.is_empty() {
         return;

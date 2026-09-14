@@ -42,6 +42,15 @@ use vim_core::Mode;
 pub trait VimEditor: 'static {
     fn vim_parts(&mut self) -> (&mut VimState, &mut dyn VimBufferMut, &mut dyn VimHost);
 
+    /// Run `f` with a [`Ctx`] assembled from [`VimEditor::vim_parts`] — the
+    /// three-way borrow split happens once here instead of at every call
+    /// site in the host.
+    fn with_vim_ctx<R>(&mut self, f: impl FnOnce(&mut VimState, &mut Ctx) -> R) -> R {
+        let (vim, buf, host) = self.vim_parts();
+        let mut ctx = Ctx { buf, host };
+        f(vim, &mut ctx)
+    }
+
     /// Whether the engine should receive keys right now — typically
     /// `self.focus_handle.contains_focused(window, cx)`.
     fn vim_accepts_keys(&self, window: &Window, cx: &App) -> bool;
@@ -140,6 +149,18 @@ fn debug_keys() -> bool {
     std::env::var_os("GPUI_VIM_DEBUG_KEYS").is_some()
 }
 
+/// The [`KeyKind`] for a gpui `key` name: a single character becomes a
+/// `Char` (uppercased on the shift path, where the bare base key carries no
+/// case), any other name stays a `Named` key.
+fn single_char_or_named(key: &str, uppercase: bool) -> KeyKind {
+    let mut chars = key.chars();
+    match (chars.next(), chars.next()) {
+        (Some(c), None) if uppercase => KeyKind::Char(c.to_ascii_uppercase()),
+        (Some(c), None) => KeyKind::Char(c),
+        _ => KeyKind::Named(key.to_owned()),
+    }
+}
+
 /// Convert a gpui keystroke into the engine's key model.
 pub fn to_core_key(keystroke: &Keystroke) -> Key {
     let modifiers = Modifiers {
@@ -151,11 +172,7 @@ pub fn to_core_key(keystroke: &Keystroke) -> Key {
     let key = &keystroke.key;
     let kind = if modifiers.control || modifiers.alt {
         // command chords use the base key name; single chars become Char
-        let mut chars = key.chars();
-        match (chars.next(), chars.next()) {
-            (Some(c), None) => KeyKind::Char(c),
-            _ => KeyKind::Named(key.clone()),
-        }
+        single_char_or_named(key, false)
     } else if let Some(c) = keystroke.key_char.as_deref().and_then(|s| s.chars().next()) {
         // macOS reports Enter and Tab with a control character in `key_char`
         // ("\n", "\t") while `key` carries the canonical name. Convert them
@@ -169,18 +186,10 @@ pub fn to_core_key(keystroke: &Keystroke) -> Key {
         }
     } else if modifiers.shift {
         // shift + single char without key_char (parse path): uppercase it
-        let mut chars = key.chars();
-        match (chars.next(), chars.next()) {
-            (Some(c), None) => KeyKind::Char(c.to_ascii_uppercase()),
-            _ => KeyKind::Named(key.clone()),
-        }
+        single_char_or_named(key, true)
     } else {
         // `Keystroke::parse` leaves key_char empty for single characters
-        let mut chars = key.chars();
-        match (chars.next(), chars.next()) {
-            (Some(c), None) => KeyKind::Char(c),
-            _ => KeyKind::Named(key.clone()),
-        }
+        single_char_or_named(key, false)
     };
     Key { modifiers, kind }
 }
@@ -344,7 +353,7 @@ mod tests {
         // `I`, `A`, `V` arrive as shift + base key + uppercase key_char
         let mk = |key: &str, ch: char| Keystroke {
             key: key.into(),
-            key_char: Some(ch.to_string().into()),
+            key_char: Some(ch.to_string()),
             modifiers: gpui::Modifiers { shift: true, ..Default::default() },
         };
 
@@ -430,8 +439,8 @@ mod render_tests {
         let highlights = vec![0..3, 8..11];
         let o = overlays(&vim, &buf, 0, &highlights, true);
         assert_eq!(o.quads.len(), 2);
-        assert_eq!(o.quads[0].0, 0..3);
-        assert_eq!(o.quads[1].0, 8..11);
+        assert_eq!(o.quads[0].range, 0..3);
+        assert_eq!(o.quads[1].range, 8..11);
     }
 
     #[test]
@@ -445,7 +454,7 @@ mod render_tests {
         dispatch(&mut vim, &mut buf.clone(), Key::char('l'));
         let o = overlays(&vim, &buf, 0, &[], true);
         assert_eq!(o.quads.len(), 1);
-        assert_eq!(o.quads[0].0, 0..4); // v..cursor inclusive (cursor on 'd')
+        assert_eq!(o.quads[0].range, 0..4); // v..cursor inclusive (cursor on 'd')
         assert_eq!(o.cursor, Some(3));
         assert!(o.cursor_block);
 
@@ -467,7 +476,7 @@ mod render_tests {
         dispatch(&mut vim, &mut buf.clone(), Key::char('V'));
         let o = overlays(&vim, &buf, 0, &[], true);
         assert_eq!(o.quads.len(), 1);
-        assert!(o.quads[0].2, "linewise quad spans the full width");
+        assert!(o.quads[0].full_width, "linewise quad spans the full width");
     }
 
     #[test]
@@ -480,9 +489,9 @@ mod render_tests {
         dispatch(&mut vim, &mut buf.clone(), Key::char('l'));
         let o0 = overlays(&vim, &buf, 0, &[], true);
         assert_eq!(o0.quads.len(), 1);
-        assert_eq!(o0.quads[0].0, 0..2);
+        assert_eq!(o0.quads[0].range, 0..2);
         let o1 = overlays(&vim, &buf, 1, &[], true);
         assert_eq!(o1.quads.len(), 1);
-        assert_eq!(o1.quads[0].0, 0..2);
+        assert_eq!(o1.quads[0].range, 0..2);
     }
 }

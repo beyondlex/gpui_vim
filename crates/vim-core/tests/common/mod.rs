@@ -7,7 +7,7 @@
 use std::cell::RefCell;
 use std::ops::Range;
 use std::rc::Rc;
-use vim_core::buffer::{clamp_to_line_end, VimBuffer, VimBufferMut};
+use vim_core::buffer::{VimBuffer, VimBufferMut};
 use vim_core::host::VimHost;
 use vim_core::key::Key;
 use vim_core::state::{Ctx, KeyResult, VimState};
@@ -255,10 +255,6 @@ impl Fixture {
 
     pub fn line(&self) -> usize {
         self.buf.offset_to_line(self.vim.cursor.offset)
-    }
-
-    pub fn clamp(&self, offset: usize) -> usize {
-        clamp_to_line_end(&self.buf, offset)
     }
 }
 

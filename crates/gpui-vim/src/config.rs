@@ -8,6 +8,12 @@ use std::path::{Path, PathBuf};
 
 use vim_core::config::{self, ConfigStats};
 
+use crate::VimEditor;
+
+/// `source` directives may not chain forever (a cycle or a prank rc would
+/// otherwise loop); vim caps `:source` depth similarly.
+const MAX_SOURCE_DEPTH: usize = 4;
+
 /// The default user config path: `$HOME/.gpui-vimrc` (None without `$HOME`).
 pub fn default_config_path() -> Option<PathBuf> {
     std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".gpui-vimrc"))
@@ -66,10 +72,10 @@ impl Layers {
     }
 }
 
-/// Per-layer dispatch policy applied while loading.
-pub struct LayerPolicy {
-    pub path: PathBuf,
-    pub action_policy: ActionPolicy,
+/// One planned layer load (internal to [`load_layers`]).
+struct LayerPlan {
+    path: PathBuf,
+    action_policy: ActionPolicy,
 }
 
 /// Stats across all applied layers.
@@ -103,33 +109,55 @@ pub fn load_config_file<E: VimEditor>(editor: &mut E, path: &Path) -> std::io::R
 
 /// Load [`Layers`] in order (user first, host second) — layers that don't
 /// exist are skipped. Each layer's action policy is active while it loads.
-/// Returns the combined stats of what was applied.
+/// Returns the combined stats of what was applied. Missing or unreadable
+/// files are silent here; use [`load_layers_checked`] to surface them.
 pub fn load_layers<E: VimEditor>(editor: &mut E, layers: &Layers) -> LoadedStats {
+    load_layers_checked(editor, layers).0
+}
+
+/// [`load_layers`] that also reports per-layer read errors: without this,
+/// a typo'd rc path is indistinguishable from "no config to load".
+/// (`source` targets stay silent by design — a broken directive inside
+/// someone else's shared rc should not fail this app's startup.)
+pub fn load_layers_checked<E: VimEditor>(
+    editor: &mut E,
+    layers: &Layers,
+) -> (LoadedStats, Vec<std::io::Error>) {
     let plans = [
-        layers.user.as_ref().map(|path| LayerPolicy {
+        layers.user.as_ref().map(|path| LayerPlan {
             path: path.clone(),
             action_policy: ActionPolicy::Ignore,
         }),
-        layers.host.as_ref().map(|path| LayerPolicy {
+        layers.host.as_ref().map(|path| LayerPlan {
             path: path.clone(),
             action_policy: ActionPolicy::Report,
         }),
     ];
     let mut total = LoadedStats::default();
+    let mut errors = Vec::new();
     for plan in plans.into_iter().flatten() {
         let (vim, _, _) = editor.vim_parts();
         vim.set_lenient_actions(plan.action_policy == ActionPolicy::Ignore);
-        if let Ok(stats) = load(editor, &expand_tilde(&plan.path), 0) {
-            total.options += stats.options;
-            total.mappings += stats.mappings;
-            total.ignored += stats.ignored;
-            total.files += 1;
+        match load(editor, &expand_tilde(&plan.path), 0) {
+            Ok(stats) => accumulate(&mut total, stats, true),
+            Err(error) => errors.push(error),
         }
     }
     // restore strict dispatch after the shared layers
     let (vim, _, _) = editor.vim_parts();
     vim.set_lenient_actions(false);
-    total
+    (total, errors)
+}
+
+/// Fold one applied file's stats into the running totals.
+/// (`ConfigStats` is foreign, so an `Add` impl would violate orphan rules.)
+fn accumulate(total: &mut LoadedStats, stats: ConfigStats, count_file: bool) {
+    total.options += stats.options;
+    total.mappings += stats.mappings;
+    total.ignored += stats.ignored;
+    if count_file {
+        total.files += 1;
+    }
 }
 
 fn load<E: VimEditor>(editor: &mut E, path: &Path, depth: usize) -> std::io::Result<ConfigStats> {
@@ -140,7 +168,7 @@ fn load<E: VimEditor>(editor: &mut E, path: &Path, depth: usize) -> std::io::Res
 
     // `source` directives apply after the sourcing file (documented
     // divergence from vim's in-place semantics)
-    if depth < 4 {
+    if depth < MAX_SOURCE_DEPTH {
         for source in &config.sources {
             if let Ok(sub) = load(editor, source, depth + 1) {
                 stats.options += sub.options;
@@ -151,5 +179,3 @@ fn load<E: VimEditor>(editor: &mut E, path: &Path, depth: usize) -> std::io::Res
     }
     Ok(stats)
 }
-
-use crate::VimEditor;

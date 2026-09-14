@@ -12,8 +12,9 @@ use gpui::{
     FocusHandle, Font, FontStyle, FontWeight, MouseDownEvent, MouseMoveEvent, Pixels, Point,
     Render, ScrollStrategy, SharedString, UniformListScrollHandle, Window,
 };
+use gpui_vim::VimEditor as _;
 use vim_core::buffer::VimBuffer;
-use vim_core::state::{Ctx, KeyResult, VimState};
+use vim_core::state::{KeyResult, VimState};
 use vim_core::{Mode, VimHost};
 
 use crate::buffer::RopeBuffer;
@@ -104,6 +105,11 @@ pub struct Editor {
     /// list × ~40 visible lines would rescan all 10k per line, per frame.
     visible_highlights: RefCell<std::rc::Rc<Vec<Range<usize>>>>,
     dragging: Cell<bool>,
+    /// Buffer offset where the current mouse press started. Every drag
+    /// event must extend from THIS anchor — using the live cursor instead
+    /// would re-anchor the selection at each event, collapsing it to the
+    /// distance between two adjacent drag samples.
+    drag_anchor: Cell<usize>,
     /// Caret blink state (library helper; the engine owns no timers).
     caret_blinker: std::rc::Rc<gpui_vim::render::CaretBlinker>,
     pub status_message: Option<String>,
@@ -158,10 +164,15 @@ impl Editor {
             marked_range: None,
             visible_lines: Cell::new((0, 24)),
             text_area_bounds: Cell::new(Bounds::default()),
+            // Pre-measurement guess for Menlo 14px's advance width; the
+            // first painted frame overwrites it with the shaped value (see
+            // the render pass). Used only for the gutter width and the
+            // mouse fallback before shaping exists.
             char_width: Cell::new(8.4),
             shaped_lines: RefCell::new(HashMap::new()),
             visible_highlights: RefCell::new(std::rc::Rc::new(Vec::new())),
             dragging: Cell::new(false),
+            drag_anchor: Cell::new(0),
             caret_blinker: gpui_vim::render::CaretBlinker::new(),
             status_message: None,
             _vim_subscription: None,
@@ -273,6 +284,7 @@ impl Editor {
             tab.vim.set_cursor_offset(&tab.buffer, offset);
             tab.host.scrolled_to = None;
         }
+        self.drag_anchor.set(offset);
         self.dragging.set(true);
         self.mark_caret_activity();
         cx.notify();
@@ -283,7 +295,7 @@ impl Editor {
             return;
         }
         let offset = self.byte_at_point(event.position);
-        let anchor = self.tab().vim.cursor_offset();
+        let anchor = self.drag_anchor.get();
         {
             let tab = self.tab_mut();
             tab.vim.set_visual_range(&tab.buffer, anchor, offset);
@@ -315,6 +327,10 @@ impl Editor {
 
     /// `:w` status text, `:q` close requests and `:action <id>` host
     /// actions arrive through the host.
+    ///
+    /// Assumption: only the ACTIVE tab produces pending effects (the engine
+    /// runs on the focused editor). Effects queued on background tabs would
+    /// wait until that tab becomes active — acceptable for the demo.
     fn flush_host_effects(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(status) = self.tab_mut().host.pending_status.take() {
             self.status_message = Some(status);
@@ -345,11 +361,10 @@ impl Editor {
     // ---- actions -----------------------------------------------------------------
 
     pub fn save(&mut self, _action: &Save, _window: &mut Window, cx: &mut Context<Self>) {
-        self.status_message = Some(format!(
-            "\"untitled\" {}L, {}B written (demo: not persisted)",
-            self.tab().buffer.line_count(),
-            self.tab().buffer.len()
-        ));
+        // one implementation of the "written" message — the host formats it
+        // (this is also the path `:w` takes)
+        self.tab_mut().host.save();
+        self.flush_host_effects(_window, cx);
         cx.notify();
     }
 
@@ -371,9 +386,7 @@ impl Editor {
             return;
         };
         let Some(text) = item.text() else { return };
-        let (vim, buf, host) = gpui_vim::VimEditor::vim_parts(self);
-        let mut ctx = Ctx { buf, host };
-        vim.insert_text_at_cursor(&mut ctx, &text);
+        self.with_vim_ctx(|vim, ctx| vim.insert_text_at_cursor(ctx, &text));
         cx.notify();
     }
 }
@@ -579,6 +592,7 @@ impl Editor {
             search: search_color(),
             search_current: current_search_color(),
             mark: mark_color(),
+            // same Menlo-14px advance guess as the `char_width` seed
             caret_fallback_width: 8.4,
         }
     }
@@ -809,9 +823,7 @@ impl gpui::EntityInputHandler for Editor {
         // so this is a no-op there.
         if let Some(range) = self.marked_range.take() {
             if range.start < range.end {
-                let (vim, buf, host) = gpui_vim::VimEditor::vim_parts(self);
-                let mut ctx = Ctx { buf, host };
-                vim.replace_range(&mut ctx, range, "");
+                self.with_vim_ctx(|vim, ctx| vim.replace_range(ctx, range, ""));
             }
         }
     }
@@ -844,22 +856,24 @@ impl gpui::EntityInputHandler for Editor {
             && self.marked_range.as_ref().is_some_and(|r| !r.is_empty());
         if committing {
             let marked = self.marked_range.take().unwrap();
-            let (vim, buf, host) = gpui_vim::VimEditor::vim_parts(self);
-            vim.record_typed_text(text);
-            let mut ctx = Ctx { buf, host };
-            vim.replace_range(&mut ctx, marked, text);
+            self.with_vim_ctx(|vim, ctx| {
+                vim.record_typed_text(text);
+                vim.replace_range(ctx, marked, text);
+            });
         } else if let Some(range) = explicit_range {
-            let (vim, buf, host) = gpui_vim::VimEditor::vim_parts(self);
-            if matches!(vim.mode(), Mode::Insert | Mode::Replace) {
-                let mut ctx = Ctx { buf, host };
-                vim.replace_range(&mut ctx, range, text);
-            }
+            self.with_vim_ctx(|vim, ctx| {
+                if matches!(vim.mode(), Mode::Insert | Mode::Replace) {
+                    vim.replace_range(ctx, range, text);
+                }
+            });
         } else {
             gpui_vim::dispatch_text(self, text);
         }
 
-        let (vim, _buf, _host) = gpui_vim::VimEditor::vim_parts(self);
-        let cursor_line = _buf.offset_to_line(vim.cursor_offset());
+        let cursor_line = self
+            .tab()
+            .buffer
+            .offset_to_line(self.tab().vim.cursor_offset());
         self.tab_mut().host.scrolled_to = Some(cursor_line);
         self.mark_caret_activity();
         self.flush_scroll();
@@ -881,12 +895,9 @@ impl gpui::EntityInputHandler for Editor {
         if !matches!(self.tab().vim.mode(), Mode::Insert | Mode::Replace) {
             return;
         }
-        let (vim, _buf, _host) = gpui_vim::VimEditor::vim_parts(self);
-        vim.set_recording_suppressed(true);
+        self.with_vim_ctx(|vim, _| vim.set_recording_suppressed(true));
         if let Some(previous) = self.marked_range.take() {
-            let (vim, buf, host) = gpui_vim::VimEditor::vim_parts(self);
-            let mut ctx = Ctx { buf, host };
-            vim.replace_range(&mut ctx, previous.clone(), new_text);
+            self.with_vim_ctx(|vim, ctx| vim.replace_range(ctx, previous.clone(), new_text));
             // An empty new_text is the IME cancelling the composition: drop
             // the marker entirely (an empty Some would wedge gpui's
             // is_composing high and steal every later keystroke).
@@ -894,14 +905,14 @@ impl gpui::EntityInputHandler for Editor {
             let end = start + new_text.len();
             self.marked_range = (start < end).then_some(start..end);
         } else {
-            let (vim, buf, host) = gpui_vim::VimEditor::vim_parts(self);
-            let mut ctx = Ctx { buf, host };
-            let start = vim.cursor_offset();
-            vim.insert_text_at_cursor(&mut ctx, new_text);
-            self.marked_range = Some(start..start + new_text.len());
+            let range = self.with_vim_ctx(|vim, ctx| {
+                let start = vim.cursor_offset();
+                vim.insert_text_at_cursor(ctx, new_text);
+                start..start + new_text.len()
+            });
+            self.marked_range = Some(range);
         }
-        let (vim, _buf, _host) = gpui_vim::VimEditor::vim_parts(self);
-        vim.set_recording_suppressed(false);
+        self.with_vim_ctx(|vim, _| vim.set_recording_suppressed(false));
     }
 
     fn bounds_for_range(

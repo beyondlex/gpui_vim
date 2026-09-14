@@ -49,7 +49,6 @@ pub enum NormalCmd {
     RepeatChange,        // .
     JumpBackward,        // C-o
     JumpForward,         // C-i
-    InsertAtLastChange,  // gi
     OlderChange,         // g;
     NewerChange,         // g,
     IncrementNumber,     // C-a
@@ -94,6 +93,16 @@ impl CmdKind {
     }
 
     /// Does executing this command mutate the buffer? Used for undo groups.
+    ///
+    /// The `Normal` exclusion list is "pure navigation / bookkeeping":
+    /// marks, macros, scrolls and list walks only move the cursor or
+    /// engine state. `Undo`/`Redo` count as NON-mutating even though they
+    /// change the text — the HOST begins their undo accounting itself
+    /// (`begin_undo_group` was already consumed when the change being
+    /// undone was made), and a fresh group here would nest confusingly.
+    /// `RepeatChange` is excluded because its replayed steps mutate on
+    /// their own (grouped by their own `begin_edit` calls). `WriteQuit` /
+    /// `QuitNoSave` end the session without touching the buffer.
     pub fn mutates(self) -> bool {
         match self {
             CmdKind::Motion(_) | CmdKind::Object(_) => false,

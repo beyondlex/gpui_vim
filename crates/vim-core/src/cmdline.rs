@@ -60,6 +60,7 @@ impl VimState {
             if let Some(last) = self.search.pattern.clone() {
                 search::set_pattern(self, ctx, last, self.search.forward);
                 self.jump_to_current_match(ctx, self.search.forward, 1);
+                ctx.host.changed();
             }
             return;
         }
@@ -77,12 +78,12 @@ impl VimState {
             self.cursor.offset = offset;
             self.cursor.desired_col = None;
             self.record_jump(origin, offset);
-            // publish with the current match marked (respecting `hlsearch`)
+            // publish with the current match marked (respecting `hlsearch`).
+            // `jump_to_match` returns a `.start` from `last_matches` (it may
+            // have re-scanned into it), so no second scan is needed here.
             if self.options.hlsearch {
                 let matches = self.search.last_matches.clone();
-                let current = search::all_matches(self, ctx.buf, self.search.pattern.as_deref().unwrap_or(""))
-                    .into_iter()
-                    .find(|m| m.start == offset);
+                let current = matches.iter().find(|m| m.start == offset).cloned();
                 ctx.host.set_search_highlights(&matches, current);
             } else {
                 ctx.host.set_search_highlights(&[], None);
@@ -93,9 +94,12 @@ impl VimState {
         }
     }
 
+    /// Esc at the prompt: a visual `:` returns to the intact selection
+    /// (vim semantics) and a second Esc from there exits visual; a plain
+    /// search/ex prompt aborts back to normal mode. Highlights are restored
+    /// to the pre-prompt set — incremental highlighting is preview-only and
+    /// must not leak as an accepted pattern.
     fn cancel_cmdline(&mut self, ctx: &mut Ctx) {
-        // Esc at a visual `:` prompt returns to the intact selection
-        // (vim semantics); a second Esc from visual exits it
         if let Some((kind, anchor)) = self.cmdline_visual.take() {
             self.mode = Mode::Visual { kind };
             self.visual_anchor = Some(anchor);
@@ -110,6 +114,11 @@ impl VimState {
         ctx.host.changed();
     }
 
+    /// One keystroke at the prompt. Printable chars append to the buffer
+    /// (and drive incremental search on `/`/`?`); Enter executes and pushes
+    /// to this prompt's history (consecutive duplicates deduped); Up/Down
+    /// browse history with an in-progress stash; Esc cancels. Everything
+    /// else is swallowed — a cmdline is never `Unknown` to the host.
     pub(crate) fn cmdline_key(&mut self, ctx: &mut Ctx, key: Key) -> KeyResult {
         let Mode::CommandLine { prompt } = self.mode else {
             return KeyResult::Consumed;
@@ -146,20 +155,8 @@ impl VimState {
                         self.execute_ex(ctx, &entry);
                         // executing a visual `:` command ends visual mode
                         // (marks written, anchor cleared), like vim
-                        if let Some((kind, anchor)) = self.cmdline_visual.take() {
-                            let cursor = self.cursor.offset;
-                            let (lo, hi) = if anchor <= cursor {
-                                (anchor, cursor)
-                            } else {
-                                (cursor, anchor)
-                            };
-                            self.marks.set('<', lo);
-                            self.marks.set('>', hi);
-                            self.marks.last_visual = Some((lo, hi + 1));
-                            self.visual_anchor = None;
-                            self.marks.active_visual = None;
-                            self.mode = Mode::Normal;
-                            let _ = kind;
+                        if let Some((_kind, anchor)) = self.cmdline_visual.take() {
+                            self.close_visual_after_cmdline(anchor);
                         }
                     } else {
                         self.execute_search(ctx, entry, prompt == '/');
@@ -196,13 +193,10 @@ impl VimState {
                                 return KeyResult::Consumed;
                             }
                         }
-                        Some(pos) => {
-                            if name == "up" {
-                                pos.min(history.len() - 1).saturating_sub(if pos == 0 { 0 } else { 1 })
-                            } else {
-                                pos + 1
-                            }
-                        }
+                        // stored positions are always in range and history
+                        // only grows, so browsing up is just "one earlier"
+                        Some(pos) if name == "up" => pos.saturating_sub(1),
+                        Some(pos) => pos + 1,
                     };
                     if pos >= history.len() {
                         // past the newest entry: back to typing
@@ -221,30 +215,48 @@ impl VimState {
         }
     }
 
+    /// Close out a visual selection after its `:'<,'>` command ran: write
+    /// the `<`/`>` marks from the final cursor position, drop the anchor and
+    /// return to normal mode. The cursor is NOT moved here (contrast
+    /// `cancel_cmdline`, which restores the selection untouched — vim lets
+    /// the executed command decide where the cursor ends up).
+    fn close_visual_after_cmdline(&mut self, anchor: usize) {
+        let cursor = self.cursor.offset;
+        let (lo, hi) = if anchor <= cursor {
+            (anchor, cursor)
+        } else {
+            (cursor, anchor)
+        };
+        self.marks.set('<', lo);
+        self.marks.set('>', hi);
+        self.marks.last_visual = Some((lo, hi + 1));
+        self.visual_anchor = None;
+        self.marks.active_visual = None;
+        self.mode = Mode::Normal;
+    }
+
     // ---- `:` Ex commands ---------------------------------------------------
 
     /// Execute a `:` command line. Supported in v1: `:noh[lsearch]`,
     /// `:set` (booleans, `no`/`!` forms, `name=value` numerics),
-    /// `:[%]s/pat/rep/[g]`, `:w`, `:q`/`:q!`, `:wq`. Unknown commands ring
-    /// the bell and return to normal mode (mode is already Normal here).
+    /// `:[%]s/pat/rep/[g]`, `:[range]d[elete]`, `:w`, `:q`/`:q!`, `:wq`/`:x`,
+    /// `:bn[ext]`/`:bp[revious]`, and IdeaVim's `:action <id>` bridge.
+    /// Unknown commands get E492 and return to normal mode (mode is already
+    /// Normal here).
     fn execute_ex(&mut self, ctx: &mut Ctx, line: &str) {
         let line = line.trim();
         if line.is_empty() {
             return;
         }
-        // the range prefix is parsed off before command dispatch
-        let (range_first, range_last, line) = match Self::parse_range(self, ctx, line) {
+        // the range prefix is parsed off before command dispatch; `None`
+        // means "no range typed" — commands then apply their own default
+        let (range, line) = match Self::parse_range(self, ctx, line) {
             Some(parsed) => parsed,
             None => {
                 ctx.host.status_message("E16: Invalid range");
                 ctx.host.bell();
                 return;
             }
-        };
-        let range = if range_first == usize::MAX {
-            None
-        } else {
-            Some((range_first, range_last))
         };
         let line = line.trim();
         if line.is_empty() {
@@ -333,9 +345,15 @@ impl VimState {
 
     /// Parse an Ex range prefix: `%`, `.`, `$`, `'`, numbers, each with an
     /// optional `+n`/`-n` offset, joined by `,` or `;`. Returns the resolved
-    /// inclusive line range and the remainder of the line (the command).
-    /// No prefix = an empty range (command decides its default).
-    fn parse_range<'a>(vim: &VimState, ctx: &Ctx, line: &'a str) -> Option<(usize, usize, &'a str)> {
+    /// inclusive line range (`None` when no prefix was typed — the command
+    /// then decides its own default) and the remainder of the line (the
+    /// command). Note: vim's `;` sets the cursor to each intermediate
+    /// address; here `,` and `;` are treated alike (documented divergence).
+    fn parse_range<'a>(
+        vim: &VimState,
+        ctx: &Ctx,
+        line: &'a str,
+    ) -> Option<(Option<(usize, usize)>, &'a str)> {
         fn base_line(spec: &str, vim: &VimState, ctx: &Ctx) -> Option<usize> {
             match spec {
                 "." | "" => Some(ctx.buf.offset_to_line(vim.cursor.offset)),
@@ -388,13 +406,12 @@ impl VimState {
         }
         let (range_part, rest) = line.split_at(range_end);
         if range_part.is_empty() {
-            // no prefix: the command applies its own default (usize::MAX is
-            // not a real line number)
-            return Some((usize::MAX, usize::MAX, line));
+            // no prefix: the command applies its own default
+            return Some((None, line));
         }
         if range_part.trim_end() == "%" {
             let last = ctx.buf.line_count().saturating_sub(1);
-            return Some((0, last, rest.trim_start()));
+            return Some((Some((0, last)), rest.trim_start()));
         }
         let last = ctx.buf.line_count().saturating_sub(1);
         let mut first: Option<usize> = None;
@@ -428,7 +445,7 @@ impl VimState {
         }
         match (first, last_line) {
             (Some(first), Some(last)) => {
-                Some((first.min(last), first.max(last), rest.trim_start()))
+                Some((Some((first.min(last), first.max(last))), rest.trim_start()))
             }
             _ => None,
         }
@@ -543,7 +560,6 @@ impl VimState {
 
         let (first_line, last_line) = range;
 
-
         let range_start = ctx.buf.line_start(first_line);
         let range_end = ctx.buf.line_end(last_line);
         let mut joined: Vec<String> = Vec::new();
@@ -555,30 +571,24 @@ impl VimState {
             let text = ctx.buf.slice(ls..le);
             let mut hits = 0usize;
             let mut last_hit: Option<usize> = None;
+            // one counting replacer serves both modes: `replace` stops after
+            // the first match, `replace_all` runs to the end of the line
+            let count_replacements = |caps: &regex::Captures| -> String {
+                let m = caps.get(0).unwrap();
+                if m.is_empty() {
+                    // empty matches would be counted once per position
+                    return m.as_str().to_owned();
+                }
+                hits += 1;
+                last_hit = Some(m.start());
+                let mut out = String::new();
+                caps.expand(replacement, &mut out);
+                out
+            };
             let replaced = if global {
-                re.replace_all(&text, |caps: &regex::Captures| {
-                    let m = caps.get(0).unwrap();
-                    if m.is_empty() {
-                        return m.as_str().to_owned();
-                    }
-                    hits += 1;
-                    last_hit = Some(m.start());
-                    let mut out = String::new();
-                    caps.expand(replacement, &mut out);
-                    out
-                })
+                re.replace_all(&text, count_replacements)
             } else {
-                re.replace(&text, |caps: &regex::Captures| {
-                    let m = caps.get(0).unwrap();
-                    if m.is_empty() {
-                        return m.as_str().to_owned();
-                    }
-                    hits += 1;
-                    last_hit = Some(m.start());
-                    let mut out = String::new();
-                    caps.expand(replacement, &mut out);
-                    out
-                })
+                re.replace(&text, count_replacements)
             }
             .to_string();
             if hits > 0 {

@@ -127,6 +127,8 @@ pub fn jump_to_match(vim: &mut VimState, buf: &dyn VimBuffer, forward: bool, cou
             .rposition(|m| m.start < cursor)
             .unwrap_or(matches.len() - 1)
     };
+    // u64 arithmetic is deliberate: a huge typed count must wrap through
+    // the `% matches.len()` below instead of overflowing usize in debug
     let index = (start_index as u64 + (count as u64 - 1)) as usize;
     Some(matches.get(index % matches.len())?.start)
 }

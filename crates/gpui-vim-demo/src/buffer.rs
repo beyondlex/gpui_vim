@@ -64,22 +64,17 @@ impl RopeBuffer {
         }
     }
 
-    /// Clamp a byte offset onto a char boundary (and into the buffer).
+    /// Clamp a byte offset into the buffer AND down to a char boundary.
+    ///
+    /// Note: ropey's `try_byte_to_char` quietly rounds mid-char bytes down
+    /// to the *containing* char (it only errors past the buffer end), so
+    /// mapping back through `char_to_byte` is what lands us on the boundary
+    /// below the offset.
     pub fn clamp(&self, byte: usize) -> usize {
         let rope = self.0.borrow();
         let byte = byte.min(rope.len_bytes());
-        match rope.try_byte_to_char(byte) {
-            Ok(_) => byte,
-            Err(_) => {
-                // walk back to the nearest boundary
-                for b in (0..byte).rev() {
-                    if rope.try_byte_to_char(b).is_ok() {
-                        return b;
-                    }
-                }
-                0
-            }
-        }
+        let ci = rope.try_byte_to_char(byte).unwrap_or(0);
+        rope.char_to_byte(ci)
     }
 }
 

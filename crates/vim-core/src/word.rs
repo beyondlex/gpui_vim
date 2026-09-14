@@ -59,21 +59,6 @@ fn next_non_blank(buf: &dyn VimBuffer, offset: usize) -> Option<usize> {
     }
 }
 
-/// First non-blank at/after `offset` but staying on the same line.
-#[allow(dead_code)]
-fn next_non_blank_in_line(buf: &dyn VimBuffer, offset: usize) -> Option<usize> {
-    let line = buf.offset_to_line(offset);
-    let mut o = offset;
-    let end = buf.line_end(line);
-    while o < end {
-        if is_non_blank(buf, o) {
-            return Some(o);
-        }
-        o = buf.next_char_offset(o)?;
-    }
-    None
-}
-
 /// `w` / `W`: start of the next word. Stops on blank lines, never lands on a
 /// newline.
 pub fn next_word_start(buf: &dyn VimBuffer, offset: usize, big: bool) -> usize {
@@ -294,11 +279,15 @@ pub fn match_bracket(buf: &dyn VimBuffer, offset: usize) -> Option<usize> {
     let mut o = offset;
     let line_end = buf.line_end(line);
     while o <= line_end {
-        if let Some((_, _, _)) = bracket_pair(buf.char_at(o)?) {
+        // stop at the end of the buffer — NOT `?`, which would read as
+        // "scan error" instead of "no bracket on this line"
+        let Some(c) = buf.char_at(o) else { break };
+        if bracket_pair(c).is_some() {
             start = Some(o);
             break;
         }
-        o = buf.next_char_offset(o)?;
+        let Some(next) = buf.next_char_offset(o) else { break };
+        o = next;
     }
     let start = start?;
 
@@ -315,12 +304,13 @@ pub fn match_bracket(buf: &dyn VimBuffer, offset: usize) -> Option<usize> {
                     return Some(o);
                 }
             }
-            o = buf.next_char_offset(o)?;
+            let Some(next) = buf.next_char_offset(o) else { break };
+            o = next;
         }
     } else {
         while let Some(prev) = buf.prev_char_offset(o) {
             o = prev;
-            let c = buf.char_at(o)?;
+            let Some(c) = buf.char_at(o) else { break };
             if c == ch {
                 depth += 1;
             } else if c == other {

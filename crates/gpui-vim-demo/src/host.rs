@@ -6,6 +6,9 @@ use std::ops::Range;
 use crate::buffer::SharedRope;
 use vim_core::host::VimHost;
 
+/// Snapshot entries kept for `u` (oldest dropped beyond this).
+const MAX_UNDO_STEPS: usize = 200;
+
 pub struct HostState {
     rope: SharedRope,
     pub viewport: (usize, usize),
@@ -54,6 +57,26 @@ impl HostState {
     pub fn undo_depth(&self) -> usize {
         self.undo_stack.len()
     }
+
+    /// Shared body of undo/redo: pop a snapshot from the source stack, push
+    /// the current rope onto the opposite one, then restore the snapshot.
+    /// The popped cursor is returned so the engine can reposition.
+    fn travel(&mut self, redo: bool) -> Option<usize> {
+        let (rope, cursor) = if redo {
+            self.redo_stack.pop()?
+        } else {
+            self.undo_stack.pop()?
+        };
+        let current = self.rope.borrow().clone();
+        if redo {
+            self.undo_stack.push((current, cursor));
+        } else {
+            self.redo_stack.push((current, cursor));
+        }
+        *self.rope.borrow_mut() = rope;
+        self.open_group = None;
+        Some(cursor)
+    }
 }
 
 impl VimHost for HostState {
@@ -84,7 +107,7 @@ impl VimHost for HostState {
             // ropey `Rope` clones in O(1)
             let snapshot = self.rope.borrow().clone();
             self.undo_stack.push((snapshot, cursor));
-            if self.undo_stack.len() > 200 {
+            if self.undo_stack.len() > MAX_UNDO_STEPS {
                 self.undo_stack.remove(0);
             }
             self.open_group = Some(id);
@@ -92,21 +115,11 @@ impl VimHost for HostState {
     }
 
     fn undo(&mut self) -> Option<usize> {
-        let (rope, cursor) = self.undo_stack.pop()?;
-        let current = self.rope.borrow().clone();
-        self.redo_stack.push((current, cursor));
-        *self.rope.borrow_mut() = rope;
-        self.open_group = None;
-        Some(cursor)
+        self.travel(false)
     }
 
     fn redo(&mut self) -> Option<usize> {
-        let (rope, cursor) = self.redo_stack.pop()?;
-        let current = self.rope.borrow().clone();
-        self.undo_stack.push((current, cursor));
-        *self.rope.borrow_mut() = rope;
-        self.open_group = None;
-        Some(cursor)
+        self.travel(true)
     }
 
     fn changed(&mut self) {}

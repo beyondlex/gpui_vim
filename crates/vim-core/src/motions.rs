@@ -127,17 +127,15 @@ impl Motion {
         )
     }
 
-    /// Compute the landing offset. Applies `count` where it makes sense.
-    /// Pure with respect to the cursor: callers decide whether to move.
-    pub fn target(
-        &self,
-        vim: &mut VimState,
-        ctx: &mut Ctx,
-        count: usize,
-    ) -> MotionResult {
+    /// Compute the landing offset. Applies `count` where it makes sense
+    /// (an absent count arrives as 1). Never moves the cursor — callers
+    /// decide — but `SearchNext` may re-publish highlights as a side
+    /// effect, so this takes `&mut VimState`.
+    pub fn target(&self, vim: &mut VimState, ctx: &mut Ctx, count: usize) -> MotionResult {
         let buf = &*ctx.buf;
         let count = count.max(1);
         match *self {
+            // h: count graphemes left, stopping at the line start
             Motion::Left => {
                 let mut o = vim.cursor.offset;
                 for _ in 0..count {
@@ -152,6 +150,7 @@ impl Motion {
                     MotionResult::new(o, MotionKind::Exclusive)
                 }
             }
+            // l: count graphemes right, never stepping onto the newline
             Motion::Right => {
                 let mut o = vim.cursor.offset;
                 for _ in 0..count {
@@ -172,10 +171,14 @@ impl Motion {
                     MotionResult::new(o, MotionKind::Exclusive)
                 }
             }
+            // j/k: keep the desired display column (`desired_col` memoizes
+            // it across intermediate lines, like vim's wv_col)
             Motion::Up | Motion::Down => {
                 let dir = if matches!(self, Motion::Up) { -1i64 } else { 1 };
                 let start_line = buf.offset_to_line(vim.cursor.offset) as i64;
-                let target_line = (start_line + dir * count as i64).clamp(0, buf.line_count() as i64 - 1) as usize;
+                let target_line = (start_line + dir * count as i64)
+                    .clamp(0, buf.line_count() as i64 - 1)
+                    as usize;
                 let desired = vim.desired_column(buf);
                 let o = crate::buffer::offset_for_display_column(buf, target_line, desired);
                 let moved = target_line != start_line as usize;
@@ -185,8 +188,16 @@ impl Motion {
                     MotionResult::stuck(vim.cursor.offset)
                 }
             }
-            Motion::LineStart => MotionResult::new(buf.line_start(buf.offset_to_line(vim.cursor.offset)), MotionKind::Exclusive),
-            Motion::FirstNonBlank => MotionResult::new(buf.first_non_blank(buf.offset_to_line(vim.cursor.offset)), MotionKind::Exclusive),
+            // 0: byte offset of the line start
+            Motion::LineStart => MotionResult::new(
+                buf.line_start(buf.offset_to_line(vim.cursor.offset)),
+                MotionKind::Exclusive,
+            ),
+            // ^: first non-blank char of the current line
+            Motion::FirstNonBlank => MotionResult::new(
+                buf.first_non_blank(buf.offset_to_line(vim.cursor.offset)),
+                MotionKind::Exclusive,
+            ),
             Motion::LineEnd => {
                 let line = buf.offset_to_line(vim.cursor.offset);
                 let end = buf.line_end(line);
@@ -196,9 +207,11 @@ impl Motion {
                     MotionResult::new(end - 1, MotionKind::Inclusive)
                 }
             }
+            // g_: last NON-blank char of the count-th line
             Motion::LastLineNonBlank => {
                 // g_: to the last non-blank of the (count-th) line
-                let line = (buf.offset_to_line(vim.cursor.offset) + count - 1).min(buf.line_count() - 1);
+                let line =
+                    (buf.offset_to_line(vim.cursor.offset) + count - 1).min(buf.line_count() - 1);
                 let end = buf.line_end(line);
                 if end > buf.line_start(line) {
                     MotionResult::new(end - 1, MotionKind::Inclusive)
@@ -206,6 +219,7 @@ impl Motion {
                     MotionResult::new(end, MotionKind::Inclusive)
                 }
             }
+            // w / W: start of the next word run
             Motion::WordStart { big } => {
                 let mut o = vim.cursor.offset;
                 for _ in 0..count {
@@ -216,6 +230,7 @@ impl Motion {
                 }
                 MotionResult::new(o.min(buf.len()), MotionKind::Exclusive)
             }
+            // e / E: end of the current-or-next word run (inclusive)
             Motion::WordEnd { big } => {
                 let mut o = vim.cursor.offset;
                 for _ in 0..count {
@@ -223,6 +238,7 @@ impl Motion {
                 }
                 MotionResult::new(o, MotionKind::Inclusive)
             }
+            // b / B: start of the previous word run
             Motion::WordBack { big } => {
                 let mut o = vim.cursor.offset;
                 for _ in 0..count {
@@ -230,6 +246,7 @@ impl Motion {
                 }
                 MotionResult::new(o, MotionKind::Exclusive)
             }
+            // ge / gE: end of the previous word run
             Motion::WordEndBack { big } => {
                 let mut o = vim.cursor.offset;
                 for _ in 0..count {
@@ -245,12 +262,15 @@ impl Motion {
                     MotionResult::new(o, MotionKind::Inclusive)
                 }
             }
+            // f/t/F/T: reuse the last find's target char (for `;`/`,`).
+            // The char for a FRESH find arrives as a char argument.
             Motion::FindChar { forward, till } => {
                 let Some((target_char, _, _)) = vim.last_find else {
                     return MotionResult::stuck(vim.cursor.offset);
                 };
                 Self::find_from(vim, buf, target_char, forward, till, count)
             }
+            // ; / ,: repeat the last find, `,` mirroring its direction
             Motion::RepeatFind { reverse } => {
                 let Some((target_char, forward, till)) = vim.last_find else {
                     return MotionResult::stuck(vim.cursor.offset);
@@ -262,12 +282,14 @@ impl Motion {
                 };
                 Self::find_from(vim, buf, target_char, forward, till, count)
             }
-            Motion::MatchBracket => {
-                match word::match_bracket(buf, vim.cursor.offset) {
-                    Some(o) => MotionResult::new(o, MotionKind::Inclusive),
-                    None => MotionResult::stuck(vim.cursor.offset),
-                }
-            }
+            // %: jump to the bracket matching the one under the cursor
+            Motion::MatchBracket => match word::match_bracket(buf, vim.cursor.offset) {
+                Some(o) => MotionResult::new(o, MotionKind::Inclusive),
+                None => MotionResult::stuck(vim.cursor.offset),
+            },
+            // gg / G: an explicit count (`1G`, `2gg`) is the line number;
+            // the bare forms go to first/last line. execute_command rewrites
+            // an explicit `1G` to `first=true` before the count collapses.
             Motion::GoToLine { first } => {
                 let line = if count > 1 {
                     (count - 1).min(buf.line_count() - 1)
@@ -278,6 +300,7 @@ impl Motion {
                 };
                 MotionResult::new(buf.line_start(line), MotionKind::Linewise)
             }
+            // }: next paragraph boundary (blank line)
             Motion::ParaNext => {
                 let mut o = vim.cursor.offset;
                 for _ in 0..count {
@@ -285,6 +308,7 @@ impl Motion {
                 }
                 MotionResult::new(o, MotionKind::Exclusive)
             }
+            // {: previous paragraph boundary
             Motion::ParaPrev => {
                 let mut o = vim.cursor.offset;
                 for _ in 0..count {
@@ -292,6 +316,8 @@ impl Motion {
                 }
                 MotionResult::new(o, MotionKind::Exclusive)
             }
+            // ): next sentence end. Divergence from vim: only `.!?` single
+            // chars end sentences here — no `...` or newline-follow rules.
             Motion::SentenceNext => {
                 let mut o = vim.cursor.offset;
                 for _ in 0..count {
@@ -299,6 +325,7 @@ impl Motion {
                 }
                 MotionResult::new(o, MotionKind::Exclusive)
             }
+            // (: previous sentence end (same divergence as `)`)
             Motion::SentencePrev => {
                 let mut o = vim.cursor.offset;
                 for _ in 0..count {
@@ -306,21 +333,29 @@ impl Motion {
                 }
                 MotionResult::new(o, MotionKind::Exclusive)
             }
+            // n / N: jump to the count-th next/previous match of the
+            // active pattern
             Motion::SearchNext { forward } => {
                 match search::jump_to_match(vim, buf, forward, count) {
                     Some(o) => {
                         // re-publish the matches: after Esc dismissed the
                         // highlights (`:noh` semantics) `n`/`N` re-arms them
                         if vim.options.hlsearch {
-                            let current =
-                                vim.search.last_matches.iter().find(|m| m.start == o).cloned();
-                            ctx.host.set_search_highlights(&vim.search.last_matches, current);
+                            let current = vim
+                                .search
+                                .last_matches
+                                .iter()
+                                .find(|m| m.start == o)
+                                .cloned();
+                            ctx.host
+                                .set_search_highlights(&vim.search.last_matches, current);
                         }
                         MotionResult::new(o, MotionKind::Exclusive)
                     }
                     None => MotionResult::stuck(vim.cursor.offset),
                 }
             }
+            // * / #: word under cursor becomes the pattern, then jump
             Motion::StarSearch { forward } => {
                 search::search_word_under_cursor(vim, buf, ctx.host, forward);
                 match search::jump_to_match(vim, buf, forward, 1) {
@@ -328,6 +363,7 @@ impl Motion {
                     None => MotionResult::stuck(vim.cursor.offset),
                 }
             }
+            // '{char} / `{char}: the mark name arrives as a char argument
             Motion::MarkJump { linewise } => {
                 let Some(name) = vim.char_arg else {
                     return MotionResult::stuck(vim.cursor.offset);
@@ -336,7 +372,10 @@ impl Motion {
                     Some(o) => {
                         let o = o.min(buf.len());
                         if linewise {
-                            MotionResult::new(buf.line_start(buf.offset_to_line(o)), MotionKind::Linewise)
+                            MotionResult::new(
+                                buf.line_start(buf.offset_to_line(o)),
+                                MotionKind::Linewise,
+                            )
                         } else {
                             MotionResult::new(o, MotionKind::Exclusive)
                         }
@@ -344,6 +383,7 @@ impl Motion {
                     None => MotionResult::stuck(vim.cursor.offset),
                 }
             }
+            // |: display column `count` (wide chars cover two cells)
             Motion::Column => {
                 let line = buf.offset_to_line(vim.cursor.offset);
                 // `|` counts display columns (wide chars cover two)
@@ -353,6 +393,7 @@ impl Motion {
                     MotionKind::Exclusive,
                 )
             }
+            // H / M / L: viewport-relative rows
             Motion::ScreenTop | Motion::ScreenMiddle | Motion::ScreenBottom => {
                 let (first, last) = ctx.host.viewport();
                 let line = match self {
@@ -363,31 +404,33 @@ impl Motion {
                 let line = line.min(buf.line_count() - 1);
                 MotionResult::new(buf.line_start(line), MotionKind::Linewise)
             }
-            Motion::ScrollHalfDown | Motion::ScrollHalfUp => {
+            Motion::ScrollHalfDown | Motion::ScrollHalfUp | Motion::PageDown | Motion::PageUp => {
                 let (first, last) = ctx.host.viewport();
                 let visible = last.saturating_sub(first).max(1);
-                let half = visible / 2;
-                let dir = if matches!(self, Motion::ScrollHalfDown) { 1i64 } else { -1 };
-                let line = buf.offset_to_line(vim.cursor.offset) as i64 + dir * half as i64;
+                // half-page for <C-d>/<C-u>, full page for <C-f>/<C-b>
+                let step = if matches!(self, Motion::PageDown | Motion::PageUp) {
+                    visible
+                } else {
+                    visible / 2
+                };
+                let dir = if matches!(self, Motion::ScrollHalfDown | Motion::PageDown) {
+                    1i64
+                } else {
+                    -1
+                };
+                let line = buf.offset_to_line(vim.cursor.offset) as i64 + dir * step as i64;
                 let line = line.clamp(0, buf.line_count() as i64 - 1) as usize;
+                // keep the DISPLAY column, exactly like j/k: `desired` counts
+                // cells, so on CJK/Tab rows it must be mapped back to a byte
+                // offset (a plain `line_start + desired` would land mid-char)
                 let desired = vim.desired_column(buf);
-                let end = buf.line_end(line);
-                let o = buf.line_start(line) + desired.min(end - buf.line_start(line));
+                let o = crate::buffer::offset_for_display_column(buf, line, desired);
                 MotionResult::new(o, MotionKind::Linewise)
             }
-            Motion::PageDown | Motion::PageUp => {
-                let (first, last) = ctx.host.viewport();
-                let visible = last.saturating_sub(first).max(1);
-                let dir = if matches!(self, Motion::PageDown) { 1i64 } else { -1 };
-                let line = buf.offset_to_line(vim.cursor.offset) as i64 + dir * visible as i64;
-                let line = line.clamp(0, buf.line_count() as i64 - 1) as usize;
-                let desired = vim.desired_column(buf);
-                let end = buf.line_end(line);
-                let o = buf.line_start(line) + desired.min(end - buf.line_start(line));
-                MotionResult::new(o, MotionKind::Linewise)
-            }
+            // + / -: adjacent line, first non-blank char
             Motion::LineDownFirstNonBlank => {
-                let line = (buf.offset_to_line(vim.cursor.offset) + count).min(buf.line_count() - 1);
+                let line =
+                    (buf.offset_to_line(vim.cursor.offset) + count).min(buf.line_count() - 1);
                 MotionResult::new(buf.first_non_blank(line), MotionKind::Linewise)
             }
             Motion::LineUpFirstNonBlank => {
@@ -417,6 +460,13 @@ impl Motion {
                 None => return MotionResult::stuck(vim.cursor.offset),
             }
         }
-        MotionResult::new(o, if till { MotionKind::Exclusive } else { MotionKind::Inclusive })
+        MotionResult::new(
+            o,
+            if till {
+                MotionKind::Exclusive
+            } else {
+                MotionKind::Inclusive
+            },
+        )
     }
 }

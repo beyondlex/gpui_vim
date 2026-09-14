@@ -112,7 +112,7 @@ fn main() {
     let mut buf = B(Rc::new(RefCell::new(format!("{body}\nsecond line here\n"))));
     let mut vim = VimState::new();
     let mut h = H::default();
-    let keys: Vec<Key> = std::iter::repeat(Key::parse("w")).take(2000).collect();
+    let keys: Vec<Key> = std::iter::repeat_n(Key::parse("w"), 2000).collect();
     let t = Instant::now();
     feed(&mut vim, &mut buf, &mut h, &keys);
     println!("2000x 'w' motion (11KB buffer): {:>8.2?}  ({:.1} us/key)", t.elapsed(), t.elapsed().as_micros() as f64 / 2000.0);
@@ -122,7 +122,7 @@ fn main() {
     let mut buf = B(Rc::new(RefCell::new(big)));
     let mut vim = VimState::new();
     let mut h = H::default();
-    let keys: Vec<Key> = std::iter::repeat(Key::parse("w")).take(200).collect();
+    let keys: Vec<Key> = std::iter::repeat_n(Key::parse("w"), 200).collect();
     let t = Instant::now();
     feed(&mut vim, &mut buf, &mut h, &keys);
     println!("200x 'w' motion (1MB line):     {:>8.2?}  ({:.1} us/key)", t.elapsed(), t.elapsed().as_micros() as f64 / 200.0);
@@ -167,7 +167,7 @@ fn main() {
     let mut buf = B(Rc::new(RefCell::new("line of text\n".repeat(10_000))));
     let mut vim = VimState::new();
     let mut h = H::default();
-    let keys: Vec<Key> = std::iter::repeat(Key::parse("x")).take(100).collect();
+    let keys: Vec<Key> = std::iter::repeat_n(Key::parse("x"), 100).collect();
     let t = Instant::now();
     feed(&mut vim, &mut buf, &mut h, &keys);
     println!("100x 'x' delete (10k lines):     {:>8.2?}  ({:.1} us/key)", t.elapsed(), t.elapsed().as_micros() as f64 / 100.0);
@@ -180,7 +180,7 @@ fn main() {
     let mut vim = VimState::new();
     let mut h = H::default();
     feed(&mut vim, &mut buf, &mut h, &[Key::parse("/"), Key::char('f'), Key::char('o'), Key::char('x'), Key::named("enter")]);
-    let keys: Vec<Key> = std::iter::repeat(Key::parse("n")).take(200).collect();
+    let keys: Vec<Key> = std::iter::repeat_n(Key::parse("n"), 200).collect();
     let t = Instant::now();
     feed(&mut vim, &mut buf, &mut h, &keys);
     println!("200x 'n' jump (900KB ropey):    {:>8.2?}  ({:.1} us/key)", t.elapsed(), t.elapsed().as_micros() as f64 / 200.0);

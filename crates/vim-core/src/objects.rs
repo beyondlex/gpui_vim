@@ -66,13 +66,10 @@ fn word_range(buf: &dyn VimBuffer, offset: usize, inner: bool, big: bool) -> Opt
     let line_start = buf.line_start(line);
     let line_end = buf.line_end(line);
 
-    let big_class = |o: usize| match buf.char_at(o)? {
-        '\n' => None,
-        c if c.is_whitespace() => Some(word::Class::Blank),
-        _ => Some(word::Class::Word),
-    };
-    let small_class = |o: usize| buf.char_at(o).map(word::char_class);
-    let class_of = |o: usize| if big { big_class(o) } else { small_class(o) };
+    // One classifier serves both sizes: within a line (this scan never
+    // crosses the line bounds) `word::class_at` maps blanks→Blank,
+    // everything else→Word for `aw`/`iW`, and word/punct apart for `iw`.
+    let class_of = |o: usize| word::class_at(buf, o, big);
 
     let Some(class) = class_of(offset.min(line_end.saturating_sub(1)).max(line_start)) else {
         return Some(ObjectRange::charwise(line_start, line_end));
@@ -153,15 +150,10 @@ fn sentence_range(buf: &dyn VimBuffer, offset: usize, inner: bool) -> Option<Obj
 
 fn paragraph_range(buf: &dyn VimBuffer, offset: usize, inner: bool) -> Option<ObjectRange> {
     let line = buf.offset_to_line(offset);
-    // find the start: first line of this paragraph block
+    // find the start: first line of this paragraph block (the run of lines
+    // whose blankness matches `line`'s — `ip`/`ap` never cross a boundary)
     let mut first = line;
     while first > 0 && buf.line_is_blank(first - 1) == buf.line_is_blank(line) {
-        if buf.line_is_blank(line) && !buf.line_is_blank(first - 1) {
-            break;
-        }
-        if !buf.line_is_blank(line) && buf.line_is_blank(first - 1) {
-            break;
-        }
         first -= 1;
     }
     // find the end: last line of the block
@@ -209,7 +201,11 @@ fn quote_range(
     quote: char,
 ) -> Option<ObjectRange> {
     let positions = quote_positions(buf, offset, quote);
-    // pairs in order; find the pair containing the cursor, else the next one
+    // Quotes have no nesting, so occurrences pair up in order (1st-2nd,
+    // 3rd-4th, ...). An ODD tail occurrence has no partner and is dropped
+    // by `chunks(2)` — vim behaves the same for an unmatched quote.
+    // Preference: the pair containing the cursor, else the next pair
+    // starting after it (so `ci"` outside a string opens the following one).
     let mut chosen: Option<(usize, usize)> = None;
     for pair in positions.chunks(2) {
         if pair.len() < 2 {
@@ -297,6 +293,10 @@ fn block_range(
     }
 }
 
+/// `it` / `at`: the element range around an HTML/XML tag. Whole-buffer
+/// design: tags can span many lines, so instead of a windowed scan we
+/// collect every `<...>` occurrence once, then match open/close pairs with
+/// a name stack (self-closing `<br/>` never opens).
 fn tag_range(buf: &dyn VimBuffer, offset: usize, inner: bool) -> Option<ObjectRange> {
     let text = buf.slice(0..buf.len());
     let bytes = text.as_bytes();
@@ -327,7 +327,12 @@ fn tag_range(buf: &dyn VimBuffer, offset: usize, inner: bool) -> Option<ObjectRa
         i += 1;
     }
 
-    // find the innermost pair containing the cursor
+    // find the innermost pair containing the cursor. A closing tag pops
+    // the matching open (rposition = innermost same-name) and truncates the
+    // stack below it — children of a matched pair were balanced by their
+    // own closes already. Strict `open_start < offset` bounds mean the
+    // cursor must be strictly BETWEEN the tags: sitting exactly on `<` of
+    // the open tag does NOT select (documented quirk of this engine).
     let mut stack: Vec<(usize, &str)> = Vec::new();
     let mut best: Option<(usize, usize)> = None;
     for (start, end, name, is_open) in tags {
