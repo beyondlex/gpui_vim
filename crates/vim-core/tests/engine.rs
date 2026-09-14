@@ -1695,3 +1695,52 @@ fn hlsearch_incremental_matches_full_scan_under_random_edits() {
         }
     }
 }
+
+// ---- gg vs gt-mapping ambiguity (user report: fast gg unresponsive) ------------
+
+#[test]
+fn gg_fires_immediately_with_gt_mapping_installed() {
+    // the demo installs gt/gT as :noremap by default; `g` becomes a mapping
+    // prefix, and the second g of `gg` used to be swallowed by the Waiting
+    // state — requiring three presses. `gg` must resolve on the second key.
+    // start mid-buffer so the second g's jump is observable
+    let mut f = Fixture::at(MULTI, 2, 0);
+    f.vim.keymaps_mut().map_str_noremap(
+        vim_core::keymap::ModeClass::Normal,
+        "gt",
+        ":action Test.Tab<CR>",
+        true,
+    );
+    f.feed(["g", "g"]);
+    assert_eq!(f.line(), 0, "gg jumped to the first line on the 2nd key");
+    assert_eq!(f.host.actions.len(), 0, "gt mapping must not fire");
+}
+
+#[test]
+fn gt_mapping_still_fires_with_prefix_wait() {
+    let mut f = Fixture::at(MULTI, 0, 0);
+    f.vim.keymaps_mut().map_str_noremap(
+        vim_core::keymap::ModeClass::Normal,
+        "gt",
+        ":action Test.Tab<CR>",
+        true,
+    );
+    f.feed(["g", "t"]);
+    assert_eq!(f.host.actions, vec!["Test.Tab".to_owned()]);
+    assert_eq!(f.line(), 0);
+}
+
+#[test]
+fn unknown_leader_prefix_waits_for_its_mapping() {
+    // a prefix with NO builtin counterpart (e.g. `\` of `<Leader>a`) must
+    // keep waiting: keys stay queued until the mapping completes
+    let mut f = Fixture::at("foo\n", 0, 0);
+    f.vim.keymaps_mut().map_str_noremap(
+        vim_core::keymap::ModeClass::Normal,
+        "\\a",
+        ":action Test.Lehrer<CR>",
+        true,
+    );
+    f.feed(["\\", "a"]);
+    assert_eq!(f.host.actions, vec!["Test.Lehrer".to_owned()]);
+}

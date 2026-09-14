@@ -480,8 +480,55 @@ impl VimState {
                         }
                         continue;
                     }
-                    // a longer mapping may still follow: wait, key queued
-                    MappingMatch::Waiting => return KeyResult::Consumed,
+                    // a longer mapping may still follow — BUT if the
+                    // built-in command trie already resolves the combined
+                    // input, prefer it: `gg` must fire on the second press
+                    // even when a `gt` mapping exists (vim resolves the
+                    // moment the input stops being a mapping prefix)
+                    MappingMatch::Waiting => {
+                        if matches!(self.mode, Mode::Insert | Mode::Replace) {
+                            return KeyResult::Consumed;
+                        }
+                        let mut combined: Vec<Key> = self.cmd_seq.clone();
+                        combined.extend(self.pending_keys.iter().cloned());
+                        let phase = match self.mode {
+                            Mode::Visual { .. } => Phase::Visual,
+                            _ => Phase::Normal,
+                        };
+                        match self.tables.trie(phase).get(&combined) {
+                            keymap::Walk::Hit(kind) => {
+                                let queued: Vec<Key> =
+                                    self.pending_keys.drain(..).collect();
+                                self.cmd_seq.clear();
+                                if !self.replaying {
+                                    for k in &queued {
+                                        self.recording
+                                            .push(RecordedStep::Key(k.clone()));
+                                        if let Some((_, mk)) =
+                                            &mut self.macro_capture
+                                        {
+                                            mk.push(RecordedStep::Key(k.clone()));
+                                        }
+                                    }
+                                }
+                                // a resolved command consumes cleanly;
+                                // Feed can't occur for a terminal trie hit
+                                match self.execute_command(ctx, *kind) {
+                                    ProcessOutcome::Consumed => {
+                                        return KeyResult::Consumed;
+                                    }
+                                    _ => return KeyResult::Consumed,
+                                }
+                            }
+                            // no builtin for the combined input either:
+                            // WAIT — the queued keys must stay for the
+                            // mapping to complete (e.g. `<Leader>a`)
+                            // ambiguous on BOTH sides: wait for more keys
+                            keymap::Walk::Pending | keymap::Walk::Miss => {
+                                return KeyResult::Consumed;
+                            }
+                        }
+                    }
                     MappingMatch::None => {}
                 }
             }
