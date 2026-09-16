@@ -9,3 +9,4 @@ authors.workspace = true
 [dependencies]
 vim-core = { path = "../vim-core" }
 gpui = "0.2"
+unicode-width = { workspace = true }

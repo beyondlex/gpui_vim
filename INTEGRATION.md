@@ -4,6 +4,74 @@ This guide walks through wiring the vim engine into an existing gpui text
 editor. For a complete working reference, read `crates/gpui-vim-demo/src/` —
 it is meant to be copied.
 
+## 0. Choose your embedding route
+
+Two independent hosts (PandaGit, PandaMail) plus this demo converged on
+**three** ways to embed the engine. Pick by content type and focus structure,
+not taste:
+
+```mermaid
+flowchart TD
+    S["gpui app wants vim"] --> Q1{"Is the editing surface<br/>the window's focus itself?"}
+    Q1 -->|"yes — simple editor"| A["Route A: attach interceptor<br/>(§1–§8 below)"]
+    Q1 -->|"no — multi-view / multi-field"| B["Route B: host routing"]
+    S --> Q3{"Is the content read-only?"}
+    Q3 -->|"yes — log / diff / body / list"| C["Route C: read-only pager"]
+```
+
+### Route A — `attach` interceptor
+
+The engine sits in front of every other key handler for the whole window:
+keys it consumes are stopped, everything else falls through. Use it when the
+editing surface *is* the window's focus — a single-editor app. Sections 1–8
+below walk this route end to end.
+
+### Route B — host routing (what real multi-field apps do)
+
+Your app already owns key dispatch: focus routing across fields, overlays,
+modal sessions. Don't install a window-wide interceptor; instead, at the
+point where your own guard/dispatcher sees a key aimed at a vim text
+surface, convert and feed it:
+
+```rust
+let key = gpui_vim::to_core_key(&keystroke);   // gpui Keystroke -> engine Key
+editor.update(cx, |edit, cx| { edit.process_key(key, window, cx) });
+```
+
+Two real hosts ship this shape: PandaGit routes keys into its merge-editor
+buffer this way (`merge_view/vim.rs`), and PandaMail routes per-field across
+a whole form (`keys.rs` → `VimEdit::process_key`).
+
+**Packaged version**: [`gpui_vim::edit::VimEdit`](crates/gpui-vim/src/edit.rs)
+is a ready-made single/multi-line vim text entity — line buffer, IME
+composition, mouse selection, change/submit events included. Your host only
+routes keys in and applies events out.
+
+### Route C — read-only pager
+
+For content you *display* rather than edit (log lines, diffs, message bodies,
+help pages): flatten your render into canonical text plus a piece→offset
+mapping, hand the read-only half to the engine, and read visual-mode
+selections back as piece spans. You get `v`/`V`/`C-v`, `y`, `/`·`n`/`N`
+navigation over anything renderable. **Packaged version**:
+[`gpui_vim::pager`](crates/gpui-vim/src/pager.rs). Reference host: PandaMail's
+mail-body pager.
+
+### Routing gotchas every host hits
+
+- **Letter-key bindings hijack text input.** gpui delivers intercepted
+  keystrokes before the keymap, but *keymap bindings run before your view's*
+  `on_key` — if your app binds letter keys, install a text-key guard
+  (`cx.intercept_keystrokes`) **before** building bindings, as PandaGit's
+  `install_text_key_guard` does.
+- **Keep interceptor subscriptions alive** (§5) — this bites route A only.
+- **IME composition text must not run the engine pipeline** (route B): only
+  *committed* text reaches `replace_text_in_range`; feed that through the
+  engine / place it, but never synthesize keystrokes for composition
+  previews. `VimEdit` implements this contract for you.
+- In route B/C the host owns when the engine sees keys at all (focus,
+  overlays); `VimEdit::focus_handle` is yours to wire into the focus chain.
+
 ## 1. Dependencies
 
 ```toml

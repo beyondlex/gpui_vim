@@ -4,6 +4,13 @@
 > pandagit / pandamail 仓库的现状盘点。本文回答一个问题：**接下来三个仓库各
 > 自做什么、按什么顺序、怎么验收**。引擎内部的语义约束见 ROADMAP「全局不变
 > 量」，本文不重复；本文的任务全部属于「组件层」，动手前同样先读不变量。
+>
+> **进展（2026-09-17）**：阶段 0（INTEGRATION.md 三模式决策文档）、阶段 1
+> （`gpui_vim::edit`，pandamail 已迁薄门面）、阶段 2a（`gpui_vim::pager`，
+> pandamail 已委托）、P2 的 TCK（`vim_core::tck`，gpui-vim 与 pandagit 已接
+> 入；TCK 首战即抓到 PagerBuf line_range 缺终止 `\n` 的契约违反）均已落地。
+> 待做：阶段 2b（Ex 注册表 + 命令行 widget）、pandagit config_editor/cmd.rs
+> 迁移、能力位、发布策略。
 
 ## 1. 评估结论 → 规划原则
 

@@ -2176,6 +2176,7 @@ name = "gpui-vim"
 version = "0.1.0"
 dependencies = [
  "gpui",
+ "unicode-width",
  "vim-core",
 ]
 
