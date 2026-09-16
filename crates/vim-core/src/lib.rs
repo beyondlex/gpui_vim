@@ -41,6 +41,7 @@ pub mod registers;
 pub mod search;
 pub mod state;
 pub mod tables;
+pub mod tck;
 pub mod word;
 
 pub use buffer::{VimBuffer, VimBufferMut};
