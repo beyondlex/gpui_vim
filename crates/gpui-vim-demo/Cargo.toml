@@ -16,6 +16,9 @@ path = "src/main.rs"
 vim-core = { path = "../vim-core" }
 gpui-vim = { path = "../gpui-vim" }
 gpui = "0.2"
-# 应用启动入口 helper（gpui_platform 未发布 crates.io，取自同一 fork 分支）
-gpui_platform = { git = "https://github.com/beyondlex/zed", branch = "gpui-path-perf" }
+# 应用启动入口 helper（未发布 crates.io，取自同一 fork 分支）。
+# font-kit 必须显式开启，否则 gpui_macos 退到 NoopTextSystem（无文字）
+gpui_platform = { git = "https://github.com/beyondlex/zed", branch = "gpui-path-perf", features = [
+    "font-kit",
+] }
 ropey = { workspace = true }
