@@ -16,4 +16,6 @@ path = "src/main.rs"
 vim-core = { path = "../vim-core" }
 gpui-vim = { path = "../gpui-vim" }
 gpui = "0.2"
+# 应用启动入口 helper（gpui_platform 未发布 crates.io，取自同一 fork 分支）
+gpui_platform = { git = "https://github.com/beyondlex/zed", branch = "gpui-path-perf" }
 ropey = { workspace = true }
