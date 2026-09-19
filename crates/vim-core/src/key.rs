@@ -200,7 +200,11 @@ impl Key {
             "cr" | "return" | "enter" => Key::named("enter"),
             "bs" => Key::named("backspace"),
             "del" => Key::named("delete"),
-            "space" => Key::named("space"),
+            // space IS a printable char: canonicalize to Char(' ') so a
+            // `<Space>` mapping matches the character delivered by every
+            // platform path (the engine normalizes Named("space") keystrokes
+            // the same way in handle_key)
+            "space" => Key::char(' '),
             "tab" => Key::named("tab"),
             "lt" => Key::char('<'),
             "bar" => Key::char('|'),
@@ -230,9 +234,7 @@ impl fmt::Display for Key {
 
 /// Parse a sequence like `"g g"` or `"dd"` into keystrokes.
 pub fn parse_keys(seq: &str) -> Vec<Key> {
-    seq.split_whitespace()
-        .map(Key::parse)
-        .collect()
+    seq.split_whitespace().map(Key::parse).collect()
 }
 
 /// Parse a vim mapping sequence like `"jk"`, `"<Esc>x"` into keystrokes.
@@ -266,7 +268,7 @@ mod tests {
         assert_eq!(Key::parse("d"), Key::char('d'));
         assert_eq!(Key::parse("<Esc>"), Key::escape());
         assert_eq!(Key::parse("<C-a>"), Key::ctrl_char('a'));
-        assert_eq!(Key::parse("<Space>"), Key::named("space"));
+        assert_eq!(Key::parse("<Space>"), Key::char(' '));
         assert_eq!(Key::parse("<CR>"), Key::enter());
         assert_eq!(parse_keys("g g"), vec![Key::char('g'), Key::char('g')]);
     }
@@ -274,7 +276,12 @@ mod tests {
     #[test]
     fn notation_roundtrip() {
         for s in ["d", "<Esc>", "<C-a>", "g"] {
-            assert_eq!(Key::parse(s).notation().to_lowercase(), s.trim_start_matches('<').trim_end_matches('>').to_lowercase());
+            assert_eq!(
+                Key::parse(s).notation().to_lowercase(),
+                s.trim_start_matches('<')
+                    .trim_end_matches('>')
+                    .to_lowercase()
+            );
         }
     }
 }

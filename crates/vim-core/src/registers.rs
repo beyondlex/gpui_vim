@@ -47,16 +47,14 @@ impl Registers {
     /// the `clipboard=unnamed` behavior through the host).
     pub fn get_for_paste(&self, name: char, host: &dyn VimHost) -> Option<Register> {
         match name {
-            CLIPBOARD => host
-                .clipboard_read()
-                .map(|text| Register {
-                    kind: if text.contains('\n') {
-                        RegisterKind::Linewise
-                    } else {
-                        RegisterKind::Charwise
-                    },
-                    text,
-                }),
+            CLIPBOARD => host.clipboard_read().map(|text| Register {
+                kind: if text.contains('\n') {
+                    RegisterKind::Linewise
+                } else {
+                    RegisterKind::Charwise
+                },
+                text,
+            }),
             _ => self.get(name).cloned(),
         }
     }
@@ -86,8 +84,13 @@ impl Registers {
             Some(name) if name != UNNAMED => self.store(name, text.clone(), kind),
             _ => self.store(YANK, text.clone(), kind),
         }
-        // `store` skips `last` for the blackhole register; a yank there still
-        // records it (matches this engine's paste path, though vim would not).
+        // A yank ALWAYS re-points the unnamed register at what was written —
+        // including `"_yy`, where `store` skips the named slot but vim 9.1
+        // still serves the yanked text through `""`/`p` afterwards (the
+        // unnamed register is an alias for the last-written register).
+        // Deleting into `"_` (store_delete) is the opposite: vim keeps the
+        // previous unnamed register untouched there, which `store`'s early
+        // return gives us for free.
         self.last = Some(Register { text, kind });
     }
 

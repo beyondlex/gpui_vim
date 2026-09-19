@@ -58,9 +58,7 @@ fn main() {
 /// rc exists yet.
 fn load_rc_layers(editor: &mut Editor) {
     let user = gpui_vim::config::default_config_path();
-    let host = home_dir().map(|home| {
-        home.join(".config/gpui-vim-demo/vimrc")
-    });
+    let host = home_dir().map(|home| home.join(".config/gpui-vim-demo/vimrc"));
     let layers = gpui_vim::config::Layers { user, host };
     let stats = gpui_vim::config::load_layers(editor, &layers);
     if stats.files > 0 {

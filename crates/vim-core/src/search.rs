@@ -103,7 +103,12 @@ pub fn clear_highlights(vim: &mut VimState, ctx: &mut Ctx) {
 
 /// `n` / `N`: move to the next match in `forward` direction (already flipped
 /// by the caller for `N`). Also used after `*`.
-pub fn jump_to_match(vim: &mut VimState, buf: &dyn VimBuffer, forward: bool, count: usize) -> Option<usize> {
+pub fn jump_to_match(
+    vim: &mut VimState,
+    buf: &dyn VimBuffer,
+    forward: bool,
+    count: usize,
+) -> Option<usize> {
     let pattern = vim.search.pattern.clone()?;
     // The full-buffer scan runs only when the text changed since the matches
     // were computed; a run of `n`/`N` keystrokes walks the cached list, which
@@ -177,5 +182,6 @@ pub fn publish_incsearch(vim: &mut VimState, ctx: &mut Ctx, pattern: &str) {
         return;
     }
     let matches = all_matches(vim, ctx.buf, pattern);
-    ctx.host.set_search_highlights(&matches, matches.first().cloned());
+    ctx.host
+        .set_search_highlights(&matches, matches.first().cloned());
 }

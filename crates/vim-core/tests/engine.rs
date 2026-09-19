@@ -327,7 +327,12 @@ fn visual_mode_ops() {
     // gv restores selection
     let mut f = Fixture::at("abcdef", 0, 0);
     f.feed(["v", "e", "y", "g", "v"]);
-    assert_eq!(f.vim.mode(), vim_core::Mode::Visual { kind: vim_core::VisualKind::Char });
+    assert_eq!(
+        f.vim.mode(),
+        vim_core::Mode::Visual {
+            kind: vim_core::VisualKind::Char
+        }
+    );
 }
 
 #[test]
@@ -515,7 +520,12 @@ fn escape_with_any_modifiers_exits_modes() {
 
     let mut f = Fixture::at("abc", 0, 0);
     f.feed(["v"]);
-    assert_eq!(f.vim.mode(), vim_core::Mode::Visual { kind: vim_core::VisualKind::Char });
+    assert_eq!(
+        f.vim.mode(),
+        vim_core::Mode::Visual {
+            kind: vim_core::VisualKind::Char
+        }
+    );
     f.feed(["<C-M-S-Esc>"]);
     assert_eq!(f.vim.mode(), vim_core::Mode::Normal);
 }
@@ -562,11 +572,18 @@ fn visual_line_v() {
     f.feed(["V"]);
     assert_eq!(
         f.vim.mode(),
-        vim_core::Mode::Visual { kind: vim_core::VisualKind::Line }
+        vim_core::Mode::Visual {
+            kind: vim_core::VisualKind::Line
+        }
     );
     // `j` extends the selection one line down; `V` again exits
     f.feed(["j"]);
-    assert_eq!(f.vim.mode(), vim_core::Mode::Visual { kind: vim_core::VisualKind::Line });
+    assert_eq!(
+        f.vim.mode(),
+        vim_core::Mode::Visual {
+            kind: vim_core::VisualKind::Line
+        }
+    );
     f.feed(["V"]);
     assert_eq!(f.vim.mode(), vim_core::Mode::Normal);
 
@@ -745,7 +762,7 @@ fn marks_shift_when_text_is_inserted_before_them() {
     let mut f = Fixture::at("alpha\nbeta\n", 0, 0);
     f.feed(["m", "a"]); // mark a at 0
     f.feed(["j", "m", "b"]); // mark b at 6 (beta start)
-    // insert at buffer start: mark a (== insert point) stays, b moves
+                             // insert at buffer start: mark a (== insert point) stays, b moves
     f.feed(["g", "g", "g", "I"]);
     f.type_text("XX");
     f.feed(["<Esc>"]);
@@ -776,7 +793,7 @@ fn visual_marks_shift_and_gv_tracks_the_text() {
     f.feed(["v", "l", "l", "y"]); // select bbb, sets '< '>
     assert_eq!(f.vim.marks.resolve('<'), Some(3));
     assert_eq!(f.vim.marks.resolve('>'), Some(6)); // stored as an exclusive end
-    // open a line above: everything shifts by 2 ("x\n")
+                                                   // open a line above: everything shifts by 2 ("x\n")
     f.feed(["g", "g"]);
     f.feed(["o"]);
     f.type_text("x");
@@ -784,10 +801,13 @@ fn visual_marks_shift_and_gv_tracks_the_text() {
     assert_eq!(f.text(), "aa\nx\nbbbb\n");
     assert_eq!(f.vim.marks.resolve('<'), Some(5));
     assert_eq!(f.vim.marks.resolve('>'), Some(8)); // stored as an exclusive end
-    // gv restores the selection over the SHIFTED text
+                                                   // gv restores the selection over the SHIFTED text
     f.feed(["g", "v"]);
     assert!(matches!(f.vim.mode(), vim_core::Mode::Visual { .. }));
-    assert_eq!(f.vim.visual_selection().map(|(a, c, _)| (a, c)), Some((5, 7)));
+    assert_eq!(
+        f.vim.visual_selection().map(|(a, c, _)| (a, c)),
+        Some((5, 7))
+    );
 }
 
 #[test]
@@ -799,7 +819,6 @@ fn replace_ops_keep_marks_aligned() {
     assert_eq!(f.text(), "ABCDEF\n");
     assert_eq!(f.vim.marks.get('c'), Some(2));
 }
-
 
 // ---- `:` Ex commands (ROADMAP task 3) ------------------------------------------
 
@@ -837,7 +856,9 @@ fn ex_set_changes_options() {
 #[test]
 fn ex_substitute_current_line() {
     let mut f = Fixture::at("foo bar foo\nfoo below\n", 0, 0);
-    f.feed([":", "s", "/", "f", "o", "o", "/", "b", "a", "z", "/", "<CR>"]);
+    f.feed([
+        ":", "s", "/", "f", "o", "o", "/", "b", "a", "z", "/", "<CR>",
+    ]);
     // first match per line only
     assert_eq!(f.text(), "baz bar foo\nfoo below\n");
     // cursor on the substituted match
@@ -845,7 +866,9 @@ fn ex_substitute_current_line() {
 
     // the `g` flag replaces all matches on the line
     let mut f = Fixture::at("foo bar foo\n", 0, 0);
-    f.feed([":", "%", "s", "/", "f", "o", "o", "/", "b", "a", "z", "/", "g", "<CR>"]);
+    f.feed([
+        ":", "%", "s", "/", "f", "o", "o", "/", "b", "a", "z", "/", "g", "<CR>",
+    ]);
     assert_eq!(f.text(), "baz bar baz\n");
 }
 
@@ -854,7 +877,9 @@ fn ex_substitute_whole_file_and_marks() {
     let mut f = Fixture::at("foo\nbar foo\nplain\n", 0, 0);
     f.feed(["j", "m", "a"]); // mark on line 1
     f.feed(["g", "g"]); // back to line 0
-    f.feed([":", "%", "s", "/", "f", "o", "o", "/", "q", "u", "x", "/", "g", "<CR>"]);
+    f.feed([
+        ":", "%", "s", "/", "f", "o", "o", "/", "q", "u", "x", "/", "g", "<CR>",
+    ]);
     assert_eq!(f.text(), "qux\nbar qux\nplain\n");
     // cursor lands on the last substituted match (the qux on line 1)
     assert_eq!(f.line(), 1);
@@ -888,7 +913,7 @@ fn ex_history_is_per_prompt() {
     let mut f = Fixture::at("foo bar foo\n", 0, 0);
     f.feed(["/", "f", "o", "o", "<CR>"]); // search history: "foo"
     f.feed([":", "w", "<CR>"]); // command history: "w"
-    // `:` then Up recalls "w", not "foo"
+                                // `:` then Up recalls "w", not "foo"
     f.feed([":"]);
     f.feed(["<up>"]);
     assert_eq!(f.vim.cmdline.buffer, "w");
@@ -953,7 +978,9 @@ fn dot_repeats_open_line() {
 #[test]
 fn dot_repeats_ex_substitute() {
     let mut f = Fixture::at("foo\nkeep foo\nmore\n", 0, 0);
-    f.feed([":", "s", "/", "f", "o", "o", "/", "b", "a", "r", "/", "<CR>"]);
+    f.feed([
+        ":", "s", "/", "f", "o", "o", "/", "b", "a", "r", "/", "<CR>",
+    ]);
     assert_eq!(f.text(), "bar\nkeep foo\nmore\n");
     f.feed(["j", "."]);
     assert_eq!(f.text(), "bar\nkeep bar\nmore\n");
@@ -1049,7 +1076,9 @@ fn macro_records_ex_commands_and_insert() {
     // a macro may contain an Ex command and an insert session
     let mut f = Fixture::at("foo\n", 0, 0);
     f.feed(["q", "b"]);
-    f.feed([":", "s", "/", "f", "o", "o", "/", "b", "a", "r", "/", "<CR>"]);
+    f.feed([
+        ":", "s", "/", "f", "o", "o", "/", "b", "a", "r", "/", "<CR>",
+    ]);
     f.feed(["A"]);
     f.type_text("!");
     f.feed(["<Esc>", "q"]);
@@ -1168,7 +1197,7 @@ fn grapheme_motions_and_deletes() {
     let mut f = Fixture::at("\u{65}\u{301}x\n", 0, 0);
     f.feed(["l"]);
     assert_eq!(f.cursor(), 3); // straight to 'x', not onto the accent
-    // ZWJ emoji family = ONE grapheme
+                               // ZWJ emoji family = ONE grapheme
     let mut f = Fixture::at("\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467} ok\n", 0, 0);
     f.feed(["x"]);
     assert_eq!(f.text(), " ok\n");
@@ -1192,7 +1221,7 @@ fn block_visual_yank_and_blockwise_put() {
     f.feed(["<C-v>", "j", "l", "y"]); // yank block "ab"/"ef" (2 rows)
     f.feed(["G", "0"]); // last line
     f.feed(["<C-v>", "k", "l", "p"]); // replace cols 0..1 of lines 2-3
-    // register rows ("ab","ef") align with the block rows: "ij"->"ab", "mn"->"ef"
+                                      // register rows ("ab","ef") align with the block rows: "ij"->"ab", "mn"->"ef"
     assert_eq!(f.text(), "abcd\nefgh\nabkl\nefop\n");
 }
 
@@ -1239,11 +1268,26 @@ fn block_columns_align_across_wide_chars() {
 fn block_toggle_kinds_and_mode_indicator() {
     let mut f = Fixture::at("abc\n", 0, 0);
     f.feed(["<C-v>"]);
-    assert_eq!(f.vim.mode(), vim_core::Mode::Visual { kind: vim_core::VisualKind::Block });
+    assert_eq!(
+        f.vim.mode(),
+        vim_core::Mode::Visual {
+            kind: vim_core::VisualKind::Block
+        }
+    );
     f.feed(["v"]); // toggle to charwise
-    assert_eq!(f.vim.mode(), vim_core::Mode::Visual { kind: vim_core::VisualKind::Char });
+    assert_eq!(
+        f.vim.mode(),
+        vim_core::Mode::Visual {
+            kind: vim_core::VisualKind::Char
+        }
+    );
     f.feed(["<C-v>"]); // and back
-    assert_eq!(f.vim.mode(), vim_core::Mode::Visual { kind: vim_core::VisualKind::Block });
+    assert_eq!(
+        f.vim.mode(),
+        vim_core::Mode::Visual {
+            kind: vim_core::VisualKind::Block
+        }
+    );
     f.feed(["<Esc>"]);
     assert_eq!(f.vim.mode(), vim_core::Mode::Normal);
 }
@@ -1253,17 +1297,28 @@ fn ex_feedback_goes_through_status_channel() {
     // no match: E486
     let mut f = Fixture::at("foo\n", 0, 0);
     f.feed([":", "%", "s", "/", "z", "z", "/", "y", "/", "<CR>"]);
-    assert_eq!(f.host.statuses.last().map(String::as_str), Some("E486: Pattern not found: zz"));
+    assert_eq!(
+        f.host.statuses.last().map(String::as_str),
+        Some("E486: Pattern not found: zz")
+    );
 
     // success: substitution count
     let mut f = Fixture::at("foo bar foo\n", 0, 0);
-    f.feed([":", "%", "s", "/", "f", "o", "o", "/", "q", "u", "x", "/", "g", "<CR>"]);
-    assert_eq!(f.host.statuses.last().map(String::as_str), Some("2 substitutions"));
+    f.feed([
+        ":", "%", "s", "/", "f", "o", "o", "/", "q", "u", "x", "/", "g", "<CR>",
+    ]);
+    assert_eq!(
+        f.host.statuses.last().map(String::as_str),
+        Some("2 substitutions")
+    );
 
     // unknown command: E492
     let mut f = Fixture::at("foo\n", 0, 0);
     f.feed([":", "f", "o", "o", "<CR>"]);
-    assert_eq!(f.host.statuses.last().map(String::as_str), Some("E492: Not an editor command: foo"));
+    assert_eq!(
+        f.host.statuses.last().map(String::as_str),
+        Some("E492: Not an editor command: foo")
+    );
     assert_eq!(f.vim.mode(), vim_core::Mode::Normal);
 }
 
@@ -1338,10 +1393,18 @@ this is garbage
 "#;
     let config = vim_core::config::parse(text);
     assert_eq!(config.settings.len(), 5);
-    assert!(config.settings.contains(&vim_core::config::Setting::On("number".into())));
-    assert!(config.settings.contains(&vim_core::config::Setting::Off("hlsearch".into())));
-    assert!(config.settings.contains(&vim_core::config::Setting::Value("ts".into(), "8".into())));
-    assert!(config.settings.contains(&vim_core::config::Setting::Toggle("hlsearch".into())));
+    assert!(config
+        .settings
+        .contains(&vim_core::config::Setting::On("number".into())));
+    assert!(config
+        .settings
+        .contains(&vim_core::config::Setting::Off("hlsearch".into())));
+    assert!(config
+        .settings
+        .contains(&vim_core::config::Setting::Value("ts".into(), "8".into())));
+    assert!(config
+        .settings
+        .contains(&vim_core::config::Setting::Toggle("hlsearch".into())));
     assert_eq!(config.mappings.len(), 4); // Q + leader-w(2 classes: map→n+v) + leader-x
     assert_eq!(config.ignored, vec!["this is garbage".to_owned()]);
 }
@@ -1392,7 +1455,9 @@ fn config_leader_action_bridge() {
 fn config_source_directive_is_collected() {
     let config = vim_core::config::parse("source ~/.vimrc\nset number\n");
     assert_eq!(config.sources, vec![std::path::PathBuf::from("~/.vimrc")]);
-    assert!(config.settings.contains(&vim_core::config::Setting::On("number".into())));
+    assert!(config
+        .settings
+        .contains(&vim_core::config::Setting::On("number".into())));
 }
 
 // ---- multi-app rc isolation (layered loading semantics) -------------------------
@@ -1404,10 +1469,16 @@ fn lenient_action_flag_gates_reporting() {
 
     // strict (host layer): the miss is surfaced to the host
     let mut f = Fixture::at("foo\n", 0, 0);
-    eprintln!("PROBE mappings={:?} ignored={:?}", config.mappings, config.ignored);
+    eprintln!(
+        "PROBE mappings={:?} ignored={:?}",
+        config.mappings, config.ignored
+    );
     f.vim.apply_config(&config);
     f.feed(["\\", "a"]);
-    eprintln!("PROBE actions={:?} statuses={:?}", f.host.actions, f.host.statuses);
+    eprintln!(
+        "PROBE actions={:?} statuses={:?}",
+        f.host.actions, f.host.statuses
+    );
     assert_eq!(f.host.actions, vec!["Other.App.Save".to_owned()]);
     assert_eq!(f.host.statuses.len(), 0);
 
@@ -1457,8 +1528,14 @@ fn ex_range_visual_marks() {
     // '<,'>s applies to the last visual selection's lines
     let mut f = Fixture::at("foo\nfoo\nfoo\n", 0, 0);
     f.feed(["j", "V", "j", "<Esc>"]); // select lines 1-2
-    eprintln!("PROBE marks <={:?} >={:?}", f.vim.marks.resolve('<'), f.vim.marks.resolve('>'));
-    f.feed([":", "'", "<", ",", "'", ">", "s", "/", "f", "o", "o", "/", "x", "/", "<CR>"]);
+    eprintln!(
+        "PROBE marks <={:?} >={:?}",
+        f.vim.marks.resolve('<'),
+        f.vim.marks.resolve('>')
+    );
+    f.feed([
+        ":", "'", "<", ",", "'", ">", "s", "/", "f", "o", "o", "/", "x", "/", "<CR>",
+    ]);
     assert_eq!(f.text(), "foo\nx\nx\n");
 }
 
@@ -1550,9 +1627,14 @@ fn gq_reflow_to_textwidth() {
     let mut f = Fixture::at("the quick brown fox jumps over the lazy dog\nnext\n", 0, 0);
     f.vim.options_mut().textwidth = 20;
     f.feed(["g", "q", "q"]);
-    // reflowed greedily at width 20, cursor at the start
-    assert_eq!(f.text(), "the quick brown fox\njumps over the lazy\ndog\nnext\n");
-    assert_eq!(f.cursor(), 0);
+    // reflowed greedily at width 20; vim leaves the cursor on the first
+    // non-blank of the LAST formatted line ("dog")
+    assert_eq!(
+        f.text(),
+        "the quick brown fox\njumps over the lazy\ndog\nnext\n"
+    );
+    assert_eq!(f.cursor(), 40);
+    assert_eq!(f.text()[40..], "dog\nnext\n".to_owned());
 }
 
 #[test]
@@ -1593,7 +1675,12 @@ fn mapping_on_builtin_prefix_fires() {
     f.vim
         .keymaps_mut()
         // vim's :map LHS is a single word: `gt`, never `g t`
-        .map_str_noremap(vim_core::keymap::ModeClass::Normal, "gt", ":action Test.Tab<CR>", true);
+        .map_str_noremap(
+            vim_core::keymap::ModeClass::Normal,
+            "gt",
+            ":action Test.Tab<CR>",
+            true,
+        );
     f.feed(["g", "t"]);
     assert_eq!(f.host.actions, vec!["Test.Tab".to_owned()]);
     // no stray keys leak into the buffer
@@ -1615,7 +1702,9 @@ fn visual_colon_esc_restores_selection_and_second_esc_exits() {
     f.feed(["<Esc>"]);
     assert_eq!(
         f.vim.mode(),
-        vim_core::Mode::Visual { kind: vim_core::VisualKind::Line }
+        vim_core::Mode::Visual {
+            kind: vim_core::VisualKind::Line
+        }
     );
     assert!(f.vim.visual_selection().is_some());
     // a second Esc exits visual mode and the highlight is gone
@@ -1799,9 +1888,12 @@ fn leader_comma_mapping_fires_despite_repeat_find_builtin() {
     // mapleader: with a `,d` mapping installed, the first `,` must keep
     // waiting instead of firing the builtin, so `,d` completes the mapping.
     let mut f = Fixture::at(MULTI, 1, 0);
-    f.vim
-        .keymaps_mut()
-        .map_str_noremap(vim_core::keymap::ModeClass::Normal, ",d", ":action Test.Leader<CR>", true);
+    f.vim.keymaps_mut().map_str_noremap(
+        vim_core::keymap::ModeClass::Normal,
+        ",d",
+        ":action Test.Leader<CR>",
+        true,
+    );
     f.feed([",", "d"]);
     assert_eq!(f.host.actions, vec!["Test.Leader".to_owned()]);
 }
@@ -1811,9 +1903,9 @@ fn comma_repeat_find_still_fires_without_comma_mapping() {
     // without any `,`-prefixed mapping, `,` keeps its repeat-find semantics
     let mut f = Fixture::at("a x b x c\n", 0, 0);
     f.feed(["f", "x"]); // first x at col 2
-    f.feed([";"]);      // next x at col 6
+    f.feed([";"]); // next x at col 6
     assert_eq!(f.cursor(), 6);
-    f.feed([","]);      // back to the previous x at col 2
+    f.feed([","]); // back to the previous x at col 2
     assert_eq!(f.cursor(), 2);
 }
 

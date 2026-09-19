@@ -55,18 +55,27 @@ impl VimState {
                         return ProcessOutcome::Consumed;
                     }
                     "up" | "down" => {
-                        let motion = if name == "up" { Motion::Up } else { Motion::Down };
+                        let motion = if name == "up" {
+                            Motion::Up
+                        } else {
+                            Motion::Down
+                        };
                         self.goto_motion(ctx, motion, 1);
                         return ProcessOutcome::Consumed;
                     }
                     "left" | "right" => {
-                        let motion = if name == "left" { Motion::Left } else { Motion::Right };
+                        let motion = if name == "left" {
+                            Motion::Left
+                        } else {
+                            Motion::Right
+                        };
                         self.goto_motion(ctx, motion, 1);
                         return ProcessOutcome::Consumed;
                     }
                     "home" => {
-                        self.cursor.offset =
-                            ctx.buf.line_start(ctx.buf.offset_to_line(self.cursor.offset));
+                        self.cursor.offset = ctx
+                            .buf
+                            .line_start(ctx.buf.offset_to_line(self.cursor.offset));
                         return ProcessOutcome::Consumed;
                     }
                     "end" => {

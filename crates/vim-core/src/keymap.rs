@@ -111,13 +111,10 @@ pub struct Keymaps {
 
 impl Keymaps {
     pub fn map(&mut self, class: ModeClass, from: &[Key], to: Vec<Key>, noremap: bool) {
-        self.tables.entry(class).or_default().insert(
-            from,
-            Mapping {
-                rhs: to,
-                noremap,
-            },
-        );
+        self.tables
+            .entry(class)
+            .or_default()
+            .insert(from, Mapping { rhs: to, noremap });
     }
 
     pub fn map_str(&mut self, class: ModeClass, from: &str, to: &str) {

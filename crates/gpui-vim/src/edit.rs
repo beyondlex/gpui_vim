@@ -20,8 +20,8 @@ use std::sync::Arc;
 
 use gpui::prelude::*;
 use gpui::{
-    canvas, div, px, rgb, rgba, App, Context, ElementInputHandler, EntityInputHandler,
-    FocusHandle, Focusable, Point, ScrollHandle, SharedString, Window,
+    canvas, div, px, rgb, rgba, App, Context, ElementInputHandler, EntityInputHandler, FocusHandle,
+    Focusable, Point, ScrollHandle, SharedString, Window,
 };
 use unicode_width::UnicodeWidthChar as _;
 use vim_core::buffer::{clamp_to_line_end, VimBuffer, VimBufferMut};
@@ -114,12 +114,13 @@ pub fn rc_offset(lines: &[String], row: usize, col: usize) -> usize {
     let mut off = 0;
     for (i, line) in lines.iter().enumerate() {
         if i == row {
-            return off + line
-                .chars()
-                .take(col)
-                .map(|c| c.len_utf8())
-                .sum::<usize>()
-                .min(line.len());
+            return off
+                + line
+                    .chars()
+                    .take(col)
+                    .map(|c| c.len_utf8())
+                    .sum::<usize>()
+                    .min(line.len());
         }
         off += line.len() + 1;
     }
@@ -132,7 +133,11 @@ pub struct LinesBuf(pub SharedLines);
 impl VimBuffer for LinesBuf {
     fn len(&self) -> usize {
         let lines = self.0.get();
-        lines.iter().map(|l| l.len() + 1).sum::<usize>().saturating_sub(1)
+        lines
+            .iter()
+            .map(|l| l.len() + 1)
+            .sum::<usize>()
+            .saturating_sub(1)
     }
     fn line_count(&self) -> usize {
         self.0.get().len().max(1)
@@ -150,7 +155,10 @@ impl VimBuffer for LinesBuf {
         }
         let lines = self.0.get();
         let text = lines.join("\n");
-        text.get(..offset)?.chars().next_back().map(|c| offset - c.len_utf8())
+        text.get(..offset)?
+            .chars()
+            .next_back()
+            .map(|c| offset - c.len_utf8())
     }
     fn line_range(&self, line: usize) -> Range<usize> {
         let lines = self.0.get();
@@ -386,7 +394,10 @@ impl VimEdit {
         // 其 :action 映射可能面向其他应用）。宿主专属层由宿主构造后追加：
         // `config::load_layers(&mut edit, &Layers { user: None, host: Some(...) })`
         // （后加载、同键覆盖、action 严格）。
-        crate::config::load_layers(&mut editor_self, &crate::config::Layers::with_default_user());
+        crate::config::load_layers(
+            &mut editor_self,
+            &crate::config::Layers::with_default_user(),
+        );
         editor_self
     }
 
@@ -429,7 +440,9 @@ impl VimEdit {
         match self.vim.mode {
             Mode::Insert => "INSERT",
             Mode::Replace => "REPLACE",
-            Mode::Visual { kind: VisualKind::Line } => "V-LINE",
+            Mode::Visual {
+                kind: VisualKind::Line,
+            } => "V-LINE",
             Mode::Visual { .. } => "VISUAL",
             _ => "",
         }
@@ -447,8 +460,10 @@ impl VimEdit {
         let key = crate::to_core_key(ks);
         let mode = self.vim.mode;
 
-        // 撤销/重做（normal 态，本地栈）
-        if mode == Mode::Normal {
+        // 撤销/重做（normal 态 + 引擎空闲，本地栈）。is_idle 门槛必不可少：
+        // `gu` 之后的 `u`、`guu` 的尾键都是引擎待完成命令的一部分，抢先拦截
+        // 会把它们吞成本地 undo，导致 gu/guw/guu/gugu 全部失效。
+        if mode == Mode::Normal && self.vim.is_idle() {
             if let KeyKind::Char('u') = &key.kind {
                 if !key.modifiers.control {
                     self.undo();
@@ -593,7 +608,9 @@ impl VimEdit {
         let max = (content - viewport_h).max(0.0);
         let line_top = line as f32 * line_h;
         let target = match to {
-            ScrollAnchor::Center | ScrollAnchor::Cursor => line_top + line_h / 2.0 - viewport_h / 2.0,
+            ScrollAnchor::Center | ScrollAnchor::Cursor => {
+                line_top + line_h / 2.0 - viewport_h / 2.0
+            }
             ScrollAnchor::Top => line_top,
             ScrollAnchor::Bottom => line_top + line_h - viewport_h,
         }
@@ -715,7 +732,10 @@ impl VimEdit {
         container = if self.single_line {
             container.h(px(line_height_f + 6.0)).overflow_hidden()
         } else {
-            container.h_full().overflow_y_scroll().track_scroll(&self.scroll)
+            container
+                .h_full()
+                .overflow_y_scroll()
+                .track_scroll(&self.scroll)
         };
 
         container = container
@@ -727,7 +747,11 @@ impl VimEdit {
             .when(focused, |d| {
                 d.border_1()
                     .border_color(rgb(self.style.focus_border))
-                    .bg(rgb(blend_rgb(self.style.surface_bg, self.style.accent, 0.06)))
+                    .bg(rgb(blend_rgb(
+                        self.style.surface_bg,
+                        self.style.accent,
+                        0.06,
+                    )))
             })
             .when(!focused, |d| {
                 d.border_1()
@@ -741,7 +765,8 @@ impl VimEdit {
                 } else {
                     line.clone().into()
                 };
-                let x_of = |col: usize| -> f32 { display_width_before(line, col) as f32 * char_width_f };
+                let x_of =
+                    |col: usize| -> f32 { display_width_before(line, col) as f32 * char_width_f };
                 let mut row = div()
                     .h(line_h)
                     .w_full()
@@ -756,7 +781,11 @@ impl VimEdit {
                             let (r0, cc) = offset_rc(&self.lines, cur.start);
                             r0 == ix && cc == *c0
                         });
-                        let color = if is_cur { self.style.gold } else { self.style.accent };
+                        let color = if is_cur {
+                            self.style.gold
+                        } else {
+                            self.style.accent
+                        };
                         row = row.child(
                             div()
                                 .absolute()
@@ -866,10 +895,7 @@ impl VimEdit {
             return;
         }
         self.mouse_selecting = false;
-        let empty = self
-            .vim
-            .visual_selection()
-            .is_none_or(|(a, c, _)| a == c);
+        let empty = self.vim.visual_selection().is_none_or(|(a, c, _)| a == c);
         if empty {
             self.vim.mode = Mode::Normal;
         }
@@ -976,7 +1002,10 @@ impl EntityInputHandler for VimEdit {
                 a..b
             })
             .unwrap_or(cursor..cursor);
-        Some(gpui::UTF16Selection { range: selection, reversed: false })
+        Some(gpui::UTF16Selection {
+            range: selection,
+            reversed: false,
+        })
     }
 
     fn marked_text_range(
@@ -990,9 +1019,7 @@ impl EntityInputHandler for VimEdit {
         if range.is_empty() {
             return None;
         }
-        Some(
-            self.buf.byte_to_utf16(range.start)..self.buf.byte_to_utf16(range.end),
-        )
+        Some(self.buf.byte_to_utf16(range.start)..self.buf.byte_to_utf16(range.end))
     }
 
     fn unmark_text(&mut self, _window: &mut Window, _cx: &mut Context<Self>) {
@@ -1101,7 +1128,10 @@ impl EntityInputHandler for VimEdit {
         );
         Some(gpui::Bounds::new(
             origin,
-            gpui::Size::new(gpui::px(self.style.char_width), gpui::px(self.style.line_height)),
+            gpui::Size::new(
+                gpui::px(self.style.char_width),
+                gpui::px(self.style.line_height),
+            ),
         ))
     }
 
@@ -1175,7 +1205,10 @@ mod multiline_tests {
     #[test]
     fn insert_enter_creates_line() {
         let (_, mut buf, mut host, mut vim) = setup();
-        let mut ctx = Ctx { buf: &mut buf, host: &mut host };
+        let mut ctx = Ctx {
+            buf: &mut buf,
+            host: &mut host,
+        };
         vim.handle_key(&mut ctx, Key::char('i'));
         vim.insert_text_at_cursor(&mut ctx, "收件人");
         assert_eq!(vim.handle_key(&mut ctx, Key::enter()), KeyResult::Consumed);
@@ -1189,8 +1222,14 @@ mod multiline_tests {
     fn normal_o_opens_line_below() {
         let (_, mut buf, mut host, mut vim) = setup();
         buf.0.set(Arc::new(vec!["hello".to_string()]));
-        let mut ctx = Ctx { buf: &mut buf, host: &mut host };
-        assert_eq!(vim.handle_key(&mut ctx, Key::char('o')), KeyResult::Consumed);
+        let mut ctx = Ctx {
+            buf: &mut buf,
+            host: &mut host,
+        };
+        assert_eq!(
+            vim.handle_key(&mut ctx, Key::char('o')),
+            KeyResult::Consumed
+        );
         let lines = buf.0.get();
         assert_eq!(*lines, vec!["hello".to_string(), String::new()]);
         assert!(matches!(vim.mode, Mode::Insert), "o 应进入 insert 模式");
@@ -1202,7 +1241,10 @@ mod multiline_tests {
     fn cjk_line_tail_enter_no_panic() {
         let (_, mut buf, mut host, mut vim) = setup();
         buf.0.set(Arc::new(vec!["第一行收件人".to_string()]));
-        let mut ctx = Ctx { buf: &mut buf, host: &mut host };
+        let mut ctx = Ctx {
+            buf: &mut buf,
+            host: &mut host,
+        };
         vim.handle_key(&mut ctx, Key::char('A')); // 行尾进入 insert
         assert_eq!(vim.handle_key(&mut ctx, Key::enter()), KeyResult::Consumed);
         assert_eq!(buf.0.get().len(), 2, "enter 应新建一行");
@@ -1218,7 +1260,10 @@ mod multiline_tests {
             "two".to_string(),
             "three".to_string(),
         ]));
-        let mut ctx = Ctx { buf: &mut buf, host: &mut host };
+        let mut ctx = Ctx {
+            buf: &mut buf,
+            host: &mut host,
+        };
         vim.handle_key(&mut ctx, Key::char('d'));
         vim.handle_key(&mut ctx, Key::char('d'));
         let lines = buf.0.get();
@@ -1230,7 +1275,10 @@ mod multiline_tests {
     #[test]
     fn join_semantics_for_single_line_fields() {
         let (_, mut buf, mut host, mut vim) = setup();
-        let mut ctx = Ctx { buf: &mut buf, host: &mut host };
+        let mut ctx = Ctx {
+            buf: &mut buf,
+            host: &mut host,
+        };
         vim.handle_key(&mut ctx, Key::char('i'));
         vim.insert_text_at_cursor(&mut ctx, "a");
         vim.handle_key(&mut ctx, Key::enter());

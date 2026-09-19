@@ -56,10 +56,12 @@ impl VimState {
     fn execute_search(&mut self, ctx: &mut Ctx, pattern: String, forward: bool) {
         self.mode = Mode::Normal;
         if pattern.is_empty() {
-            // empty pattern: re-use the last one, like vim
+            // empty pattern: re-use the last one, like vim — but in the
+            // direction of the CURRENT prompt (`?` + Enter repeats BACKWARD,
+            // `/` + Enter forward; verified against vim 9.1)
             if let Some(last) = self.search.pattern.clone() {
-                search::set_pattern(self, ctx, last, self.search.forward);
-                self.jump_to_current_match(ctx, self.search.forward, 1);
+                search::set_pattern(self, ctx, last, forward);
+                self.jump_to_current_match(ctx, forward, 1);
                 ctx.host.changed();
             }
             return;
@@ -338,9 +340,8 @@ impl VimState {
 
     /// `cmd` at the line start with a command boundary (end, space, `!`).
     fn boundary_cmd<'a>(line: &'a str, cmd: &str) -> Option<&'a str> {
-        line.strip_prefix(cmd).filter(|rest| {
-            rest.is_empty() || rest.starts_with(' ') || rest.starts_with('!')
-        })
+        line.strip_prefix(cmd)
+            .filter(|rest| rest.is_empty() || rest.starts_with(' ') || rest.starts_with('!'))
     }
 
     /// Parse an Ex range prefix: `%`, `.`, `$`, `'`, numbers, each with an
@@ -365,12 +366,20 @@ impl VimState {
                     .marks
                     .active_visual()
                     .map(|(a, _)| ctx.buf.offset_to_line(a))
-                    .or_else(|| vim.marks.resolve('<').map(|off| ctx.buf.offset_to_line(off))),
+                    .or_else(|| {
+                        vim.marks
+                            .resolve('<')
+                            .map(|off| ctx.buf.offset_to_line(off))
+                    }),
                 "'>" => vim
                     .marks
                     .active_visual()
                     .map(|(_, b)| ctx.buf.offset_to_line(b.saturating_sub(1)))
-                    .or_else(|| vim.marks.resolve('>').map(|off| ctx.buf.offset_to_line(off))),
+                    .or_else(|| {
+                        vim.marks
+                            .resolve('>')
+                            .map(|off| ctx.buf.offset_to_line(off))
+                    }),
                 other => other.parse::<usize>().ok().map(|n| n.saturating_sub(1)),
             }
         }
@@ -397,7 +406,9 @@ impl VimState {
                 range_end = i.min(bytes.len());
                 continue;
             }
-            if c.is_ascii_digit() || matches!(c, '.' | '$' | '%' | ',' | ';' | '+' | '-' | '>' | ' ') {
+            if c.is_ascii_digit()
+                || matches!(c, '.' | '$' | '%' | ',' | ';' | '+' | '-' | '>' | ' ')
+            {
                 i += 1;
                 range_end = i;
                 continue;
@@ -431,7 +442,8 @@ impl VimState {
             let value = match base_line(base_str, vim, ctx) {
                 Some(base) => with_offset(base, off_str),
                 None if base_str.is_empty() => {
-                    let base = previous.unwrap_or_else(|| ctx.buf.offset_to_line(vim.cursor.offset));
+                    let base =
+                        previous.unwrap_or_else(|| ctx.buf.offset_to_line(vim.cursor.offset));
                     with_offset(base, off_str)
                 }
                 None => return None,
@@ -616,8 +628,7 @@ impl VimState {
             self.cursor.offset = crate::buffer::clamp_to_line_end(ctx.buf, offset);
             self.cursor.desired_col = None;
         }
-        ctx.host
-            .status_message(&format!("{total} substitutions"));
+        ctx.host.status_message(&format!("{total} substitutions"));
         // `.` repeats the substitution at the cursor's line
         self.commit_change_record();
         true

@@ -11,8 +11,8 @@ use std::time::Duration;
 
 use gpui::{px, App, Bounds, Context, Hsla, Pixels, Point, SharedString, TextRun, Window};
 use vim_core::buffer::VimBuffer;
-use vim_core::ops as core_ops;
 use vim_core::mode::VisualKind;
+use vim_core::ops as core_ops;
 use vim_core::state::VimState;
 
 /// Width of the thin (insert-mode) caret bar, in logical pixels.
@@ -124,7 +124,11 @@ pub fn compute_line_overlays(inputs: &LineOverlayInputs) -> LineOverlays {
                 style.search
             };
             if let Some(range) = to_line_local(highlight.clone(), line_start, line_end) {
-                quads.push(OverlayQuad { range, color, full_width: false });
+                quads.push(OverlayQuad {
+                    range,
+                    color,
+                    full_width: false,
+                });
             }
         }
     }
@@ -132,7 +136,11 @@ pub fn compute_line_overlays(inputs: &LineOverlayInputs) -> LineOverlays {
     // IME marked text
     if let Some(marked) = ime_marked {
         if let Some(range) = to_line_local(marked, line_start, line_end) {
-            quads.push(OverlayQuad { range, color: style.mark, full_width: false });
+            quads.push(OverlayQuad {
+                range,
+                color: style.mark,
+                full_width: false,
+            });
         }
     }
 
@@ -144,9 +152,7 @@ pub fn compute_line_overlays(inputs: &LineOverlayInputs) -> LineOverlays {
                 if let Some(block) = core_ops::span_from_visual_block(vim, buf) {
                     if line >= block.first_line {
                         if let Some(row) = block.rows.get(line - block.first_line) {
-                            if let Some(range) =
-                                to_line_local(row.clone(), line_start, line_end)
-                            {
+                            if let Some(range) = to_line_local(row.clone(), line_start, line_end) {
                                 quads.push(OverlayQuad {
                                     range,
                                     color: style.selection,
@@ -160,8 +166,7 @@ pub fn compute_line_overlays(inputs: &LineOverlayInputs) -> LineOverlays {
             // linewise selection: one full-width quad per line it covers
             VisualKind::Line => {
                 let first = buf.offset_to_line(span.start);
-                let last = buf
-                    .offset_to_line(span.end.saturating_sub(1).max(span.start));
+                let last = buf.offset_to_line(span.end.saturating_sub(1).max(span.start));
                 if line >= first && line <= last {
                     quads.push(OverlayQuad {
                         range: 0..0,
@@ -172,7 +177,11 @@ pub fn compute_line_overlays(inputs: &LineOverlayInputs) -> LineOverlays {
             }
             VisualKind::Char => {
                 if let Some(range) = to_line_local(span.start..span.end, line_start, line_end) {
-                    quads.push(OverlayQuad { range, color: style.selection, full_width: false });
+                    quads.push(OverlayQuad {
+                        range,
+                        color: style.selection,
+                        full_width: false,
+                    });
                 }
             }
         }
@@ -242,15 +251,32 @@ pub fn paint_vim_line(
         .shape_line(text, style.font_size, &runs, None);
 
     paint_overlays(window, &shaped, bounds, line_height, overlays);
-    paint_caret(window, &shaped, bounds, line_height, overlays, style, caret_end_byte);
+    paint_caret(
+        window,
+        &shaped,
+        bounds,
+        line_height,
+        overlays,
+        style,
+        caret_end_byte,
+    );
 
-    let _ = shaped.paint(point(bounds.origin.x, bounds.origin.y), line_height, window, cx);
+    let _ = shaped.paint(
+        point(bounds.origin.x, bounds.origin.y),
+        line_height,
+        window,
+        cx,
+    );
     shaped
 }
 
 /// Split the line into shaped runs: plain text, or text / inverted cursor
 /// char / text when the block cursor sits on this line.
-fn build_runs(text: &str, inverted: Option<std::ops::Range<usize>>, style: &OverlayStyle) -> Vec<TextRun> {
+fn build_runs(
+    text: &str,
+    inverted: Option<std::ops::Range<usize>>,
+    style: &OverlayStyle,
+) -> Vec<TextRun> {
     let mut runs: Vec<TextRun> = Vec::new();
     let mut push_run = |len: usize, color: Hsla| {
         if len > 0 {
@@ -335,7 +361,10 @@ fn paint_caret(
     };
     let quad = Bounds::from_corners(
         point(bounds.origin.x + px(x), bounds.origin.y),
-        point(bounds.origin.x + px(x + width), bounds.origin.y + line_height),
+        point(
+            bounds.origin.x + px(x + width),
+            bounds.origin.y + line_height,
+        ),
     );
     window.paint_quad(gpui::fill(quad, style.cursor));
 }
@@ -381,18 +410,16 @@ impl CaretBlinker {
     /// notifies the entity so it repaints. Ends when the entity is dropped.
     pub fn spawn_loop<E: 'static>(self: &Rc<Self>, cx: &mut Context<E>) {
         let blinker = Rc::clone(self);
-        cx.spawn(async move |entity, cx| {
-            loop {
-                gpui::Timer::after(BLINK_INTERVAL).await;
-                let alive = entity
-                    .update(cx, |_, cx| {
-                        blinker.tick();
-                        cx.notify();
-                    })
-                    .is_ok();
-                if !alive {
-                    break;
-                }
+        cx.spawn(async move |entity, cx| loop {
+            gpui::Timer::after(BLINK_INTERVAL).await;
+            let alive = entity
+                .update(cx, |_, cx| {
+                    blinker.tick();
+                    cx.notify();
+                })
+                .is_ok();
+            if !alive {
+                break;
             }
         })
         .detach();

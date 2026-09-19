@@ -68,8 +68,6 @@ type SharedView = gpui::Entity<Editor>;
 
 actions!(demo, [Save, Copy, Paste]);
 
-
-
 /// One open buffer: its own engine, rope and host state (undo, clipboard,
 /// viewport). The Editor view switches between tabs; each keeps its own
 /// cursor, mode and history.
@@ -212,7 +210,10 @@ impl Editor {
     }
 
     fn line_col(&self) -> (usize, usize) {
-        let line = self.tab().buffer.offset_to_line(self.tab().vim.cursor_offset());
+        let line = self
+            .tab()
+            .buffer
+            .offset_to_line(self.tab().vim.cursor_offset());
         let col = self.tab().vim.cursor_offset() - self.tab().buffer.line_start(line);
         (line + 1, col)
     }
@@ -220,14 +221,31 @@ impl Editor {
     /// Normalized visual-selection span (bytes) for rendering, if any.
     fn selection_span(&self) -> Option<(Range<usize>, bool)> {
         let (anchor, cursor, kind) = self.tab().vim.visual_selection()?;
-        let (lo, hi) = if anchor <= cursor { (anchor, cursor) } else { (cursor, anchor) };
+        let (lo, hi) = if anchor <= cursor {
+            (anchor, cursor)
+        } else {
+            (cursor, anchor)
+        };
         let linewise = kind == vim_core::VisualKind::Line;
         let range = if linewise {
-            let start = self.tab().buffer.line_start(self.tab().buffer.offset_to_line(lo));
-            let end = self.tab().buffer.line_range(self.tab().buffer.offset_to_line(hi)).end;
+            let start = self
+                .tab()
+                .buffer
+                .line_start(self.tab().buffer.offset_to_line(lo));
+            let end = self
+                .tab()
+                .buffer
+                .line_range(self.tab().buffer.offset_to_line(hi))
+                .end;
             start..end
         } else {
-            let end = hi + self.tab().buffer.char_at(hi).map(|c| c.len_utf8()).unwrap_or(0);
+            let end = hi
+                + self
+                    .tab()
+                    .buffer
+                    .char_at(hi)
+                    .map(|c| c.len_utf8())
+                    .unwrap_or(0);
             lo..end
         };
         Some((range, linewise))
@@ -276,7 +294,12 @@ impl Editor {
         offset.min(line_end)
     }
 
-    fn on_mouse_down(&mut self, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+    fn on_mouse_down(
+        &mut self,
+        event: &MouseDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         window.focus(&self.focus_handle);
         let offset = self.byte_at_point(event.position);
         {
@@ -290,7 +313,12 @@ impl Editor {
         cx.notify();
     }
 
-    fn on_mouse_drag(&mut self, event: &MouseMoveEvent, _window: &mut Window, cx: &mut Context<Self>) {
+    fn on_mouse_drag(
+        &mut self,
+        event: &MouseMoveEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if !self.dragging.get() {
             return;
         }
@@ -303,7 +331,12 @@ impl Editor {
         cx.notify();
     }
 
-    fn on_mouse_up(&mut self, _event: &gpui::MouseUpEvent, _window: &mut Window, cx: &mut Context<Self>) {
+    fn on_mouse_up(
+        &mut self,
+        _event: &gpui::MouseUpEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.dragging.set(false);
         cx.notify();
     }
@@ -320,7 +353,8 @@ impl Editor {
         if let Some(line) = self.tab_mut().host.scrolled_to.take() {
             let (first, last) = self.visible_lines.get();
             if line < first || line > last {
-                self.scroll_handle.scroll_to_item(line, ScrollStrategy::Center);
+                self.scroll_handle
+                    .scroll_to_item(line, ScrollStrategy::Center);
             }
         }
     }
@@ -351,8 +385,7 @@ impl Editor {
                         .dispatch_action(action.as_ref(), window, cx)
                 }
                 Err(error) => {
-                    self.status_message =
-                        Some(format!("E: unknown action {id} ({error})"));
+                    self.status_message = Some(format!("E: unknown action {id} ({error})"));
                 }
             }
         }
@@ -416,7 +449,13 @@ impl Editor {
 }
 
 impl gpui_vim::VimEditor for Editor {
-    fn vim_parts(&mut self) -> (&mut VimState, &mut dyn vim_core::buffer::VimBufferMut, &mut dyn VimHost) {
+    fn vim_parts(
+        &mut self,
+    ) -> (
+        &mut VimState,
+        &mut dyn vim_core::buffer::VimBufferMut,
+        &mut dyn VimHost,
+    ) {
         let tab = &mut self.tabs[self.active];
         (&mut tab.vim, &mut tab.buffer, &mut tab.host)
     }
@@ -503,9 +542,7 @@ impl Editor {
                         });
                         visible
                             .clone()
-                            .map(|line| {
-                                view.read(cx).render_line(line, view.clone())
-                            })
+                            .map(|line| view.read(cx).render_line(line, view.clone()))
                             .collect::<Vec<_>>()
                     }
                 })
@@ -556,7 +593,8 @@ impl Editor {
         let last = (visible.end.saturating_sub(1)).min(line_count - 1);
         let lo = buf.line_start(first);
         let hi = buf.line_range(last).end;
-        let highlights: Vec<Range<usize>> = self.tab()
+        let highlights: Vec<Range<usize>> = self
+            .tab()
             .host
             .highlights
             .iter()
@@ -571,7 +609,10 @@ impl Editor {
     }
 
     fn gutter_text(&self, line: usize) -> String {
-        let current = self.tab().buffer.offset_to_line(self.tab().vim.cursor_offset());
+        let current = self
+            .tab()
+            .buffer
+            .offset_to_line(self.tab().vim.cursor_offset());
         let label = if self.tab().vim.options.relativenumber && line != current {
             line.abs_diff(current).to_string()
         } else {
@@ -627,7 +668,12 @@ impl Editor {
         } else {
             format!("{:>width$} ", "~", width = self.gutter_cols() - 1)
         };
-        let gutter_active = in_range && line == self.tab().buffer.offset_to_line(self.tab().vim.cursor_offset());
+        let gutter_active = in_range
+            && line
+                == self
+                    .tab()
+                    .buffer
+                    .offset_to_line(self.tab().vim.cursor_offset());
         // out-of-range lines (`~` placeholders) carry no overlays; the
         // library computation handles the caret blink phase itself
         let style = self.overlay_style();
@@ -650,17 +696,24 @@ impl Editor {
             .child(
                 div()
                     .w(self.gutter_width())
-                    .text_color(if gutter_active { gutter_active_color() } else { gutter_color() })
+                    .text_color(if gutter_active {
+                        gutter_active_color()
+                    } else {
+                        gutter_color()
+                    })
                     .child(gutter),
             )
             .child(
                 div()
                     .flex_1()
                     .relative()
-                    .text_color(if in_range { text_color() } else { tilde_color() })
-                    .child(canvas(
-                        move |bounds, _window, _cx| bounds,
-                        {
+                    .text_color(if in_range {
+                        text_color()
+                    } else {
+                        tilde_color()
+                    })
+                    .child(
+                        canvas(move |bounds, _window, _cx| bounds, {
                             let view = view.clone();
                             move |bounds, _, window, cx| {
                                 let shaped = gpui_vim::render::paint_vim_line(
@@ -673,19 +726,26 @@ impl Editor {
                                     &style,
                                 );
                                 view.update(cx, |editor, _| {
+                                    // measure the real monospace advance from the
+                                    // first shaped cell — the 8.4 seed is a guess
+                                    // and this is the promised write-back
+                                    let advance = f32::from(shaped.x_for_index(1));
+                                    if advance > 1.0 {
+                                        editor.char_width.set(advance);
+                                    }
                                     editor
                                         .shaped_lines
                                         .borrow_mut()
                                         .insert(line, (bounds.origin.x, shaped));
                                 });
                             }
-                        },
-                    )
-                    // canvas has no intrinsic size; without this its bounds
-                    // are 0px wide and full-width overlays (V-line selection)
-                    // never paint — x_for_index-based ones are unaffected
-                    .absolute()
-                    .size_full()),
+                        })
+                        // canvas has no intrinsic size; without this its bounds
+                        // are 0px wide and full-width overlays (V-line selection)
+                        // never paint — x_for_index-based ones are unaffected
+                        .absolute()
+                        .size_full(),
+                    ),
             )
     }
 
@@ -784,7 +844,10 @@ impl gpui::EntityInputHandler for Editor {
         _window: &mut Window,
         _cx: &mut Context<Self>,
     ) -> Option<gpui::UTF16Selection> {
-        let cursor = self.tab().buffer.byte_to_utf16(self.tab().vim.cursor_offset());
+        let cursor = self
+            .tab()
+            .buffer
+            .byte_to_utf16(self.tab().vim.cursor_offset());
         let selection = self
             .selection_span()
             .map(|(range, _)| {
@@ -812,7 +875,10 @@ impl gpui::EntityInputHandler for Editor {
         if range.is_empty() {
             return None;
         }
-        Some(self.tab().buffer.byte_to_utf16(range.start)..self.tab().buffer.byte_to_utf16(range.end))
+        Some(
+            self.tab().buffer.byte_to_utf16(range.start)
+                ..self.tab().buffer.byte_to_utf16(range.end),
+        )
     }
 
     fn unmark_text(&mut self, _window: &mut Window, _cx: &mut Context<Self>) {

@@ -24,8 +24,8 @@ use crate::options::Options;
 use crate::registers::Registers;
 use crate::search::SearchState;
 use crate::tables::{mapping_class_for, CmdKind, CommandTables, NormalCmd, Phase, VisualCmd};
-use std::collections::VecDeque;
 use std::collections::HashMap;
+use std::collections::VecDeque;
 use std::ops::Range;
 
 /// Buffer + host pair threaded through all engine calls.
@@ -46,17 +46,19 @@ pub enum KeyResult {
 /// How an insert session was started (drives cursor placement + `Esc`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum InsertKind {
-    Insert,             // i
-    Append,             // a
+    Insert,              // i
+    Append,              // a
     InsertFirstNonBlank, // I
-    AppendLineEnd,      // A
-    OpenLine { below: bool }, // o / O
-    InsertAtColumnZero, // gI
+    AppendLineEnd,       // A
+    OpenLine {
+        below: bool,
+    }, // o / O
+    InsertAtColumnZero,  // gI
     /// gi: insert where the last insert session ended (`^` mark), or at the
     /// cursor when there is none.
     LastInsertExit, // gi
-    Change,             // c / s / S / C
-    Replace,            // R: overwrite instead of insert
+    Change,              // c / s / S / C
+    Replace,             // R: overwrite instead of insert
 }
 
 /// Pending multi-row insert of a visual-block `I`/`A`/`c`: on exit the
@@ -105,10 +107,15 @@ pub(crate) enum RecordedStep {
 /// State collected while a char-argument command waits for its key.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CharArgCmd {
-    Find { forward: bool, till: bool },
+    Find {
+        forward: bool,
+        till: bool,
+    },
     Replace,
     MarkSet,
-    JumpMark { linewise: bool },
+    JumpMark {
+        linewise: bool,
+    },
     /// `q{reg}` / the trailing `q` that stops recording.
     MacroRecord,
     /// `@{reg}` / `@@`.
@@ -348,7 +355,12 @@ impl VimState {
             s.push_str(&key.notation());
         }
         if self.char_arg_cmd.is_some() {
-            s.push_str(self.char_arg.map(|c| c.to_string()).as_deref().unwrap_or(""));
+            s.push_str(
+                self.char_arg
+                    .map(|c| c.to_string())
+                    .as_deref()
+                    .unwrap_or(""),
+            );
         }
         if matches!(self.mode, Mode::Visual { .. }) {
             if let Some((_, _, kind)) = self.visual_selection() {
@@ -364,6 +376,23 @@ impl VimState {
     /// Cursor width hint: block in normal/visual modes, bar in insert.
     pub fn cursor_is_block(&self) -> bool {
         !matches!(self.mode, Mode::Insert | Mode::Replace)
+    }
+
+    /// True when no command input is partially assembled: no pending count,
+    /// register prefix, operator, char argument, multi-key sequence or
+    /// queued keys. Hosts that route some keys AROUND the engine (e.g.
+    /// `VimEdit`'s local undo stack) must only intercept when this is true —
+    /// an `u` arriving while `g` is pending belongs to `gu`, and hijacking
+    /// it breaks `gu`/`guw`/`guu`.
+    pub fn is_idle(&self) -> bool {
+        self.count.is_none()
+            && self.register.is_none()
+            && !self.register_pending
+            && self.op.is_none()
+            && self.op_count.is_none()
+            && self.char_arg_cmd.is_none()
+            && self.cmd_seq.is_empty()
+            && self.pending_keys.is_empty()
     }
 
     pub fn options_mut(&mut self) -> &mut Options {
@@ -417,6 +446,16 @@ impl VimState {
         // the Cmd passthrough so `<D-Esc>` still exits insert mode.
         if matches!(&key.kind, KeyKind::Named(name) if name == "escape") {
             key.modifiers = Modifiers::NONE;
+        }
+
+        // Space arrives under two spellings — `Named("space")` from the gpui
+        // key path and `Char(' ')` from the text-input path (and from every
+        // `<Space>` mapping, since parse_angle canonicalizes to Char).
+        // Canonicalize so mapping lookups and char-argument commands see one
+        // key no matter which path delivered it.
+        if matches!(&key.kind, KeyKind::Named(name) if name == "space") && key.modifiers.is_plain()
+        {
+            key.kind = KeyKind::Char(' ');
         }
 
         // A printable key's shift flag is redundant: the character itself
@@ -541,7 +580,11 @@ impl VimState {
         // popping them here would lose them.
         let contiguous: &[Key] = self.pending_keys.make_contiguous();
         match keymap::lookup(self.keymaps.table(class), contiguous) {
-            MappingMatch::Match { used, expansion, noremap } => {
+            MappingMatch::Match {
+                used,
+                expansion,
+                noremap,
+            } => {
                 self.pending_keys.drain(..used);
                 if noremap {
                     self.no_remap_left = expansion.len();
@@ -717,7 +760,6 @@ impl VimState {
     /// add `delta` to it, preserving leading zeros count (roughly) and
     /// cursor on the last digit. Returns false when no number is found.
     fn increment_number_at_cursor(&mut self, ctx: &mut Ctx, delta: i64) -> bool {
-        // returns false when no number is found on the line
         let line = ctx.buf.offset_to_line(self.cursor.offset);
         let start = ctx.buf.line_start(line);
         let end = ctx.buf.line_end(line);
@@ -726,22 +768,25 @@ impl VimState {
 
         // cursor column (bytes) within the line
         let cur = self.cursor.offset - start;
-        // scan forward from the cursor for a digit; if none ahead, scan the
-        // tail of the number the cursor sits inside
-        let num_start = (cur..text.len()).find(|&i| bytes[i].is_ascii_digit());
-        let num_start = match num_start {
-            Some(start) => start,
-            None => {
-                // maybe the cursor is inside a number's tail: walk back to
-                // its first digit
-                let mut i = cur.min(text.len().saturating_sub(1));
-                while i > 0 && !bytes[i].is_ascii_digit() {
-                    i -= 1;
-                }
-                if !bytes.get(i).is_some_and(|b| b.is_ascii_digit()) {
-                    return false;
-                }
-                i
+        // "at or after the cursor": a digit UNDER the cursor means THAT
+        // number — walk back to the run's first digit, or `129` with the
+        // cursor on `9` would only read the `9` (129+1 turning into 1210).
+        // A cursor parked at the line end sits VISUALLY on the last char,
+        // so a line ending in a digit counts as "on" it too. A non-digit
+        // under the cursor starts the search forward; numbers BEFORE the
+        // cursor are ignored (vim reports E18 instead).
+        let on_digit = bytes.get(cur).is_some_and(|b| b.is_ascii_digit())
+            || (cur >= text.len() && text.ends_with(|c: char| c.is_ascii_digit()));
+        let num_start = if on_digit {
+            let mut i = cur.min(text.len().saturating_sub(1));
+            while i > 0 && bytes[i - 1].is_ascii_digit() {
+                i -= 1;
+            }
+            i
+        } else {
+            match (cur..text.len()).find(|&i| bytes[i].is_ascii_digit()) {
+                Some(i) => i,
+                None => return false,
             }
         };
 
@@ -823,7 +868,9 @@ impl VimState {
             .find(|m| m.start >= self.cursor.offset)
             .or_else(|| matches.last())
             .cloned();
-        let index = current.as_ref().and_then(|c| matches.iter().position(|m| m == c));
+        let index = current
+            .as_ref()
+            .and_then(|c| matches.iter().position(|m| m == c));
         self.search.last_matches = matches;
         self.search.matches_generation = Some(self.edit_generation);
         self.search.last_index = index;
@@ -940,7 +987,10 @@ impl VimState {
         }
         if matches!(self.mode, Mode::Visual { .. }) {
             if let Some(anchor) = self.visual_anchor {
-                let (a, c) = (anchor.min(self.cursor.offset), anchor.max(self.cursor.offset));
+                let (a, c) = (
+                    anchor.min(self.cursor.offset),
+                    anchor.max(self.cursor.offset),
+                );
                 self.marks.active_visual = Some((a, c + 1));
             }
         }
@@ -1000,7 +1050,9 @@ impl VimState {
     pub(crate) fn exit_insert(&mut self, ctx: &mut Ctx) {
         // back one char unless at the line start (Replace mode too: vim
         // leaves the cursor on the last replaced character)
-        let line_start = ctx.buf.line_start(ctx.buf.offset_to_line(self.cursor.offset));
+        let line_start = ctx
+            .buf
+            .line_start(ctx.buf.offset_to_line(self.cursor.offset));
         if self.cursor.offset > line_start {
             if let Some(prev) = ctx.buf.prev_char_offset(self.cursor.offset) {
                 self.cursor.offset = prev.max(line_start);
@@ -1017,7 +1069,12 @@ impl VimState {
                     .rows
                     .into_iter()
                     .map(|(adjusted, raw)| {
-                        adjusted + if raw > block.cursor_raw { block.text.len() } else { 0 }
+                        adjusted
+                            + if raw > block.cursor_raw {
+                                block.text.len()
+                            } else {
+                                0
+                            }
                     })
                     .collect();
                 rows.sort_unstable_by(|a, b| b.cmp(a)); // bottom-up inserts
@@ -1043,13 +1100,14 @@ impl VimState {
             return;
         }
         self.begin_edit(ctx);
-        let indent_chars = ctx
-            .buf
-            .slice(
-                ctx.buf.line_start(ctx.buf.offset_to_line(self.cursor.offset))
-                    ..ctx.buf.line_start(ctx.buf.offset_to_line(self.cursor.offset))
-                        + self.current_line_indent(ctx),
-            );
+        let indent_chars = ctx.buf.slice(
+            ctx.buf
+                .line_start(ctx.buf.offset_to_line(self.cursor.offset))
+                ..ctx
+                    .buf
+                    .line_start(ctx.buf.offset_to_line(self.cursor.offset))
+                    + self.current_line_indent(ctx),
+        );
         let expanded = if self.options.autoindent && !indent_chars.is_empty() {
             text.replace('\n', &format!("\n{indent_chars}"))
         } else {
@@ -1061,7 +1119,9 @@ impl VimState {
             let mut end = at;
             let line_end = ctx.buf.line_end(ctx.buf.offset_to_line(at));
             for _ in 0..expanded.chars().count() {
-                let Some(next) = ctx.buf.next_char_offset(end) else { break };
+                let Some(next) = ctx.buf.next_char_offset(end) else {
+                    break;
+                };
                 if next > line_end {
                     break;
                 }
@@ -1121,7 +1181,12 @@ impl VimState {
             }
         }
         for mapping in &config.mappings {
-            self.keymaps.map(mapping.class, &mapping.lhs, mapping.rhs.clone(), mapping.noremap);
+            self.keymaps.map(
+                mapping.class,
+                &mapping.lhs,
+                mapping.rhs.clone(),
+                mapping.noremap,
+            );
             stats.mappings += 1;
         }
         stats.ignored += config.ignored.len();
@@ -1184,7 +1249,9 @@ impl VimState {
         self.visual_anchor = Some(clamp_to_line_end(buf, anchor.min(buf.len())));
         self.cursor.offset = clamp_to_line_end(buf, cursor.min(buf.len()));
         if !matches!(self.mode, Mode::Visual { .. }) {
-            self.mode = Mode::Visual { kind: VisualKind::Char };
+            self.mode = Mode::Visual {
+                kind: VisualKind::Char,
+            };
         }
     }
 
@@ -1198,7 +1265,11 @@ impl VimState {
 
     pub(crate) fn exit_visual(&mut self, ctx: &mut Ctx) {
         if let Some((anchor, cursor, _)) = self.visual_selection() {
-            let (lo, hi) = if anchor <= cursor { (anchor, cursor) } else { (cursor, anchor) };
+            let (lo, hi) = if anchor <= cursor {
+                (anchor, cursor)
+            } else {
+                (cursor, anchor)
+            };
             self.marks.last_visual = Some((lo, hi + 1));
             self.marks.set('<', lo);
             self.marks.set('>', hi);
@@ -1241,10 +1312,7 @@ impl VimState {
                     let mut text = ctx.buf.slice(range.clone());
                     // pad rows to the block width so blockwise put keeps
                     // its rectangle
-                    let mut w: usize = text
-                        .chars()
-                        .map(crate::buffer::char_display_width)
-                        .sum();
+                    let mut w: usize = text.chars().map(crate::buffer::char_display_width).sum();
                     while w < width {
                         text.push(' ');
                         w += 1;
@@ -1256,10 +1324,8 @@ impl VimState {
                     texts.join("\n"),
                     crate::registers::RegisterKind::Blockwise,
                 );
-                self.cursor.offset = clamp_to_line_end(
-                    ctx.buf,
-                    block.rows.first().map(|r| r.start).unwrap_or(0),
-                );
+                self.cursor.offset =
+                    clamp_to_line_end(ctx.buf, block.rows.first().map(|r| r.start).unwrap_or(0));
                 self.cursor.desired_col = None;
                 self.finish_visual_op(ctx);
             }
@@ -1270,7 +1336,11 @@ impl VimState {
                 self.reset_pending();
                 self.cursor.offset = clamp_to_line_end(ctx.buf, adjusted[0]);
                 self.block_insert = Some(BlockInsert {
-                    rows: adjusted[1..].iter().copied().zip(block.rows[1..].iter().map(|r| r.start)).collect(),
+                    rows: adjusted[1..]
+                        .iter()
+                        .copied()
+                        .zip(block.rows[1..].iter().map(|r| r.start))
+                        .collect(),
                     cursor_raw: block.rows[0].start,
                     text: String::new(),
                 });
@@ -1318,7 +1388,11 @@ impl VimState {
         for (i, range) in block.rows.iter().enumerate() {
             let line = block.first_line + i;
             let (offset, raw) = if append {
-                let end = if range.is_empty() { ctx.buf.line_end(line) } else { range.end };
+                let end = if range.is_empty() {
+                    ctx.buf.line_end(line)
+                } else {
+                    range.end
+                };
                 (end, end)
             } else if range.is_empty() {
                 (ctx.buf.line_end(line), range.start)
@@ -1350,7 +1424,11 @@ impl VimState {
     pub(crate) fn finish_visual_op(&mut self, ctx: &mut Ctx) {
         self.discard_change_record();
         if let Some((anchor, cursor, kind)) = self.visual_selection() {
-            let (lo, hi) = if anchor <= cursor { (anchor, cursor) } else { (cursor, anchor) };
+            let (lo, hi) = if anchor <= cursor {
+                (anchor, cursor)
+            } else {
+                (cursor, anchor)
+            };
             self.marks.last_visual = Some((lo, hi + 1));
             self.last_visual = Some((lo, hi + 1, kind));
         }
@@ -1486,7 +1564,11 @@ impl VimState {
 
         // 3. a pending trie walk
         if !self.cmd_seq.is_empty() {
-            let phase = if self.op.is_some() { Phase::Pending } else { Phase::Normal };
+            let phase = if self.op.is_some() {
+                Phase::Pending
+            } else {
+                Phase::Normal
+            };
             let mut seq = self.cmd_seq.clone();
             seq.push(key.clone());
             match self.tables.trie(phase).get(&seq) {
@@ -1580,7 +1662,11 @@ impl VimState {
         }
 
         // 9. the command trie
-        let phase = if self.op.is_some() { Phase::Pending } else { Phase::Normal };
+        let phase = if self.op.is_some() {
+            Phase::Pending
+        } else {
+            Phase::Normal
+        };
         let single = [key.clone()];
         match self.tables.trie(phase).get(&single) {
             keymap::Walk::Hit(kind) => self.execute_command(ctx, *kind),
@@ -1702,7 +1788,12 @@ impl VimState {
             return ProcessOutcome::Consumed;
         }
         // visual-block I/A: insert at the block edge on every row
-        if matches!(self.mode, Mode::Visual { kind: crate::mode::VisualKind::Block }) {
+        if matches!(
+            self.mode,
+            Mode::Visual {
+                kind: crate::mode::VisualKind::Block
+            }
+        ) {
             if let (KeyKind::Char(c), true) = (&key.kind, key.modifiers.is_plain()) {
                 if *c == 'I' || *c == 'A' {
                     self.begin_block_insert(ctx, *c == 'A');
@@ -1819,10 +1910,7 @@ impl VimState {
                         };
                         self.visual_anchor = Some(span.start);
                         let end = span.end.min(ctx.buf.len());
-                        self.cursor.offset = ctx
-                            .buf
-                            .prev_char_offset(end)
-                            .unwrap_or(span.start);
+                        self.cursor.offset = ctx.buf.prev_char_offset(end).unwrap_or(span.start);
                         self.cursor.desired_col = None;
                     }
                     _ if self.op.is_some() => {
@@ -1874,7 +1962,12 @@ impl VimState {
     fn apply_visual_operator(&mut self, ctx: &mut Ctx, op: Operator) {
         // visual-mode changes are not `.`-repeatable in v1
         self.recording_blocked = true;
-        if matches!(self.mode, Mode::Visual { kind: crate::mode::VisualKind::Block }) {
+        if matches!(
+            self.mode,
+            Mode::Visual {
+                kind: crate::mode::VisualKind::Block
+            }
+        ) {
             self.apply_block_operator(ctx, op);
             return;
         }
@@ -2212,8 +2305,7 @@ impl VimState {
                 let older = cmd == NormalCmd::OlderChange;
                 let count = self.take_total_count().max(1);
                 if self.changes.is_empty() {
-                    ctx.host
-                        .status_message("E664: changelist is empty");
+                    ctx.host.status_message("E664: changelist is empty");
                     ctx.host.bell();
                     return;
                 }
@@ -2232,8 +2324,7 @@ impl VimState {
                         false
                     };
                     if !moved {
-                        ctx.host
-                            .status_message("E662: At start of changelist");
+                        ctx.host.status_message("E662: At start of changelist");
                         ctx.host.bell();
                         break;
                     }
@@ -2282,8 +2373,7 @@ impl VimState {
                         ctx.host.bell();
                         break;
                     }
-                    self.cursor.offset =
-                        clamp_to_line_end(ctx.buf, self.jumps[self.jump_pos]);
+                    self.cursor.offset = clamp_to_line_end(ctx.buf, self.jumps[self.jump_pos]);
                     self.cursor.desired_col = None;
                     ctx.host
                         .scroll_to_line(ctx.buf.offset_to_line(self.cursor.offset));
@@ -2383,7 +2473,12 @@ impl VimState {
                 }
             }
             VisualCmd::PutReplace => {
-                if matches!(self.mode, Mode::Visual { kind: crate::mode::VisualKind::Block }) {
+                if matches!(
+                    self.mode,
+                    Mode::Visual {
+                        kind: crate::mode::VisualKind::Block
+                    }
+                ) {
                     self.block_put_replace(ctx);
                     return;
                 }
@@ -2412,10 +2507,7 @@ impl VimState {
                         // cursor on the last pasted char's START — byte - 1
                         // would sit inside a multi-byte character
                         let end = at + repeated.len();
-                        self.cursor.offset = ctx
-                            .buf
-                            .prev_char_offset(end)
-                            .unwrap_or(at);
+                        self.cursor.offset = ctx.buf.prev_char_offset(end).unwrap_or(at);
                     }
                 }
                 self.end_edit();
@@ -2428,7 +2520,9 @@ impl VimState {
                 };
                 let count = self.take_total_count();
                 let first = ctx.buf.offset_to_line(span.start);
-                let last = ctx.buf.offset_to_line(span.end.saturating_sub(1).max(span.start));
+                let last = ctx
+                    .buf
+                    .offset_to_line(span.end.saturating_sub(1).max(span.start));
                 self.begin_edit(ctx);
                 self.cursor.offset = span.start;
                 ops::join_lines(self, ctx, (last - first + 1).max(count), literal);
@@ -2445,11 +2539,9 @@ impl VimState {
             InsertKind::Insert | InsertKind::Change | InsertKind::Replace => {}
             InsertKind::Append => {
                 if !ctx.buf.at_line_end(self.cursor.offset) {
-                    self.cursor.offset = crate::buffer::next_grapheme_offset(
-                        ctx.buf,
-                        self.cursor.offset,
-                    )
-                    .unwrap_or(self.cursor.offset);
+                    self.cursor.offset =
+                        crate::buffer::next_grapheme_offset(ctx.buf, self.cursor.offset)
+                            .unwrap_or(self.cursor.offset);
                 }
             }
             InsertKind::InsertFirstNonBlank => {
@@ -2545,7 +2637,11 @@ impl VimState {
                 self.macro_capture = Some((c, Vec::new()));
             }
             CharArgCmd::MacroPlay => {
-                let reg = if c == '@' { self.last_macro_played } else { Some(c) };
+                let reg = if c == '@' {
+                    self.last_macro_played
+                } else {
+                    Some(c)
+                };
                 match reg.and_then(|r| self.macros.get(&r).map(|keys| (r, keys.clone()))) {
                     Some((r, keys)) => {
                         // remember the RESOLVED register: for `@@` the pressed
@@ -2558,27 +2654,25 @@ impl VimState {
                     None => ctx.host.bell(),
                 }
             }
-            CharArgCmd::JumpMark { linewise } => {
-                match self.marks.resolve(c) {
-                    Some(offset) => {
-                        let origin = self.cursor.offset;
-                        let offset = offset.min(ctx.buf.len());
-                        if linewise {
-                            let line = ctx.buf.offset_to_line(offset);
-                            let target = ctx.buf.first_non_blank(line);
-                            self.cursor.offset = target;
-                            self.cursor.desired_col = None;
-                            ctx.host.scroll_to_line(line);
-                        } else {
-                            self.cursor.offset = offset;
-                            self.cursor.desired_col = None;
-                            ctx.host.scroll_to_line(ctx.buf.offset_to_line(offset));
-                        }
-                        self.record_jump(origin, self.cursor.offset);
+            CharArgCmd::JumpMark { linewise } => match self.marks.resolve(c) {
+                Some(offset) => {
+                    let origin = self.cursor.offset;
+                    let offset = offset.min(ctx.buf.len());
+                    if linewise {
+                        let line = ctx.buf.offset_to_line(offset);
+                        let target = ctx.buf.first_non_blank(line);
+                        self.cursor.offset = target;
+                        self.cursor.desired_col = None;
+                        ctx.host.scroll_to_line(line);
+                    } else {
+                        self.cursor.offset = offset;
+                        self.cursor.desired_col = None;
+                        ctx.host.scroll_to_line(ctx.buf.offset_to_line(offset));
                     }
-                    None => ctx.host.bell(),
+                    self.record_jump(origin, self.cursor.offset);
                 }
-            }
+                None => ctx.host.bell(),
+            },
         }
         self.char_arg = None;
         self.end_command();

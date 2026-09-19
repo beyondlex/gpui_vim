@@ -25,8 +25,8 @@
 //! ```
 
 pub mod buffer;
-pub mod config;
 pub mod cmdline;
+pub mod config;
 pub mod host;
 pub mod insert_mode;
 pub mod key;
@@ -47,10 +47,10 @@ pub mod word;
 pub use buffer::{VimBuffer, VimBufferMut};
 pub use host::VimHost;
 pub use key::{Key, KeyKind, Modifiers};
+pub use keymap::ModeClass;
 pub use mode::{Mode, VisualKind};
 pub use motions::Motion;
 pub use objects::TextObject;
 pub use ops::Operator;
 pub use registers::RegisterKind;
 pub use state::{Ctx, KeyResult, VimState};
-pub use keymap::ModeClass;

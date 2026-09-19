@@ -86,7 +86,9 @@ pub fn span_from_motion(
         // no word moved over: fall through to the column-1 rules
     }
 
-    if result.kind == MotionKind::Exclusive && crossed_lines && target == buf.line_start(target_line)
+    if result.kind == MotionKind::Exclusive
+        && crossed_lines
+        && target == buf.line_start(target_line)
     {
         if start <= buf.first_non_blank(start_line) {
             // exclusive + column 1 + started at/before first non-blank:
@@ -97,16 +99,23 @@ pub fn span_from_motion(
                 linewise: true,
             };
         }
-        // exclusive + column 1: end moves to the end of the previous line,
-        // and the span becomes inclusive (keeps the newline)
+        // exclusive + column 1: the end moves to the last CHARACTER of the
+        // previous line, and the motion becomes inclusive — i.e. the span
+        // ends AT the line end, so the newline itself survives. Including it
+        // (`line_end + 1`) made `dw` over trailing blanks join two lines,
+        // which vim never does (verified against vim 9.1).
         return OpSpan {
             start,
-            end: buf.line_end(target_line - 1) + 1,
+            end: buf.line_end(target_line - 1),
             linewise: false,
         };
     }
 
-    let (lo, hi) = if target >= start { (start, target) } else { (target, start) };
+    let (lo, hi) = if target >= start {
+        (start, target)
+    } else {
+        (target, start)
+    };
     let end = match result.kind {
         MotionKind::Inclusive => hi + buf.char_at(hi).map(|c| c.len_utf8()).unwrap_or(0),
         _ => hi,
@@ -140,7 +149,11 @@ pub fn object_span(
 /// Span for the current visual selection.
 pub fn span_from_visual(vim: &VimState, buf: &dyn VimBuffer) -> Option<OpSpan> {
     let (anchor, cursor, kind) = vim.visual_selection()?;
-    let (lo, hi) = if anchor <= cursor { (anchor, cursor) } else { (cursor, anchor) };
+    let (lo, hi) = if anchor <= cursor {
+        (anchor, cursor)
+    } else {
+        (cursor, anchor)
+    };
     Some(match kind {
         crate::mode::VisualKind::Line => OpSpan {
             start: buf.line_start(buf.offset_to_line(lo)),
@@ -234,14 +247,21 @@ pub fn block_row_range(
 }
 
 /// The block span of the current visual-block selection.
-pub fn span_from_visual_block(vim: &VimState, buf: &dyn crate::buffer::VimBuffer) -> Option<BlockSpan> {
+pub fn span_from_visual_block(
+    vim: &VimState,
+    buf: &dyn crate::buffer::VimBuffer,
+) -> Option<BlockSpan> {
     let (anchor, cursor, kind) = vim.visual_selection()?;
     if kind != crate::mode::VisualKind::Block {
         return None;
     }
     let a_col = crate::buffer::display_column(buf, anchor);
     let c_col = crate::buffer::display_column(buf, cursor);
-    let (col_lo, col_hi) = if a_col <= c_col { (a_col, c_col) } else { (c_col, a_col) };
+    let (col_lo, col_hi) = if a_col <= c_col {
+        (a_col, c_col)
+    } else {
+        (c_col, a_col)
+    };
     let first_line = buf.offset_to_line(anchor.min(cursor));
     let last_line = buf.offset_to_line(anchor.max(cursor));
     // the cursor char is part of the block: exclusive end = corner col + 1
@@ -259,7 +279,8 @@ pub fn span_from_visual_block(vim: &VimState, buf: &dyn crate::buffer::VimBuffer
 /// Yank the span into the register.
 pub fn yank_span(vim: &mut VimState, ctx: &mut Ctx, span: &OpSpan, register: Option<char>) {
     let text = ctx.buf.slice(span.start..span.end);
-    vim.registers.store_yank(register, text, register_kind(span));
+    vim.registers
+        .store_yank(register, text, register_kind(span));
 }
 
 /// Apply an operator to a span (operator-pending and visual paths).
@@ -278,14 +299,17 @@ pub fn apply(
             let indent_text = if span.linewise {
                 let first = ctx.buf.offset_to_line(span.start);
                 let (indent, _) = ctx.buf.line_indent(first);
-                ctx.buf.slice(ctx.buf.line_start(first)..ctx.buf.line_start(first) + indent)
+                ctx.buf
+                    .slice(ctx.buf.line_start(first)..ctx.buf.line_start(first) + indent)
             } else {
                 String::new()
             };
             let effective = if span.linewise {
                 // `cc` clears the lines' contents but the lines themselves
                 // survive: never consume the last newline of the span
-                let last = ctx.buf.offset_to_line(span.end.saturating_sub(1).max(span.start));
+                let last = ctx
+                    .buf
+                    .offset_to_line(span.end.saturating_sub(1).max(span.start));
                 OpSpan {
                     start: span.start,
                     end: ctx.buf.line_end(last),
@@ -304,7 +328,9 @@ pub fn apply(
         }
         Operator::IndentLeft | Operator::IndentRight => {
             let first = ctx.buf.offset_to_line(span.start);
-            let last = ctx.buf.offset_to_line(span.end.saturating_sub(1).max(span.start));
+            let last = ctx
+                .buf
+                .offset_to_line(span.end.saturating_sub(1).max(span.start));
             for line in first..=last {
                 shift_line(vim, ctx, line, matches!(op, Operator::IndentRight));
             }
@@ -312,16 +338,21 @@ pub fn apply(
             vim.cursor.desired_col = None;
         }
         Operator::Format => {
-            let last_line = ctx.buf.offset_to_line(span.end.saturating_sub(1).max(span.start));
+            let last_line = ctx
+                .buf
+                .offset_to_line(span.end.saturating_sub(1).max(span.start));
             format_lines(vim, ctx, span.start, last_line);
         }
         Operator::Lowercase | Operator::Uppercase | Operator::ToggleCase => {
             let text = ctx.buf.slice(span.start..span.end);
+            // multi-char case mappings exist (ß ↔ SS, İ → i̇), so each char
+            // maps to a String; edit_replace absorbs the changed byte length
+            // (marks and the visual span shift with it through the wrapper)
             let mapped: String = text
                 .chars()
                 .map(|c| match op {
-                    Operator::Lowercase => c.to_lowercase().next().unwrap_or(c),
-                    Operator::Uppercase => c.to_uppercase().next().unwrap_or(c),
+                    Operator::Lowercase => c.to_lowercase().collect::<String>(),
+                    Operator::Uppercase => c.to_uppercase().collect::<String>(),
                     _ => toggle_case(c),
                 })
                 .collect();
@@ -333,11 +364,13 @@ pub fn apply(
     vim.cursor.offset = clamp_to_line_end(ctx.buf, vim.cursor.offset);
 }
 
-pub fn toggle_case(c: char) -> char {
+/// The `~` per-char case swap. Multi-char case mappings exist (ß ↔ SS), so
+/// the result is a String, not a char.
+pub fn toggle_case(c: char) -> String {
     if c.is_lowercase() {
-        c.to_uppercase().next().unwrap_or(c)
+        c.to_uppercase().collect()
     } else {
-        c.to_lowercase().next().unwrap_or(c)
+        c.to_lowercase().collect()
     }
 }
 
@@ -381,7 +414,8 @@ pub fn shift_line(vim: &mut VimState, ctx: &mut Ctx, line: usize, right: bool) {
 
 /// `gq`/`gw`: reflow the span's lines to `textwidth` as one paragraph per
 /// blank-line-separated group. The span's first-line indent becomes the
-/// paragraph indent for all wrapped lines.
+/// paragraph indent for all wrapped lines. `start` is a byte OFFSET (the
+/// span start); `last_line` is the last affected LINE index.
 pub fn format_lines(vim: &mut VimState, ctx: &mut Ctx, start: usize, last_line: usize) {
     let width = vim.options.textwidth.max(1);
     let span_end = ctx.buf.line_end(last_line);
@@ -389,12 +423,17 @@ pub fn format_lines(vim: &mut VimState, ctx: &mut Ctx, start: usize, last_line: 
         vim.cursor.offset = clamp_to_line_end(ctx.buf, start);
         return;
     }
+    // `start` is a byte offset, but the loop below walks LINE indices: the
+    // first line must be derived. (Feeding the raw offset into the loop made
+    // `gqq` on any line past the first iterate an empty range and REPLACE the
+    // whole paragraph with nothing.)
+    let first_line = ctx.buf.offset_to_line(start);
 
     let mut out = String::new();
     let mut paragraph: Vec<String> = Vec::new();
     let mut indent = String::new();
 
-    for line in start..=last_line {
+    for line in first_line..=last_line {
         let ls = ctx.buf.line_start(line);
         let le = ctx.buf.line_end(line);
         let text = ctx.buf.slice(ls..le);
@@ -419,7 +458,11 @@ pub fn format_lines(vim: &mut VimState, ctx: &mut Ctx, start: usize, last_line: 
         out.pop();
     }
     vim.edit_replace(ctx, start..span_end, &out);
-    vim.cursor.offset = clamp_to_line_end(ctx.buf, start);
+    // vim: the cursor lands on the first non-blank of the LAST formatted
+    // line (the reflow may change the line count, so recompute from the
+    // replacement's end)
+    let last_out = ctx.buf.offset_to_line((start + out.len()).min(ctx.buf.len()));
+    vim.cursor.offset = ctx.buf.first_non_blank(last_out);
     vim.cursor.desired_col = None;
 }
 
@@ -461,8 +504,11 @@ pub fn put(vim: &mut VimState, ctx: &mut Ctx, register: char, count: usize, afte
         let line = ctx.buf.offset_to_line(vim.cursor.offset);
         let line_end = ctx.buf.line_end(line);
         let has_newline = ctx.buf.line_range(line).end > line_end;
-        let (insert_at, text) = if has_newline {
-            // paste between this line and the next
+        // `after` = `p` (below the current line) vs `P` (above). The old
+        // code ignored the flag in this branch entirely: P pasted BELOW the
+        // cursor line, invisible to tests that yanked the current line.
+        let (insert_at, text) = if after && has_newline {
+            // between this line and the next
             let at = ctx.buf.line_range(line).end;
             let text = if repeated.ends_with('\n') {
                 repeated
@@ -470,14 +516,25 @@ pub fn put(vim: &mut VimState, ctx: &mut Ctx, register: char, count: usize, afte
                 format!("{repeated}\n")
             };
             (at, text)
-        } else {
+        } else if after {
             // last line without trailing newline: open a new line for it
-            (ctx.buf.len(), format!("\n{}", repeated.trim_end_matches('\n')))
+            (
+                ctx.buf.len(),
+                format!("\n{}", repeated.trim_end_matches('\n')),
+            )
+        } else {
+            // above the current line: insert before its first byte
+            (
+                ctx.buf.line_start(line),
+                format!("{}\n", repeated.trim_end_matches('\n')),
+            )
         };
         vim.edit_insert(ctx, insert_at, &text);
-        let pasted_lines = text.trim_end_matches('\n').split('\n').count();
-        let cursor_line = (ctx.buf.offset_to_line(insert_at) + pasted_lines - 1)
-            .min(ctx.buf.line_count() - 1);
+        // vim leaves the cursor on the FIRST line of the put text, at its
+        // first non-blank (verified against vim 9.1 for `p`/`P` with 1..4
+        // pasted lines). After the insert, `insert_at` is the start of the
+        // first pasted line. The old code parked the cursor on the last one.
+        let cursor_line = ctx.buf.offset_to_line(insert_at).min(ctx.buf.line_count() - 1);
         vim.cursor.offset = ctx.buf.first_non_blank(cursor_line);
     } else {
         let mut at = vim.cursor.offset;
@@ -489,8 +546,7 @@ pub fn put(vim: &mut VimState, ctx: &mut Ctx, register: char, count: usize, afte
         // START of the last char — `end - 1` is byte arithmetic and would
         // park the cursor inside a multi-byte character
         let end = at + repeated.len();
-        vim.cursor.offset =
-            clamp_to_line_end(ctx.buf, ctx.buf.prev_char_offset(end).unwrap_or(at));
+        vim.cursor.offset = clamp_to_line_end(ctx.buf, ctx.buf.prev_char_offset(end).unwrap_or(at));
     }
     vim.cursor.desired_col = None;
 }
@@ -526,8 +582,10 @@ pub fn join_lines(vim: &mut VimState, ctx: &mut Ctx, count: usize, literal: bool
             } else {
                 " "
             };
-            ctx.buf
-                .replace_range(join_at..next_start + next_indent_len, separator);
+            // MUST go through edit_replace (not the raw buffer): the wrapper
+            // keeps marks, `last_visual` and the search-match generation in
+            // sync with the shifted text, same as the `gJ` arm above.
+            vim.edit_replace(ctx, join_at..next_start + next_indent_len, separator);
         }
         vim.cursor.offset = join_at;
     }
@@ -611,10 +669,7 @@ pub fn replace_chars(vim: &mut VimState, ctx: &mut Ctx, ch: char, count: usize) 
         o = next;
     }
     vim.edit_replace(ctx, start..o, &replacements);
-    vim.cursor.offset = clamp_to_line_end(
-        ctx.buf,
-        start + replacements.len() - ch.len_utf8(),
-    );
+    vim.cursor.offset = clamp_to_line_end(ctx.buf, start + replacements.len() - ch.len_utf8());
     vim.cursor.desired_col = None;
 }
 
@@ -630,7 +685,7 @@ pub fn toggle_chars(vim: &mut VimState, ctx: &mut Ctx, count: usize) {
             break;
         }
         let Some(c) = ctx.buf.char_at(o) else { break };
-        mapped.push(crate::ops::toggle_case(c));
+        mapped.push_str(&crate::ops::toggle_case(c));
         let next = advance_graphemes(ctx.buf, o, 1, line_end);
         if next == o {
             break;
@@ -640,9 +695,14 @@ pub fn toggle_chars(vim: &mut VimState, ctx: &mut Ctx, count: usize) {
     if mapped.is_empty() {
         return;
     }
-    vim.edit_replace(ctx, start..start + mapped.len(), &mapped);
+    // the replaced range must be the CONSUMED byte span (start..o), not
+    // `start + mapped.len()`: a multi-char case mapping (ß → SS) changes the
+    // byte length, and deriving the range from the replacement would cut the
+    // span short and leave trailing original bytes behind
+    vim.edit_replace(ctx, start..o, &mapped);
     // vim's `~` moves right past the last toggled char (staying on it only
-    // at line end); plain byte arithmetic was wrong for multi-byte chars
+    // at line end); byte arithmetic uses the consumed span so multi-byte
+    // chars don't park the cursor mid-character
     vim.cursor.offset = clamp_to_line_end(ctx.buf, start + mapped.len());
     vim.cursor.desired_col = None;
 }

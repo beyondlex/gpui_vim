@@ -22,48 +22,48 @@ pub enum Phase {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NormalCmd {
-    DeleteCharForward,   // x
-    DeleteCharBackward,  // X
-    SubstituteChar,      // s
-    SubstituteLine,      // S
-    ChangeToEnd,         // C
-    DeleteToEnd,         // D
-    YankLine,            // Y
-    ReplaceChar,         // r{char}
-    ToggleChar,          // ~
-    PutAfter,            // p
-    PutBefore,           // P
-    Join,                // J
-    JoinLiteral,         // gJ
-    Undo,                // u
-    Redo,                // <C-r>
-    MarkSet,             // m{char}
-    RecordMacro,         // q{reg}
-    PlayMacro,           // @{reg} / @@
+    DeleteCharForward,           // x
+    DeleteCharBackward,          // X
+    SubstituteChar,              // s
+    SubstituteLine,              // S
+    ChangeToEnd,                 // C
+    DeleteToEnd,                 // D
+    YankLine,                    // Y
+    ReplaceChar,                 // r{char}
+    ToggleChar,                  // ~
+    PutAfter,                    // p
+    PutBefore,                   // P
+    Join,                        // J
+    JoinLiteral,                 // gJ
+    Undo,                        // u
+    Redo,                        // <C-r>
+    MarkSet,                     // m{char}
+    RecordMacro,                 // q{reg}
+    PlayMacro,                   // @{reg} / @@
     JumpMark { linewise: bool }, // '{char} / `{char
-    LinewiseOp(Operator), // guu / gUU / g~~ / gugu ...
-    ScrollCenter,        // zz
-    ScrollTop,           // zt
-    ScrollBottom,        // zb
-    RestoreVisual,       // gv
-    RepeatChange,        // .
-    JumpBackward,        // C-o
-    JumpForward,         // C-i
-    OlderChange,         // g;
-    NewerChange,         // g,
-    IncrementNumber,     // C-a
-    DecrementNumber,     // C-x
-    WriteQuit,           // ZZ
-    QuitNoSave,          // ZQ
+    LinewiseOp(Operator),        // guu / gUU / g~~ / gugu ...
+    ScrollCenter,                // zz
+    ScrollTop,                   // zt
+    ScrollBottom,                // zb
+    RestoreVisual,               // gv
+    RepeatChange,                // .
+    JumpBackward,                // C-o
+    JumpForward,                 // C-i
+    OlderChange,                 // g;
+    NewerChange,                 // g,
+    IncrementNumber,             // C-a
+    DecrementNumber,             // C-x
+    WriteQuit,                   // ZZ
+    QuitNoSave,                  // ZQ
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum VisualCmd {
-    Exit,                     // same-kind v / V / Esc handled elsewhere
-    ToggleKind { to: char },  // v / V
-    SwapEnds,                 // o
-    PutReplace,               // p / P replace selection
-    Join { literal: bool },   // J / gJ
+    Exit,                    // same-kind v / V / Esc handled elsewhere
+    ToggleKind { to: char }, // v / V
+    SwapEnds,                // o
+    PutReplace,              // p / P replace selection
+    Join { literal: bool },  // J / gJ
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -198,10 +198,34 @@ fn build_rows() -> Vec<(Vec<Key>, Phase, CmdKind)> {
     b.motion_all(&["E"], Motion::WordEnd { big: true });
     b.motion_all(&["g", "e"], Motion::WordEndBack { big: false });
     b.motion_all(&["g", "E"], Motion::WordEndBack { big: true });
-    b.motion_all(&["f"], Motion::FindChar { forward: true, till: false });
-    b.motion_all(&["F"], Motion::FindChar { forward: false, till: false });
-    b.motion_all(&["t"], Motion::FindChar { forward: true, till: true });
-    b.motion_all(&["T"], Motion::FindChar { forward: false, till: true });
+    b.motion_all(
+        &["f"],
+        Motion::FindChar {
+            forward: true,
+            till: false,
+        },
+    );
+    b.motion_all(
+        &["F"],
+        Motion::FindChar {
+            forward: false,
+            till: false,
+        },
+    );
+    b.motion_all(
+        &["t"],
+        Motion::FindChar {
+            forward: true,
+            till: true,
+        },
+    );
+    b.motion_all(
+        &["T"],
+        Motion::FindChar {
+            forward: false,
+            till: true,
+        },
+    );
     b.motion_all(&[";"], Motion::RepeatFind { reverse: false });
     b.motion_all(&[","], Motion::RepeatFind { reverse: true });
     b.motion_all(&["%"], Motion::MatchBracket);
@@ -227,9 +251,18 @@ fn build_rows() -> Vec<(Vec<Key>, Phase, CmdKind)> {
     b.motion_all(&["+"], Motion::LineDownFirstNonBlank);
     b.motion_all(&["-"], Motion::LineUpFirstNonBlank);
     b.pending(&["'"], CmdKind::Motion(Motion::MarkJump { linewise: true }));
-    b.pending(&["`"], CmdKind::Motion(Motion::MarkJump { linewise: false }));
-    b.normal(&["'"], CmdKind::Normal(NormalCmd::JumpMark { linewise: true }));
-    b.normal(&["`"], CmdKind::Normal(NormalCmd::JumpMark { linewise: false }));
+    b.pending(
+        &["`"],
+        CmdKind::Motion(Motion::MarkJump { linewise: false }),
+    );
+    b.normal(
+        &["'"],
+        CmdKind::Normal(NormalCmd::JumpMark { linewise: true }),
+    );
+    b.normal(
+        &["`"],
+        CmdKind::Normal(NormalCmd::JumpMark { linewise: false }),
+    );
 
     // ---- operators -------------------------------------------------------
     b.normal(&["d"], CmdKind::Operator(Operator::Delete));
@@ -243,27 +276,87 @@ fn build_rows() -> Vec<(Vec<Key>, Phase, CmdKind)> {
     b.normal(&["g", "q"], CmdKind::Operator(Operator::Format));
     b.normal(&["g", "w"], CmdKind::Operator(Operator::Format));
     // multi-key operator doubling (single-key doubling is generic)
-    b.normal(&["g", "u", "u"], CmdKind::Normal(NormalCmd::LinewiseOp(Operator::Lowercase)));
-    b.normal(&["g", "u", "g", "u"], CmdKind::Normal(NormalCmd::LinewiseOp(Operator::Lowercase)));
-    b.normal(&["g", "U", "U"], CmdKind::Normal(NormalCmd::LinewiseOp(Operator::Uppercase)));
-    b.normal(&["g", "U", "g", "U"], CmdKind::Normal(NormalCmd::LinewiseOp(Operator::Uppercase)));
-    b.normal(&["g", "~", "~"], CmdKind::Normal(NormalCmd::LinewiseOp(Operator::ToggleCase)));
-    b.normal(&["g", "q", "q"], CmdKind::Normal(NormalCmd::LinewiseOp(Operator::Format)));
-    b.normal(&["g", "q", "g", "q"], CmdKind::Normal(NormalCmd::LinewiseOp(Operator::Format)));
-    b.normal(&["g", "~", "g", "~"], CmdKind::Normal(NormalCmd::LinewiseOp(Operator::ToggleCase)));
+    b.normal(
+        &["g", "u", "u"],
+        CmdKind::Normal(NormalCmd::LinewiseOp(Operator::Lowercase)),
+    );
+    b.normal(
+        &["g", "u", "g", "u"],
+        CmdKind::Normal(NormalCmd::LinewiseOp(Operator::Lowercase)),
+    );
+    b.normal(
+        &["g", "U", "U"],
+        CmdKind::Normal(NormalCmd::LinewiseOp(Operator::Uppercase)),
+    );
+    b.normal(
+        &["g", "U", "g", "U"],
+        CmdKind::Normal(NormalCmd::LinewiseOp(Operator::Uppercase)),
+    );
+    b.normal(
+        &["g", "~", "~"],
+        CmdKind::Normal(NormalCmd::LinewiseOp(Operator::ToggleCase)),
+    );
+    b.normal(
+        &["g", "q", "q"],
+        CmdKind::Normal(NormalCmd::LinewiseOp(Operator::Format)),
+    );
+    b.normal(
+        &["g", "q", "g", "q"],
+        CmdKind::Normal(NormalCmd::LinewiseOp(Operator::Format)),
+    );
+    b.normal(
+        &["g", "~", "g", "~"],
+        CmdKind::Normal(NormalCmd::LinewiseOp(Operator::ToggleCase)),
+    );
 
     // ---- text objects (pending + visual) ---------------------------------
-    b.object(&["i", "w"], TextObject::Word { inner: true, big: false });
-    b.object(&["a", "w"], TextObject::Word { inner: false, big: false });
-    b.object(&["i", "W"], TextObject::Word { inner: true, big: true });
-    b.object(&["a", "W"], TextObject::Word { inner: false, big: true });
+    b.object(
+        &["i", "w"],
+        TextObject::Word {
+            inner: true,
+            big: false,
+        },
+    );
+    b.object(
+        &["a", "w"],
+        TextObject::Word {
+            inner: false,
+            big: false,
+        },
+    );
+    b.object(
+        &["i", "W"],
+        TextObject::Word {
+            inner: true,
+            big: true,
+        },
+    );
+    b.object(
+        &["a", "W"],
+        TextObject::Word {
+            inner: false,
+            big: true,
+        },
+    );
     b.object(&["i", "s"], TextObject::Sentence { inner: true });
     b.object(&["a", "s"], TextObject::Sentence { inner: false });
     b.object(&["i", "p"], TextObject::Paragraph { inner: true });
     b.object(&["a", "p"], TextObject::Paragraph { inner: false });
     for (q, key) in [('"', "\""), ('\'', "'"), ('`', "`")] {
-        b.object(&["i", key], TextObject::Quote { inner: true, quote: q });
-        b.object(&["a", key], TextObject::Quote { inner: false, quote: q });
+        b.object(
+            &["i", key],
+            TextObject::Quote {
+                inner: true,
+                quote: q,
+            },
+        );
+        b.object(
+            &["a", key],
+            TextObject::Quote {
+                inner: false,
+                quote: q,
+            },
+        );
     }
     for (open, close) in [('(', ')'), ('[', ']'), ('{', '}'), ('<', '>')] {
         let open_key: &'static str = match open {
@@ -280,15 +373,71 @@ fn build_rows() -> Vec<(Vec<Key>, Phase, CmdKind)> {
             '>' => ">",
             _ => unreachable!(),
         };
-        b.object(&["i", open_key], TextObject::Block { inner: true, open, close });
-        b.object(&["i", close_key], TextObject::Block { inner: true, open, close });
-        b.object(&["a", open_key], TextObject::Block { inner: false, open, close });
-        b.object(&["a", close_key], TextObject::Block { inner: false, open, close });
+        b.object(
+            &["i", open_key],
+            TextObject::Block {
+                inner: true,
+                open,
+                close,
+            },
+        );
+        b.object(
+            &["i", close_key],
+            TextObject::Block {
+                inner: true,
+                open,
+                close,
+            },
+        );
+        b.object(
+            &["a", open_key],
+            TextObject::Block {
+                inner: false,
+                open,
+                close,
+            },
+        );
+        b.object(
+            &["a", close_key],
+            TextObject::Block {
+                inner: false,
+                open,
+                close,
+            },
+        );
     }
-    b.object(&["i", "b"], TextObject::Block { inner: true, open: '(', close: ')' });
-    b.object(&["a", "b"], TextObject::Block { inner: false, open: '(', close: ')' });
-    b.object(&["i", "B"], TextObject::Block { inner: true, open: '{', close: '}' });
-    b.object(&["a", "B"], TextObject::Block { inner: false, open: '{', close: '}' });
+    b.object(
+        &["i", "b"],
+        TextObject::Block {
+            inner: true,
+            open: '(',
+            close: ')',
+        },
+    );
+    b.object(
+        &["a", "b"],
+        TextObject::Block {
+            inner: false,
+            open: '(',
+            close: ')',
+        },
+    );
+    b.object(
+        &["i", "B"],
+        TextObject::Block {
+            inner: true,
+            open: '{',
+            close: '}',
+        },
+    );
+    b.object(
+        &["a", "B"],
+        TextObject::Block {
+            inner: false,
+            open: '{',
+            close: '}',
+        },
+    );
     b.object(&["i", "t"], TextObject::Tag { inner: true });
     b.object(&["a", "t"], TextObject::Tag { inner: false });
 
@@ -329,23 +478,44 @@ fn build_rows() -> Vec<(Vec<Key>, Phase, CmdKind)> {
     // ---- entering insert ---------------------------------------------------
     b.normal(&["i"], CmdKind::EnterInsert(InsertKind::Insert));
     b.normal(&["a"], CmdKind::EnterInsert(InsertKind::Append));
-    b.normal(&["I"], CmdKind::EnterInsert(InsertKind::InsertFirstNonBlank));
+    b.normal(
+        &["I"],
+        CmdKind::EnterInsert(InsertKind::InsertFirstNonBlank),
+    );
     b.normal(&["A"], CmdKind::EnterInsert(InsertKind::AppendLineEnd));
-    b.normal(&["o"], CmdKind::EnterInsert(InsertKind::OpenLine { below: true }));
-    b.normal(&["O"], CmdKind::EnterInsert(InsertKind::OpenLine { below: false }));
-    b.normal(&["g", "I"], CmdKind::EnterInsert(InsertKind::InsertAtColumnZero));
-    b.normal(&["g", "i"], CmdKind::EnterInsert(InsertKind::LastInsertExit));
+    b.normal(
+        &["o"],
+        CmdKind::EnterInsert(InsertKind::OpenLine { below: true }),
+    );
+    b.normal(
+        &["O"],
+        CmdKind::EnterInsert(InsertKind::OpenLine { below: false }),
+    );
+    b.normal(
+        &["g", "I"],
+        CmdKind::EnterInsert(InsertKind::InsertAtColumnZero),
+    );
+    b.normal(
+        &["g", "i"],
+        CmdKind::EnterInsert(InsertKind::LastInsertExit),
+    );
     b.normal(&["R"], CmdKind::EnterInsert(InsertKind::Replace));
 
     // ---- entering visual ---------------------------------------------------
     b.normal(&["v"], CmdKind::EnterVisual(crate::mode::VisualKind::Char));
     b.normal(&["V"], CmdKind::EnterVisual(crate::mode::VisualKind::Line));
-    b.normal(&["<C-v>"], CmdKind::EnterVisual(crate::mode::VisualKind::Block));
+    b.normal(
+        &["<C-v>"],
+        CmdKind::EnterVisual(crate::mode::VisualKind::Block),
+    );
 
     // ---- visual mode -------------------------------------------------------
     b.visual(&["v"], CmdKind::Visual(VisualCmd::ToggleKind { to: 'v' }));
     b.visual(&["V"], CmdKind::Visual(VisualCmd::ToggleKind { to: 'V' }));
-    b.visual(&["<C-v>"], CmdKind::Visual(VisualCmd::ToggleKind { to: 'b' }));
+    b.visual(
+        &["<C-v>"],
+        CmdKind::Visual(VisualCmd::ToggleKind { to: 'b' }),
+    );
     b.visual(&["o"], CmdKind::Visual(VisualCmd::SwapEnds));
     b.visual(&["d"], CmdKind::Operator(Operator::Delete));
     b.visual(&["x"], CmdKind::Operator(Operator::Delete));
@@ -369,7 +539,10 @@ fn build_rows() -> Vec<(Vec<Key>, Phase, CmdKind)> {
     b.visual(&["p"], CmdKind::Visual(VisualCmd::PutReplace));
     b.visual(&["P"], CmdKind::Visual(VisualCmd::PutReplace));
     b.visual(&["J"], CmdKind::Visual(VisualCmd::Join { literal: false }));
-    b.visual(&["g", "J"], CmdKind::Visual(VisualCmd::Join { literal: true }));
+    b.visual(
+        &["g", "J"],
+        CmdKind::Visual(VisualCmd::Join { literal: true }),
+    );
 
     b.rows
 }
@@ -383,10 +556,7 @@ impl CommandTables {
     pub fn build() -> Self {
         let mut tries: HashMap<Phase, Trie<CmdKind>> = HashMap::new();
         for (keys, phase, kind) in build_rows() {
-            tries
-                .entry(phase)
-                .or_default()
-                .insert(&keys, kind);
+            tries.entry(phase).or_default().insert(&keys, kind);
         }
         // make sure every phase has a (possibly empty) trie
         for phase in [Phase::Normal, Phase::Pending, Phase::Visual] {

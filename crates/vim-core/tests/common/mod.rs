@@ -43,7 +43,10 @@ impl VimBuffer for BufferView {
         if offset == 0 || offset > text.len() || !text.is_char_boundary(offset) {
             return None;
         }
-        text[..offset].chars().next_back().map(|c| offset - c.len_utf8())
+        text[..offset]
+            .chars()
+            .next_back()
+            .map(|c| offset - c.len_utf8())
     }
     fn line_range(&self, line: usize) -> Range<usize> {
         let text = self.0.borrow();

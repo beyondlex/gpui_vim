@@ -83,7 +83,11 @@ struct PendingGroup<S> {
 
 impl<S> Default for FlatDoc<S> {
     fn default() -> Self {
-        Self { text: String::new(), groups: Vec::new(), pending: None }
+        Self {
+            text: String::new(),
+            groups: Vec::new(),
+            pending: None,
+        }
     }
 }
 
@@ -117,7 +121,10 @@ impl<S> FlatDoc<S> {
     /// while one is open implicitly closes it first.
     pub fn open_group(&mut self) {
         self.close_group();
-        self.pending = Some(PendingGroup { start: self.text.len(), pieces: Vec::new() });
+        self.pending = Some(PendingGroup {
+            start: self.text.len(),
+            pieces: Vec::new(),
+        });
     }
 
     /// Append one piece at the current text position. Outside an open group
@@ -129,7 +136,11 @@ impl<S> FlatDoc<S> {
         let pending = self.pending.as_mut().expect("just opened");
         let start = self.text.len();
         self.text.push_str(&text);
-        pending.pieces.push(Piece { text, style, flat: start..self.text.len() });
+        pending.pieces.push(Piece {
+            text,
+            style,
+            flat: start..self.text.len(),
+        });
     }
 
     /// Finalize the open group; a no-op when nothing was appended (empty
@@ -138,7 +149,10 @@ impl<S> FlatDoc<S> {
         if let Some(pending) = self.pending.take() {
             let end = self.text.len();
             if end > pending.start {
-                self.groups.push(Group { pieces: pending.pieces, flat: pending.start..end });
+                self.groups.push(Group {
+                    pieces: pending.pieces,
+                    flat: pending.start..end,
+                });
             }
         }
     }
@@ -271,7 +285,10 @@ impl VimBuffer for PagerBuf {
         if offset == 0 || offset > self.text.len() {
             return None;
         }
-        self.text[..offset].chars().next_back().map(|c| offset - c.len_utf8())
+        self.text[..offset]
+            .chars()
+            .next_back()
+            .map(|c| offset - c.len_utf8())
     }
     fn line_range(&self, line: usize) -> Range<usize> {
         match self.lines.get(line) {
@@ -408,15 +425,25 @@ impl Pager {
 
     /// Enter visual (charwise) or visual-line mode at the cursor.
     pub fn enter_visual(&mut self, line_mode: bool) {
-        let key = if line_mode { Key::char('V') } else { Key::char('v') };
-        let mut ctx = Ctx { buf: &mut self.buf, host: &mut self.host };
+        let key = if line_mode {
+            Key::char('V')
+        } else {
+            Key::char('v')
+        };
+        let mut ctx = Ctx {
+            buf: &mut self.buf,
+            host: &mut self.host,
+        };
         self.vim.handle_key(&mut ctx, key);
         self.active = matches!(self.vim.mode, Mode::Visual { .. });
     }
 
     /// All keys while the pager is active.
     pub fn feed(&mut self, key: Key) -> KeyResult {
-        let mut ctx = Ctx { buf: &mut self.buf, host: &mut self.host };
+        let mut ctx = Ctx {
+            buf: &mut self.buf,
+            host: &mut self.host,
+        };
         let r = self.vim.handle_key(&mut ctx, key);
         if !matches!(self.vim.mode, Mode::Visual { .. }) {
             self.active = false;
@@ -451,8 +478,12 @@ impl Pager {
         // byte, and ceil-to-boundary alone would exclude it exactly at the
         // boundary).
         let cur = floor_boundary(&self.buf.text, a.max(c));
-        let hi =
-            cur + self.buf.text[cur..].chars().next().map(|ch| ch.len_utf8()).unwrap_or(0);
+        let hi = cur
+            + self.buf.text[cur..]
+                .chars()
+                .next()
+                .map(|ch| ch.len_utf8())
+                .unwrap_or(0);
         let _ = kind;
         if kind == VisualKind::Line {
             let lo = self.buf.line_start(lo);
@@ -489,7 +520,9 @@ impl Pager {
             return None;
         }
         match self.vim.mode {
-            Mode::Visual { kind: VisualKind::Line } => Some("V-LINE"),
+            Mode::Visual {
+                kind: VisualKind::Line,
+            } => Some("V-LINE"),
             Mode::Visual { .. } => Some("VISUAL"),
             _ => None,
         }
@@ -498,7 +531,10 @@ impl Pager {
 
 /// Selection character count for status bars.
 pub fn selected_char_count(pager: &Pager) -> usize {
-    pager.selected_text().map(|t| t.chars().count()).unwrap_or(0)
+    pager
+        .selected_text()
+        .map(|t| t.chars().count())
+        .unwrap_or(0)
 }
 
 #[cfg(test)]
@@ -528,7 +564,11 @@ mod tests {
         assert_eq!(d.groups.len(), 2);
         for g in &d.groups {
             let joined: String = g.pieces.iter().map(|p| p.text.as_str()).collect();
-            assert_eq!(&d.text[g.flat.clone()], &joined, "group text must align with canonical text");
+            assert_eq!(
+                &d.text[g.flat.clone()],
+                &joined,
+                "group text must align with canonical text"
+            );
         }
         assert_eq!(d.groups[1].pieces[0].flat, 8..10);
         assert_eq!(d.groups[1].pieces[1].flat, 10..13);
@@ -546,7 +586,11 @@ mod tests {
         d.close_group();
         assert_eq!(d.text, "l1\nl2");
         assert_eq!(d.groups.len(), 1);
-        assert_eq!(d.groups[0].flat, 0..5, "group covers intra-group separators");
+        assert_eq!(
+            d.groups[0].flat,
+            0..5,
+            "group covers intra-group separators"
+        );
         assert_eq!(d.groups[0].pieces[1].flat, 3..5);
 
         // Empty open/close and empty push_group produce no group.
@@ -565,7 +609,11 @@ mod tests {
         assert_eq!(buf.len(), 0);
         assert_eq!(buf.line_count(), 1, "an empty buffer still has one line");
         assert_eq!(buf.line_range(0), 0..0);
-        assert_eq!(buf.line_range(9), 0..0, "out-of-range line clamps to empty tail");
+        assert_eq!(
+            buf.line_range(9),
+            0..0,
+            "out-of-range line clamps to empty tail"
+        );
         assert_eq!(buf.char_at(0), None);
         assert_eq!(buf.prev_char_offset(0), None);
         assert_eq!(buf.offset_to_line(0), 0);
@@ -573,14 +621,21 @@ mod tests {
 
         let d = FlatDoc::<Tag>::default();
         assert!(d.groups.is_empty());
-        let g = Group::<Tag> { pieces: vec![], flat: 0..0 };
+        let g = Group::<Tag> {
+            pieces: vec![],
+            flat: 0..0,
+        };
         assert_eq!(selection_spans(&g, 0..0, false), None);
     }
 
     #[test]
     fn line_accounting_including_last_line_without_newline() {
         let buf = PagerBuf::new("ab\ncd\n".into());
-        assert_eq!(buf.line_count(), 3, "trailing newline opens an empty last line");
+        assert_eq!(
+            buf.line_count(),
+            3,
+            "trailing newline opens an empty last line"
+        );
         // 非末行 range 含终止 \n（引擎 buffer 合同；行内容端点见行表）。
         assert_eq!(buf.line_range(0), 0..3);
         assert_eq!(buf.line_range(1), 3..6);
@@ -611,7 +666,11 @@ mod tests {
         let buf = PagerBuf::new("中文x".into()); // boundaries 0, 3, 6, 7
         assert_eq!(buf.char_at(1), None, "no char starts mid-character");
         assert_eq!(buf.char_at(3), Some('文'));
-        assert_eq!(buf.slice(1..2), "中", "slice floors/ceils to char boundaries");
+        assert_eq!(
+            buf.slice(1..2),
+            "中",
+            "slice floors/ceils to char boundaries"
+        );
         assert_eq!(buf.slice(1..5), "中文");
         assert_eq!(buf.slice(0..7), "中文x");
 

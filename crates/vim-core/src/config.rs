@@ -3,7 +3,7 @@
 //! comments and `source`. Anything else (Lua, functions, autocmds, plugin
 //! managers) is collected into `Config::ignored` and skipped, like IdeaVim.
 
-use crate::key::{parse_key_sequence, Key};
+use crate::key::{parse_key_sequence, Key, KeyKind};
 use crate::keymap::ModeClass;
 use std::path::PathBuf;
 
@@ -64,7 +64,9 @@ pub fn parse(text: &str) -> Config {
         }
 
         if let Some(rest) = line.strip_prefix("let mapleader") {
-            // let mapleader = " " / "," / "<Space>"
+            // let mapleader = " " / "," / "<Space>" — a bare space parses to
+            // Char(' ') via parse_key_sequence, and `<Space>` normalizes to
+            // Char(' ') in Key::parse_angle, so both spellings converge.
             if let Some(value) = rest.split('=').nth(1) {
                 let value = value.trim().trim_matches('"');
                 if let Some(key) = parse_key_sequence(value).first() {
@@ -74,7 +76,10 @@ pub fn parse(text: &str) -> Config {
             continue;
         }
 
-        if let Some(rest) = line.strip_prefix("set").filter(|r| r.is_empty() || r.starts_with(' ')) {
+        if let Some(rest) = line
+            .strip_prefix("set")
+            .filter(|r| r.is_empty() || r.starts_with(' '))
+        {
             for arg in rest.split_whitespace() {
                 // Branch order matters twice over: `=` must win over `no`
                 // (`set no=3`? unlikely, but `name=value` is never a negation),
@@ -105,26 +110,27 @@ pub fn parse(text: &str) -> Config {
         }
 
         // the :map family — the optional leading `:` was already stripped
-        let (noremap, classes, after_cmd) = if let Some(rest) = strip_map_cmd(line, "noremap").map(str::trim_start) {
-            (true, vec![ModeClass::Normal, ModeClass::Visual], rest)
-        } else if let Some(rest) = strip_map_cmd(line, "nnoremap").map(str::trim_start) {
-            (true, vec![ModeClass::Normal], rest)
-        } else if let Some(rest) = strip_map_cmd(line, "vnoremap").map(str::trim_start) {
-            (true, vec![ModeClass::Visual], rest)
-        } else if let Some(rest) = strip_map_cmd(line, "inoremap").map(str::trim_start) {
-            (true, vec![ModeClass::Insert], rest)
-        } else if let Some(rest) = strip_map_cmd(line, "nmap").map(str::trim_start) {
-            (false, vec![ModeClass::Normal], rest)
-        } else if let Some(rest) = strip_map_cmd(line, "vmap").map(str::trim_start) {
-            (false, vec![ModeClass::Visual], rest)
-        } else if let Some(rest) = strip_map_cmd(line, "imap").map(str::trim_start) {
-            (false, vec![ModeClass::Insert], rest)
-        } else if let Some(rest) = strip_map_cmd(line, "map").map(str::trim_start) {
-            (false, vec![ModeClass::Normal, ModeClass::Visual], rest)
-        } else {
-            config.ignored.push(raw_line.to_owned());
-            continue;
-        };
+        let (noremap, classes, after_cmd) =
+            if let Some(rest) = strip_map_cmd(line, "noremap").map(str::trim_start) {
+                (true, vec![ModeClass::Normal, ModeClass::Visual], rest)
+            } else if let Some(rest) = strip_map_cmd(line, "nnoremap").map(str::trim_start) {
+                (true, vec![ModeClass::Normal], rest)
+            } else if let Some(rest) = strip_map_cmd(line, "vnoremap").map(str::trim_start) {
+                (true, vec![ModeClass::Visual], rest)
+            } else if let Some(rest) = strip_map_cmd(line, "inoremap").map(str::trim_start) {
+                (true, vec![ModeClass::Insert], rest)
+            } else if let Some(rest) = strip_map_cmd(line, "nmap").map(str::trim_start) {
+                (false, vec![ModeClass::Normal], rest)
+            } else if let Some(rest) = strip_map_cmd(line, "vmap").map(str::trim_start) {
+                (false, vec![ModeClass::Visual], rest)
+            } else if let Some(rest) = strip_map_cmd(line, "imap").map(str::trim_start) {
+                (false, vec![ModeClass::Insert], rest)
+            } else if let Some(rest) = strip_map_cmd(line, "map").map(str::trim_start) {
+                (false, vec![ModeClass::Normal, ModeClass::Visual], rest)
+            } else {
+                config.ignored.push(raw_line.to_owned());
+                continue;
+            };
 
         let (lhs_str, rhs_str) = match after_cmd.split_once(' ') {
             Some((lhs, rhs)) if !lhs.is_empty() && !rhs.trim().is_empty() => {
@@ -135,14 +141,12 @@ pub fn parse(text: &str) -> Config {
                 continue;
             }
         };
-        let lhs: Vec<Key> = parse_key_sequence(&resolve_leader(lhs_str, &leader))
-            .into_iter()
-            .collect();
+        let lhs = parse_with_leader(lhs_str, &leader);
         if lhs.is_empty() {
             config.ignored.push(raw_line.to_owned());
             continue;
         }
-        let rhs = parse_key_sequence(&resolve_leader(rhs_str, &leader));
+        let rhs = parse_with_leader(rhs_str, &leader);
         for class in classes {
             config.mappings.push(ConfigMapping {
                 class,
@@ -165,16 +169,23 @@ fn strip_map_cmd<'a>(line: &'a str, cmd: &str) -> Option<&'a str> {
     }
 }
 
-fn resolve_leader(text: &str, leader: &Key) -> String {
-    // exact-case `<Leader>` only: the notation is ASCII, so a blind string
-    // replace is byte-safe
-    if text.contains("<Leader>") {
-        text.replace("<Leader>", &leader.notation())
-    } else {
-        text.to_owned()
-    }
+/// Parse a mapping side, resolving the `<Leader>`/`<leader>` token against
+/// the file's `mapleader`. The substitution happens on the PARSED sequence
+/// (`<Leader>` parses to a `Named("leader")` marker key), never by string
+/// replacement: re-parsing `leader.notation()` shatters multi-char keys —
+/// a `<Space>` leader would come back as S,p,a,c,e.
+fn parse_with_leader(seq: &str, leader: &Key) -> Vec<Key> {
+    parse_key_sequence(seq)
+        .into_iter()
+        .map(|k| {
+            if matches!(&k.kind, KeyKind::Named(n) if n == "leader") {
+                leader.clone()
+            } else {
+                k
+            }
+        })
+        .collect()
 }
-
 
 #[cfg(test)]
 mod tests {

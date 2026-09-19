@@ -8,12 +8,28 @@ use crate::word;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TextObject {
-    Word { inner: bool, big: bool },
-    Sentence { inner: bool },
-    Paragraph { inner: bool },
-    Quote { inner: bool, quote: char },
-    Block { inner: bool, open: char, close: char },
-    Tag { inner: bool },
+    Word {
+        inner: bool,
+        big: bool,
+    },
+    Sentence {
+        inner: bool,
+    },
+    Paragraph {
+        inner: bool,
+    },
+    Quote {
+        inner: bool,
+        quote: char,
+    },
+    Block {
+        inner: bool,
+        open: char,
+        close: char,
+    },
+    Tag {
+        inner: bool,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -78,7 +94,9 @@ fn word_range(buf: &dyn VimBuffer, offset: usize, inner: bool, big: bool) -> Opt
     // expand to the run of the same class within this line
     let mut start = offset;
     while start > line_start {
-        let Some(prev) = buf.prev_char_offset(start) else { break };
+        let Some(prev) = buf.prev_char_offset(start) else {
+            break;
+        };
         if class_of(prev) != Some(class) {
             break;
         }
@@ -106,7 +124,9 @@ fn word_range(buf: &dyn VimBuffer, offset: usize, inner: bool, big: bool) -> Opt
                 end = extend;
             } else {
                 while start > line_start {
-                    let Some(prev) = buf.prev_char_offset(start) else { break };
+                    let Some(prev) = buf.prev_char_offset(start) else {
+                        break;
+                    };
                     match buf.char_at(prev) {
                         Some(c) if c.is_whitespace() => start = prev,
                         _ => break,
@@ -180,8 +200,8 @@ fn quote_positions(buf: &dyn VimBuffer, offset: usize, quote: char) -> Vec<usize
     while o < end {
         if buf.char_at(o) == Some(quote) {
             // an escaped quote \" is text, not a delimiter
-            let escaped = o > buf.line_start(line)
-                && buf.char_at(o.saturating_sub(1)) == Some('\\');
+            let escaped =
+                o > buf.line_start(line) && buf.char_at(o.saturating_sub(1)) == Some('\\');
             if !escaped {
                 positions.push(o);
             }
@@ -310,7 +330,10 @@ fn tag_range(buf: &dyn VimBuffer, offset: usize, inner: bool) -> Option<ObjectRa
                 let inner_text = &text[i + 1..i + close_rel];
                 let (name, is_open) = if let Some(rest) = inner_text.strip_prefix('/') {
                     (
-                        rest.trim_end_matches('/').split_whitespace().next().unwrap_or(""),
+                        rest.trim_end_matches('/')
+                            .split_whitespace()
+                            .next()
+                            .unwrap_or(""),
                         false,
                     )
                 } else {

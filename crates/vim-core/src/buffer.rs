@@ -178,8 +178,12 @@ pub fn next_grapheme_offset(buf: &dyn VimBuffer, offset: usize) -> Option<usize>
         if c == '\u{200D}' {
             // skip the ZWJ *and* the character it joins, then keep scanning:
             // a family emoji is base-ZWJ-base-ZWJ-base
-            let Some(after) = buf.next_char_offset(o) else { break };
-            let Some(joined_end) = buf.next_char_offset(after) else { break };
+            let Some(after) = buf.next_char_offset(o) else {
+                break;
+            };
+            let Some(joined_end) = buf.next_char_offset(after) else {
+                break;
+            };
             o = joined_end;
         } else if char_display_width(c) == 0 {
             o += c.len_utf8();

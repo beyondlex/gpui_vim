@@ -242,7 +242,9 @@ pub fn find_char_backward(
     let mut o = offset;
     let start = buf.line_start(line);
     while o > start {
-        let Some(prev) = buf.prev_char_offset(o) else { break };
+        let Some(prev) = buf.prev_char_offset(o) else {
+            break;
+        };
         o = prev;
         if buf.char_at(o) == Some(target) {
             return Some(if till {
@@ -286,7 +288,9 @@ pub fn match_bracket(buf: &dyn VimBuffer, offset: usize) -> Option<usize> {
             start = Some(o);
             break;
         }
-        let Some(next) = buf.next_char_offset(o) else { break };
+        let Some(next) = buf.next_char_offset(o) else {
+            break;
+        };
         o = next;
     }
     let start = start?;
@@ -304,7 +308,9 @@ pub fn match_bracket(buf: &dyn VimBuffer, offset: usize) -> Option<usize> {
                     return Some(o);
                 }
             }
-            let Some(next) = buf.next_char_offset(o) else { break };
+            let Some(next) = buf.next_char_offset(o) else {
+                break;
+            };
             o = next;
         }
     } else {

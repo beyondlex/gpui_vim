@@ -48,7 +48,9 @@ pub fn buffer_read_contract(buf: &(impl VimBuffer + ?Sized)) -> Result<(), Strin
     for line in 0..lines {
         let range = buf.line_range(line);
         if range.start > range.end || range.end > len {
-            return Err(format!("line {line}: line_range {range:?} 越界（len={len}）"));
+            return Err(format!(
+                "line {line}: line_range {range:?} 越界（len={len}）"
+            ));
         }
         let text = buf.slice(range.clone());
         if text.len() != range.len() {
@@ -80,7 +82,10 @@ pub fn buffer_read_contract(buf: &(impl VimBuffer + ?Sized)) -> Result<(), Strin
     }
     let full = buf.slice(0..len);
     if full.len() != len {
-        return Err(format!("slice(0..len).len() = {} ≠ len = {len}", full.len()));
+        return Err(format!(
+            "slice(0..len).len() = {} ≠ len = {len}",
+            full.len()
+        ));
     }
     let mut o = 0;
     while o < len {
@@ -174,7 +179,10 @@ pub fn engine_smoke_contract(
     feed(&mut vim, buf, host, "$");
     let want = buf.line_end(0).saturating_sub(1);
     if vim.cursor_offset() != want {
-        return Err(format!("$ 后 cursor_offset() = {} ≠ 行尾字符 {want}", vim.cursor_offset()));
+        return Err(format!(
+            "$ 后 cursor_offset() = {} ≠ 行尾字符 {want}",
+            vim.cursor_offset()
+        ));
     }
     feed(&mut vim, buf, host, "Vjd");
     assert_content(buf, "gamma\n")?;
@@ -270,7 +278,10 @@ mod tests {
             if offset == 0 || offset > self.0.len() {
                 return None;
             }
-            self.0[..offset].chars().next_back().map(|c| offset - c.len_utf8())
+            self.0[..offset]
+                .chars()
+                .next_back()
+                .map(|c| offset - c.len_utf8())
         }
         fn line_range(&self, line: usize) -> Range<usize> {
             if line >= self.line_count() {

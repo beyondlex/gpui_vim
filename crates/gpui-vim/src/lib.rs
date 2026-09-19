@@ -58,8 +58,12 @@ pub trait VimEditor: 'static {
     fn vim_accepts_keys(&self, window: &Window, cx: &App) -> bool;
 
     /// Post-key hook: repaint, flush pending clipboard writes, etc.
-    fn vim_did_process_key(&mut self, result: KeyResult, window: &mut Window, cx: &mut Context<Self>)
-    where
+    fn vim_did_process_key(
+        &mut self,
+        result: KeyResult,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) where
         Self: Sized,
     {
         let _ = (result, window, cx);
@@ -233,7 +237,10 @@ mod tests {
             if offset == 0 || offset > self.0.borrow().len() {
                 return None;
             }
-            self.0.borrow()[..offset].chars().next_back().map(|c| offset - c.len_utf8())
+            self.0.borrow()[..offset]
+                .chars()
+                .next_back()
+                .map(|c| offset - c.len_utf8())
         }
         fn line_range(&self, line: usize) -> Range<usize> {
             let text = self.0.borrow();
@@ -247,7 +254,10 @@ mod tests {
             text.len()..text.len()
         }
         fn offset_to_line(&self, offset: usize) -> usize {
-            self.0.borrow()[..offset.min(self.0.borrow().len())].split('\n').count() - 1
+            self.0.borrow()[..offset.min(self.0.borrow().len())]
+                .split('\n')
+                .count()
+                - 1
         }
         fn slice(&self, range: Range<usize>) -> String {
             self.0.borrow()[range].to_owned()
@@ -285,7 +295,10 @@ mod tests {
     }
 
     pub(crate) fn dispatch(vim: &mut VimState, buf: &mut TestBuf, key: Key) -> KeyResult {
-        let mut ctx = Ctx { buf, host: &mut NoopHost };
+        let mut ctx = Ctx {
+            buf,
+            host: &mut NoopHost,
+        };
         vim.handle_key(&mut ctx, key)
     }
 
@@ -334,9 +347,15 @@ mod tests {
         let mut vim = VimState::new();
 
         for c in "/foo".chars() {
-            assert_eq!(dispatch(&mut vim, &mut buf.clone(), Key::char(c)), KeyResult::Consumed);
+            assert_eq!(
+                dispatch(&mut vim, &mut buf.clone(), Key::char(c)),
+                KeyResult::Consumed
+            );
         }
-        assert!(matches!(vim.mode(), vim_core::Mode::CommandLine { prompt: '/' }));
+        assert!(matches!(
+            vim.mode(),
+            vim_core::Mode::CommandLine { prompt: '/' }
+        ));
         assert_eq!(vim.cmdline.buffer, "foo");
 
         let enter = Keystroke {
@@ -344,7 +363,10 @@ mod tests {
             key_char: Some("\n".into()),
             modifiers: Default::default(),
         };
-        assert_eq!(dispatch(&mut vim, &mut buf.clone(), to_core_key(&enter)), KeyResult::Consumed);
+        assert_eq!(
+            dispatch(&mut vim, &mut buf.clone(), to_core_key(&enter)),
+            KeyResult::Consumed
+        );
         assert_eq!(vim.mode(), vim_core::Mode::Normal);
         assert_eq!(vim.cursor_offset(), 8); // jumped to the second "foo"
         assert_eq!(vim.cmdline.buffer, "");
@@ -356,7 +378,10 @@ mod tests {
         let mk = |key: &str, ch: char| Keystroke {
             key: key.into(),
             key_char: Some(ch.to_string()),
-            modifiers: gpui::Modifiers { shift: true, ..Default::default() },
+            modifiers: gpui::Modifiers {
+                shift: true,
+                ..Default::default()
+            },
         };
 
         // `I`: first non-blank + insert mode
@@ -379,7 +404,9 @@ mod tests {
         dispatch(&mut vim, &mut buf.clone(), to_core_key(&mk("v", 'V')));
         assert_eq!(
             vim.mode(),
-            vim_core::Mode::Visual { kind: vim_core::VisualKind::Line }
+            vim_core::Mode::Visual {
+                kind: vim_core::VisualKind::Line
+            }
         );
     }
 }
@@ -486,7 +513,11 @@ mod render_tests {
         let buf = TestBuf(Rc::new(RefCell::new("abcd\nefgh\n".into())));
         let mut vim = VimState::new();
         // C-v j l: block cols 0..1 on lines 0-1
-        dispatch(&mut vim, &mut buf.clone(), vim_core::key::Key::ctrl_char('v'));
+        dispatch(
+            &mut vim,
+            &mut buf.clone(),
+            vim_core::key::Key::ctrl_char('v'),
+        );
         dispatch(&mut vim, &mut buf.clone(), Key::char('j'));
         dispatch(&mut vim, &mut buf.clone(), Key::char('l'));
         let o0 = overlays(&vim, &buf, 0, &[], true);
