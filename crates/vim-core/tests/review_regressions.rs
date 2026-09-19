@@ -34,7 +34,10 @@ fn gq_cursor_lands_on_last_formatted_line() {
     let mut f = Fixture::at("the quick brown fox jumps over the lazy dog\nnext\n", 0, 0);
     f.vim.options_mut().textwidth = 20;
     f.feed(["g", "q", "g", "q"]);
-    assert_eq!(f.text(), "the quick brown fox\njumps over the lazy\ndog\nnext\n");
+    assert_eq!(
+        f.text(),
+        "the quick brown fox\njumps over the lazy\ndog\nnext\n"
+    );
     assert_eq!(f.cursor(), 40); // the "dog" line
 }
 

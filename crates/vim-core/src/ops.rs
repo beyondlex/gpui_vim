@@ -461,7 +461,9 @@ pub fn format_lines(vim: &mut VimState, ctx: &mut Ctx, start: usize, last_line: 
     // vim: the cursor lands on the first non-blank of the LAST formatted
     // line (the reflow may change the line count, so recompute from the
     // replacement's end)
-    let last_out = ctx.buf.offset_to_line((start + out.len()).min(ctx.buf.len()));
+    let last_out = ctx
+        .buf
+        .offset_to_line((start + out.len()).min(ctx.buf.len()));
     vim.cursor.offset = ctx.buf.first_non_blank(last_out);
     vim.cursor.desired_col = None;
 }
@@ -534,7 +536,10 @@ pub fn put(vim: &mut VimState, ctx: &mut Ctx, register: char, count: usize, afte
         // first non-blank (verified against vim 9.1 for `p`/`P` with 1..4
         // pasted lines). After the insert, `insert_at` is the start of the
         // first pasted line. The old code parked the cursor on the last one.
-        let cursor_line = ctx.buf.offset_to_line(insert_at).min(ctx.buf.line_count() - 1);
+        let cursor_line = ctx
+            .buf
+            .offset_to_line(insert_at)
+            .min(ctx.buf.line_count() - 1);
         vim.cursor.offset = ctx.buf.first_non_blank(cursor_line);
     } else {
         let mut at = vim.cursor.offset;

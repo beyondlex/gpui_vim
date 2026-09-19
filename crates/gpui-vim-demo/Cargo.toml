@@ -5,6 +5,8 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
+# 只作参考宿主，不发布（path 依赖无版本号，publish 会失败）
+publish = false
 
 [[bin]]
 name = "gpui-vim-demo"
