@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/vim-core", "crates/gpui-vim", "crates/gpui-vim-demo"]
+members = ["crates/gpui-vim-core", "crates/gpui-vim", "crates/gpui-vim-demo"]
 
 [workspace.package]
 version = "0.1.0"

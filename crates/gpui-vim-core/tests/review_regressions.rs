@@ -9,7 +9,7 @@
 mod common;
 
 use common::{edit, Fixture};
-use vim_core::key::Key;
+use gpui_vim_core::key::Key;
 
 // ---- gq format operator ------------------------------------------------------
 
@@ -183,7 +183,7 @@ fn space_leader_from_vimrc_space_notation() {
     // notation was substituted back into the raw string and re-parsed.
     let text = "let mapleader = \"<Space>\"\nmap <Leader>q :action T.Q<CR>\n";
     let mut f = Fixture::at("foo\n", 0, 0);
-    let config = vim_core::config::parse(text);
+    let config = gpui_vim_core::config::parse(text);
     f.vim.apply_config(&config);
     f.feed_raw(Key::named("space"));
     f.feed(["q"]);
@@ -198,7 +198,7 @@ fn space_key_matches_char_space_mappings() {
     let mut f = Fixture::at("foo\n", 0, 0);
     f.vim
         .keymaps_mut()
-        .map_str_noremap(vim_core::keymap::ModeClass::Normal, "<Space>x", "x", true);
+        .map_str_noremap(gpui_vim_core::keymap::ModeClass::Normal, "<Space>x", "x", true);
     f.feed_raw(Key::named("space"));
     f.feed(["x"]);
     assert_eq!(f.text(), "oo\n");

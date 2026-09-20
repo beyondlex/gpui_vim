@@ -4,7 +4,7 @@
 use std::ops::Range;
 
 use crate::buffer::SharedRope;
-use vim_core::host::VimHost;
+use gpui_vim_core::host::VimHost;
 
 /// Snapshot entries kept for `u` (oldest dropped beyond this).
 const MAX_UNDO_STEPS: usize = 200;
