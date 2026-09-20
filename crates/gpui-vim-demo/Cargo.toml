@@ -13,7 +13,7 @@ name = "gpui-vim-demo"
 path = "src/main.rs"
 
 [dependencies]
-gpui-vim-core = { path = "../gpui-vim-core" }
+gpui-vim-core = "0.1"
 gpui-vim = { path = "../gpui-vim" }
 gpui = "0.2"
 # 应用启动入口 helper（未发布 crates.io，取自 gpui-x 同源）。
