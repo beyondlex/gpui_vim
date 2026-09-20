@@ -7,10 +7,10 @@
 use std::cell::RefCell;
 use std::ops::Range;
 use std::rc::Rc;
-use vim_core::buffer::{VimBuffer, VimBufferMut};
-use vim_core::host::VimHost;
-use vim_core::key::Key;
-use vim_core::state::{Ctx, KeyResult, VimState};
+use gpui_vim_core::buffer::{VimBuffer, VimBufferMut};
+use gpui_vim_core::host::VimHost;
+use gpui_vim_core::key::Key;
+use gpui_vim_core::state::{Ctx, KeyResult, VimState};
 
 type Shared = Rc<RefCell<String>>;
 

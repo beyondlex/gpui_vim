@@ -13,9 +13,9 @@ use gpui::{
     Render, ScrollStrategy, SharedString, UniformListScrollHandle, Window,
 };
 use gpui_vim::VimEditor as _;
-use vim_core::buffer::VimBuffer;
-use vim_core::state::{KeyResult, VimState};
-use vim_core::{Mode, VimHost};
+use gpui_vim_core::buffer::VimBuffer;
+use gpui_vim_core::state::{KeyResult, VimState};
+use gpui_vim_core::{Mode, VimHost};
 
 use crate::buffer::RopeBuffer;
 use crate::host::HostState;
@@ -226,7 +226,7 @@ impl Editor {
         } else {
             (cursor, anchor)
         };
-        let linewise = kind == vim_core::VisualKind::Line;
+        let linewise = kind == gpui_vim_core::VisualKind::Line;
         let range = if linewise {
             let start = self
                 .tab()
@@ -453,7 +453,7 @@ impl gpui_vim::VimEditor for Editor {
         &mut self,
     ) -> (
         &mut VimState,
-        &mut dyn vim_core::buffer::VimBufferMut,
+        &mut dyn gpui_vim_core::buffer::VimBufferMut,
         &mut dyn VimHost,
     ) {
         let tab = &mut self.tabs[self.active];

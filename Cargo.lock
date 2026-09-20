@@ -243,9 +243,9 @@ dependencies = [
 
 [[package]]
 name = "async-compression"
-version = "0.4.46"
+version = "0.4.48"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4f10dafd0c8d2e51ae9a748805777613ed0bbe17bf586b76c8311f45c020a32f"
+checksum = "fb61aea1a7def73ee7c350a184f0e70b32c182344e2e75bf70c9b621b83417fd"
 dependencies = [
  "compression-codecs",
  "compression-core",
@@ -379,7 +379,7 @@ checksum = "82f6aeea286b8eb4dd3431a1be1b59d290ace00f5bfd8e2a159bc2a05e2c1667"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 3.0.5",
+ "syn 3.0.6",
 ]
 
 [[package]]
@@ -657,7 +657,7 @@ checksum = "6a1f896587b6f2c069c73d2f0913e2d590c3990285cd2f0b6aa02b786b4c679c"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 3.0.5",
+ "syn 3.0.6",
 ]
 
 [[package]]
@@ -729,9 +729,9 @@ dependencies = [
 
 [[package]]
 name = "cc"
-version = "1.4.5"
+version = "1.4.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "005ec2760ca554fae18df7a11195552ec576cd665632a881bc011d5bb2fd4d80"
+checksum = "54413ede23c2daf518f35156dfde027feb2374004d63bd497f983c8db9c0e313"
 dependencies = [
  "find-msvc-tools",
  "jobserver",
@@ -750,9 +750,9 @@ dependencies = [
 
 [[package]]
 name = "cfg-if"
-version = "1.0.4"
+version = "1.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801"
+checksum = "4e7648175b45a9a48536d676f68d918270699102aa8dab5496df06904c914600"
 
 [[package]]
 name = "cfg_aliases"
@@ -830,7 +830,7 @@ dependencies = [
  "bitflags 2.13.2",
  "block",
  "cocoa-foundation 0.2.1",
- "core-foundation 0.10.0",
+ "core-foundation 0.10.1",
  "core-graphics 0.24.0",
  "foreign-types",
  "libc",
@@ -859,7 +859,7 @@ checksum = "81411967c50ee9a1fc11365f8c585f863a22a9697c89239c452292c40ba79b0d"
 dependencies = [
  "bitflags 2.13.2",
  "block",
- "core-foundation 0.10.0",
+ "core-foundation 0.10.1",
  "core-graphics-types 0.2.0",
  "objc",
 ]
@@ -878,7 +878,7 @@ dependencies = [
 [[package]]
 name = "collections"
 version = "0.1.0"
-source = "git+https://github.com/beyondlex/gpui-x?branch=main#a8d519d37046f65e990b6eaa7bc8997115f5b695"
+source = "git+https://github.com/beyondlex/gpui-x?branch=main#7b3a4fdadc91cc9f812838539de2cd797888db33"
 dependencies = [
  "gpui_util",
  "indexmap",
@@ -893,9 +893,9 @@ checksum = "3d7b894f5411737b7867f4827955924d7c254fc9f4d91a6aad6b097804b1018b"
 
 [[package]]
 name = "compression-codecs"
-version = "0.4.41"
+version = "0.4.43"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "58a6d0db8759036a783bc7c3f7a07f8cef3bf9470eb1db3bc86e8bcd1c5d0fe8"
+checksum = "bef16c47ba2797aa6a909cc37d39911f3a6743811fe7408ac0b0cc0276b656e9"
 dependencies = [
  "bzip2",
  "compression-core",
@@ -949,9 +949,9 @@ dependencies = [
 
 [[package]]
 name = "core-foundation"
-version = "0.10.0"
+version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b55271e5c8c478ad3f38ad24ef34923091e0548492a266d19b3c0b4d82574c63"
+checksum = "b2a6cd9ae233e7f62ba4e9353e81a88df7fc8a5987b8d445b4d90c879bd156f6"
 dependencies = [
  "core-foundation-sys",
  "libc",
@@ -983,7 +983,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fa95a34622365fa5bbf40b20b75dba8dfa8c94c734aea8ac9a5ca38af14316f1"
 dependencies = [
  "bitflags 2.13.2",
- "core-foundation 0.10.0",
+ "core-foundation 0.10.1",
  "core-graphics-types 0.2.0",
  "foreign-types",
  "libc",
@@ -1020,7 +1020,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3d44a101f213f6c4cdc1853d4b78aef6db6bdfa3468798cc1d9912f4735013eb"
 dependencies = [
  "bitflags 2.13.2",
- "core-foundation 0.10.0",
+ "core-foundation 0.10.1",
  "libc",
 ]
 
@@ -1033,7 +1033,7 @@ dependencies = [
  "bitflags 2.13.2",
  "block",
  "cfg-if",
- "core-foundation 0.10.0",
+ "core-foundation 0.10.1",
  "libc",
 ]
 
@@ -1043,7 +1043,7 @@ version = "21.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a593227b66cbd4007b2a050dfdd9e1d1318311409c8d600dc82ba1b15ca9c130"
 dependencies = [
- "core-foundation 0.10.0",
+ "core-foundation 0.10.1",
  "core-graphics 0.24.0",
  "foreign-types",
  "libc",
@@ -1056,7 +1056,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "139679cc63eb9504bdbe37e37874b0247136177655f0008588781e90863afa62"
 dependencies = [
  "block",
- "core-foundation 0.10.0",
+ "core-foundation 0.10.1",
  "core-graphics2",
  "io-surface",
  "libc",
@@ -1212,7 +1212,7 @@ dependencies = [
 [[package]]
 name = "derive_refineable"
 version = "0.1.0"
-source = "git+https://github.com/beyondlex/gpui-x?branch=main#a8d519d37046f65e990b6eaa7bc8997115f5b695"
+source = "git+https://github.com/beyondlex/gpui-x?branch=main#7b3a4fdadc91cc9f812838539de2cd797888db33"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1277,7 +1277,7 @@ checksum = "c6232dd377dcc64799954cbd3a9bb882e9cdc1308ccd87b1c098f1fb2eaf82a8"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 3.0.5",
+ "syn 3.0.6",
 ]
 
 [[package]]
@@ -1509,9 +1509,9 @@ dependencies = [
 
 [[package]]
 name = "find-msvc-tools"
-version = "0.1.12"
+version = "0.1.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3e0f1c7c3a72c66fd80abe965175f7523475c0489a87d3ff9d6e8c87d87a9d2d"
+checksum = "ef25905e51abafe4dcea6c15fec58c57b601cdbd0ee53d22ea1d3016c587d39b"
 
 [[package]]
 name = "fixedbitset"
@@ -1631,7 +1631,7 @@ checksum = "ea5190182e6915eb873ddbc16e23b711b6eb1f9c00a0d0a3a91b5f6228475225"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 3.0.5",
+ "syn 3.0.6",
 ]
 
 [[package]]
@@ -1742,7 +1742,7 @@ checksum = "9fb9654ba8355388abeb8dcb4fc62f511300867002afc858860463bdd9fe0c44"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 3.0.5",
+ "syn 3.0.6",
 ]
 
 [[package]]
@@ -1913,7 +1913,7 @@ dependencies = [
 [[package]]
 name = "gpui"
 version = "0.2.2"
-source = "git+https://github.com/beyondlex/gpui-x?branch=main#a8d519d37046f65e990b6eaa7bc8997115f5b695"
+source = "git+https://github.com/beyondlex/gpui-x?branch=main#7b3a4fdadc91cc9f812838539de2cd797888db33"
 dependencies = [
  "accesskit",
  "anyhow",
@@ -1981,11 +1981,20 @@ dependencies = [
 
 [[package]]
 name = "gpui-vim"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "gpui",
+ "gpui-vim-core",
  "unicode-width",
- "vim-core",
+]
+
+[[package]]
+name = "gpui-vim-core"
+version = "0.1.0"
+dependencies = [
+ "regex",
+ "ropey",
+ "unicode-width",
 ]
 
 [[package]]
@@ -1994,21 +2003,21 @@ version = "0.1.0"
 dependencies = [
  "gpui",
  "gpui-vim",
+ "gpui-vim-core",
  "gpui_platform",
  "ropey",
- "vim-core",
 ]
 
 [[package]]
 name = "gpui_apple"
 version = "0.1.0"
-source = "git+https://github.com/beyondlex/gpui-x?branch=main#a8d519d37046f65e990b6eaa7bc8997115f5b695"
+source = "git+https://github.com/beyondlex/gpui-x?branch=main#7b3a4fdadc91cc9f812838539de2cd797888db33"
 dependencies = [
  "anyhow",
  "block",
  "cbindgen",
  "cocoa 0.26.0",
- "core-foundation 0.10.0",
+ "core-foundation 0.10.1",
  "core-video",
  "derive_more",
  "etagere",
@@ -2025,7 +2034,7 @@ dependencies = [
 [[package]]
 name = "gpui_linux"
 version = "0.1.0"
-source = "git+https://github.com/beyondlex/gpui-x?branch=main#a8d519d37046f65e990b6eaa7bc8997115f5b695"
+source = "git+https://github.com/beyondlex/gpui-x?branch=main#7b3a4fdadc91cc9f812838539de2cd797888db33"
 dependencies = [
  "accesskit",
  "accesskit_unix",
@@ -2053,7 +2062,7 @@ dependencies = [
 [[package]]
 name = "gpui_macos"
 version = "0.1.0"
-source = "git+https://github.com/beyondlex/gpui-x?branch=main#a8d519d37046f65e990b6eaa7bc8997115f5b695"
+source = "git+https://github.com/beyondlex/gpui-x?branch=main#7b3a4fdadc91cc9f812838539de2cd797888db33"
 dependencies = [
  "accesskit",
  "accesskit_macos",
@@ -2062,7 +2071,7 @@ dependencies = [
  "block2 0.6.2",
  "cocoa 0.26.0",
  "collections",
- "core-foundation 0.10.0",
+ "core-foundation 0.10.1",
  "core-foundation-sys",
  "core-graphics 0.24.0",
  "core-text",
@@ -2099,7 +2108,7 @@ dependencies = [
 [[package]]
 name = "gpui_macros"
 version = "0.1.0"
-source = "git+https://github.com/beyondlex/gpui-x?branch=main#a8d519d37046f65e990b6eaa7bc8997115f5b695"
+source = "git+https://github.com/beyondlex/gpui-x?branch=main#7b3a4fdadc91cc9f812838539de2cd797888db33"
 dependencies = [
  "heck 0.5.0",
  "proc-macro2",
@@ -2110,7 +2119,7 @@ dependencies = [
 [[package]]
 name = "gpui_platform"
 version = "0.1.0"
-source = "git+https://github.com/beyondlex/gpui-x?branch=main#a8d519d37046f65e990b6eaa7bc8997115f5b695"
+source = "git+https://github.com/beyondlex/gpui-x?branch=main#7b3a4fdadc91cc9f812838539de2cd797888db33"
 dependencies = [
  "console_error_panic_hook",
  "gpui",
@@ -2123,7 +2132,7 @@ dependencies = [
 [[package]]
 name = "gpui_shared_string"
 version = "0.1.0"
-source = "git+https://github.com/beyondlex/gpui-x?branch=main#a8d519d37046f65e990b6eaa7bc8997115f5b695"
+source = "git+https://github.com/beyondlex/gpui-x?branch=main#7b3a4fdadc91cc9f812838539de2cd797888db33"
 dependencies = [
  "schemars",
  "serde",
@@ -2133,7 +2142,7 @@ dependencies = [
 [[package]]
 name = "gpui_util"
 version = "0.1.0"
-source = "git+https://github.com/beyondlex/gpui-x?branch=main#a8d519d37046f65e990b6eaa7bc8997115f5b695"
+source = "git+https://github.com/beyondlex/gpui-x?branch=main#7b3a4fdadc91cc9f812838539de2cd797888db33"
 dependencies = [
  "anyhow",
  "log",
@@ -2143,7 +2152,7 @@ dependencies = [
 [[package]]
 name = "gpui_web"
 version = "0.1.0"
-source = "git+https://github.com/beyondlex/gpui-x?branch=main#a8d519d37046f65e990b6eaa7bc8997115f5b695"
+source = "git+https://github.com/beyondlex/gpui-x?branch=main#7b3a4fdadc91cc9f812838539de2cd797888db33"
 dependencies = [
  "anyhow",
  "console_error_panic_hook",
@@ -2171,7 +2180,7 @@ dependencies = [
 [[package]]
 name = "gpui_wgpu"
 version = "0.1.0"
-source = "git+https://github.com/beyondlex/gpui-x?branch=main#a8d519d37046f65e990b6eaa7bc8997115f5b695"
+source = "git+https://github.com/beyondlex/gpui-x?branch=main#7b3a4fdadc91cc9f812838539de2cd797888db33"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -2196,7 +2205,7 @@ dependencies = [
 [[package]]
 name = "gpui_windows"
 version = "0.1.0"
-source = "git+https://github.com/beyondlex/gpui-x?branch=main#a8d519d37046f65e990b6eaa7bc8997115f5b695"
+source = "git+https://github.com/beyondlex/gpui-x?branch=main#7b3a4fdadc91cc9f812838539de2cd797888db33"
 dependencies = [
  "accesskit",
  "accesskit_windows",
@@ -2362,7 +2371,7 @@ dependencies = [
 [[package]]
 name = "http_client"
 version = "0.1.0"
-source = "git+https://github.com/beyondlex/gpui-x?branch=main#a8d519d37046f65e990b6eaa7bc8997115f5b695"
+source = "git+https://github.com/beyondlex/gpui-x?branch=main#7b3a4fdadc91cc9f812838539de2cd797888db33"
 dependencies = [
  "anyhow",
  "async-compression",
@@ -2601,7 +2610,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "554b8c5d64ec09a3a520fe58e4d48a73e00ff32899cdcbe32a4877afd4968b8e"
 dependencies = [
  "cgl",
- "core-foundation 0.10.0",
+ "core-foundation 0.10.1",
  "core-foundation-sys",
  "leaky-cow",
 ]
@@ -3724,7 +3733,7 @@ checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 [[package]]
 name = "perf"
 version = "0.1.0"
-source = "git+https://github.com/beyondlex/gpui-x?branch=main#a8d519d37046f65e990b6eaa7bc8997115f5b695"
+source = "git+https://github.com/beyondlex/gpui-x?branch=main#7b3a4fdadc91cc9f812838539de2cd797888db33"
 dependencies = [
  "collections",
  "serde",
@@ -4299,13 +4308,13 @@ checksum = "92ecd8964f8453721699a1ed72037b0db49ce2f5a5138486ee89bed6f67cdf3a"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 3.0.5",
+ "syn 3.0.6",
 ]
 
 [[package]]
 name = "refineable"
 version = "0.1.0"
-source = "git+https://github.com/beyondlex/gpui-x?branch=main#a8d519d37046f65e990b6eaa7bc8997115f5b695"
+source = "git+https://github.com/beyondlex/gpui-x?branch=main#7b3a4fdadc91cc9f812838539de2cd797888db33"
 dependencies = [
  "derive_refineable",
 ]
@@ -4478,7 +4487,7 @@ dependencies = [
 [[package]]
 name = "scheduler"
 version = "0.1.0"
-source = "git+https://github.com/beyondlex/gpui-x?branch=main#a8d519d37046f65e990b6eaa7bc8997115f5b695"
+source = "git+https://github.com/beyondlex/gpui-x?branch=main#7b3a4fdadc91cc9f812838539de2cd797888db33"
 dependencies = [
  "async-task",
  "backtrace",
@@ -4514,7 +4523,7 @@ dependencies = [
  "proc-macro2",
  "quote",
  "serde_derive_internals",
- "syn 3.0.5",
+ "syn 3.0.6",
 ]
 
 [[package]]
@@ -4605,7 +4614,7 @@ checksum = "e7a5d71263a5a7d47b41f6b3f06ba276f10cc18b0931f1799f710578e2309348"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 3.0.5",
+ "syn 3.0.6",
 ]
 
 [[package]]
@@ -4616,7 +4625,7 @@ checksum = "f852137cce035d6a4df67ccce505ff6b3e9fd3a10e3e52b24dc71e650bb1a9bd"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 3.0.5",
+ "syn 3.0.6",
 ]
 
 [[package]]
@@ -4650,7 +4659,7 @@ checksum = "8d3b1629de253c70a0508c3899572da79ca359fdab27c7920ff00406df418906"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 3.0.5",
+ "syn 3.0.6",
 ]
 
 [[package]]
@@ -4913,7 +4922,7 @@ checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 [[package]]
 name = "sum_tree"
 version = "0.1.0"
-source = "git+https://github.com/beyondlex/gpui-x?branch=main#a8d519d37046f65e990b6eaa7bc8997115f5b695"
+source = "git+https://github.com/beyondlex/gpui-x?branch=main#7b3a4fdadc91cc9f812838539de2cd797888db33"
 dependencies = [
  "heapless",
  "log",
@@ -5041,9 +5050,9 @@ dependencies = [
 
 [[package]]
 name = "syn"
-version = "3.0.5"
+version = "3.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "12df2e0110f65b775f769bb17ef989067a1d931b2eb822bd4346631eeada89f9"
+checksum = "8593e8e72159ed2257d083c7a454a85cbf854f37a0966d8d483aff8c8a3ebcee"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -5052,13 +5061,13 @@ dependencies = [
 
 [[package]]
 name = "synstructure"
-version = "0.13.2"
+version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "728a70f3dbaf5bab7f0c4b1ac8d7ae5ea60a4b5549c8a5914361c99147a709d2"
+checksum = "901704edd0dfe137f1987838ee4f259e4e063c31371bdb423f7ae38ec6f77f02"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.119",
+ "syn 3.0.6",
 ]
 
 [[package]]
@@ -5178,7 +5187,7 @@ checksum = "bc04cd3e1236dd4a98afca4569f2deb3f120e5422a4023be2cb683f8486292af"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 3.0.5",
+ "syn 3.0.6",
 ]
 
 [[package]]
@@ -5261,18 +5270,9 @@ dependencies = [
 
 [[package]]
 name = "tinyvec"
-version = "1.13.2"
+version = "1.13.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4cf0ded5c4e56918d8f8a339e1bb67d038d3bc6d144ac407904015ba2e4cde9b"
-dependencies = [
- "tinyvec_macros",
-]
-
-[[package]]
-name = "tinyvec_macros"
-version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1f3ccbac311fea05f86f61904b462b55fb3df8837a366dfc601a0161d0532f20"
+checksum = "fd3ca314f692efd6c868f8408f53fe444634a845f96c028b97d35f6a1f79f0ee"
 
 [[package]]
 name = "toml"
@@ -5476,9 +5476,9 @@ checksum = "ce61d488bcdc9bc8b5d1772c404828b17fc481c0a582b5581e95fb233aef503e"
 
 [[package]]
 name = "unicode-ident"
-version = "1.0.24"
+version = "1.0.26"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e6e4313cd5fcd3dad5cafa179702e2b244f760991f45397d14d4ebf38247da75"
+checksum = "d245f478577f809a851594d02313b640fb437e0bb33866753cff937863096954"
 
 [[package]]
 name = "unicode-linebreak"
@@ -5570,7 +5570,7 @@ checksum = "b6c140620e7ffbb22c2dee59cafe6084a59b5ffc27a8859a5f0d494b5d52b6be"
 [[package]]
 name = "util_macros"
 version = "0.1.0"
-source = "git+https://github.com/beyondlex/gpui-x?branch=main#a8d519d37046f65e990b6eaa7bc8997115f5b695"
+source = "git+https://github.com/beyondlex/gpui-x?branch=main#7b3a4fdadc91cc9f812838539de2cd797888db33"
 dependencies = [
  "perf",
  "quote",
@@ -5648,15 +5648,6 @@ name = "version_check"
 version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
-
-[[package]]
-name = "vim-core"
-version = "0.1.0"
-dependencies = [
- "regex",
- "ropey",
- "unicode-width",
-]
 
 [[package]]
 name = "vswhom"
@@ -5751,7 +5742,7 @@ dependencies = [
  "bumpalo",
  "proc-macro2",
  "quote",
- "syn 3.0.5",
+ "syn 3.0.6",
  "wasm-bindgen-shared",
 ]
 
@@ -6517,13 +6508,13 @@ dependencies = [
 
 [[package]]
 name = "yoke-derive"
-version = "0.8.2"
+version = "0.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "de844c262c8848816172cef550288e7dc6c7b7814b4ee56b3e1553f275f1858e"
+checksum = "33811428bee40dbceb6d545e95754741d17a6aef9a4849f0fd62e2ba4f412a78"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.119",
+ "syn 3.0.6",
  "synstructure",
 ]
 
@@ -6595,7 +6586,7 @@ dependencies = [
  "proc-macro-crate",
  "proc-macro2",
  "quote",
- "syn 3.0.5",
+ "syn 3.0.6",
  "zbus_names",
  "zvariant",
  "zvariant_utils",
@@ -6640,7 +6631,7 @@ source = "git+https://github.com/zed-industries/font-kit?rev=94b0f28166665e8fd2f
 dependencies = [
  "bitflags 2.13.2",
  "byteorder",
- "core-foundation 0.10.0",
+ "core-foundation 0.10.1",
  "core-graphics 0.24.0",
  "core-text",
  "dirs",
@@ -6715,13 +6706,13 @@ dependencies = [
 
 [[package]]
 name = "zerofrom-derive"
-version = "0.1.7"
+version = "0.1.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "11532158c46691caf0f2593ea8358fed6bbf68a0315e80aae9bd41fbade684a1"
+checksum = "f75b4683f6c7f45248d4d64056a24298c6281e0993356d7d1b4a1a962ef10d4a"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.119",
+ "syn 3.0.6",
  "synstructure",
 ]
 
@@ -6775,19 +6766,19 @@ checksum = "34df6fc39dbd26ddc9c10e6a2984476e13acce22e64e4487636ef494369225da"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 3.0.5",
+ "syn 3.0.6",
 ]
 
 [[package]]
 name = "zlib-rs"
-version = "0.6.7"
+version = "0.6.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "34b31d188d9d685a4f9c7b46d6e36631b07058d2cfe190267adce54dc230bf12"
+checksum = "b268e58e7c693d7c271f93ffc4ba3b380412554231c85bf61ca7af91042a4112"
 
 [[package]]
 name = "zlog"
 version = "0.1.0"
-source = "git+https://github.com/beyondlex/gpui-x?branch=main#a8d519d37046f65e990b6eaa7bc8997115f5b695"
+source = "git+https://github.com/beyondlex/gpui-x?branch=main#7b3a4fdadc91cc9f812838539de2cd797888db33"
 dependencies = [
  "anyhow",
  "chrono",
@@ -6804,7 +6795,7 @@ checksum = "29666d0abbfad1e3dc4dcf6144730dd3a3ab225bbbdac83319345b1b44ccfc1b"
 [[package]]
 name = "ztracing"
 version = "0.1.0"
-source = "git+https://github.com/beyondlex/gpui-x?branch=main#a8d519d37046f65e990b6eaa7bc8997115f5b695"
+source = "git+https://github.com/beyondlex/gpui-x?branch=main#7b3a4fdadc91cc9f812838539de2cd797888db33"
 dependencies = [
  "tracing",
  "tracing-subscriber",
@@ -6815,7 +6806,7 @@ dependencies = [
 [[package]]
 name = "ztracing_macro"
 version = "0.1.0"
-source = "git+https://github.com/beyondlex/gpui-x?branch=main#a8d519d37046f65e990b6eaa7bc8997115f5b695"
+source = "git+https://github.com/beyondlex/gpui-x?branch=main#7b3a4fdadc91cc9f812838539de2cd797888db33"
 
 [[package]]
 name = "zune-core"
@@ -6866,7 +6857,7 @@ dependencies = [
  "proc-macro-crate",
  "proc-macro2",
  "quote",
- "syn 3.0.5",
+ "syn 3.0.6",
  "zvariant_utils",
 ]
 
@@ -6879,6 +6870,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "serde",
- "syn 3.0.5",
+ "syn 3.0.6",
  "winnow 1.0.4",
 ]
