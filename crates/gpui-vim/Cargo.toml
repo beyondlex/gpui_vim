@@ -8,6 +8,6 @@ authors.workspace = true
 repository.workspace = true
 
 [dependencies]
-gpui-vim-core = { path = "../gpui-vim-core", version = "0.1.0" }
+gpui-vim-core = "0.1"
 gpui = "0.2"
 unicode-width = { workspace = true }
