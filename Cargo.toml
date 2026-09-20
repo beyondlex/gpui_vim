@@ -17,6 +17,6 @@ unicode-width = "0.2"
 [profile.dev]
 opt-level = 1
 
-# 与 try/gpui-path-perf 适配分支配套：使用优化后的 gpui（paint_path_scaled 等）
+# 使用优化后的 gpui：独立发行版 gpui-x（不再依赖整个 zed monorepo）
 [patch.crates-io]
-gpui = { git = "https://github.com/beyondlex/zed", branch = "gpui-path-perf", version = "=0.2.2" }
+gpui = { git = "https://github.com/beyondlex/gpui-x", branch = "main" }
