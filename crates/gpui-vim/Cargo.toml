@@ -2,7 +2,6 @@
 name = "gpui-vim"
 version = "0.1.1"
 description = "gpui integration for the gpui-vim-core engine: keystroke interception and mode UI state."
-version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
