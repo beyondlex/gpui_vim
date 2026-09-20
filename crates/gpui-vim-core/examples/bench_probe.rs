@@ -3,10 +3,10 @@ use std::cell::RefCell;
 use std::ops::Range;
 use std::rc::Rc;
 use std::time::Instant;
-use vim_core::buffer::{VimBuffer, VimBufferMut};
-use vim_core::host::VimHost;
-use vim_core::key::Key;
-use vim_core::state::{Ctx, VimState};
+use gpui_vim_core::buffer::{VimBuffer, VimBufferMut};
+use gpui_vim_core::host::VimHost;
+use gpui_vim_core::key::Key;
+use gpui_vim_core::state::{Ctx, VimState};
 
 #[derive(Clone)]
 struct B(Rc<RefCell<String>>);
@@ -210,7 +210,7 @@ fn main() {
     // republish_search 的核心成本 = all_matches 全文件正则扫描；
     // bump 是 crate 内部，这里直接量 20 次等价的搜索扫描
     for _ in 0..20 {
-        let _ = vim_core::search::all_matches(&vim, &buf, "fox");
+        let _ = gpui_vim_core::search::all_matches(&vim, &buf, "fox");
     }
     println!(
         "20x search re-scan (900KB, {} matches): {:>8.2?}  ({:.2} ms/scan)",

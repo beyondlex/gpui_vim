@@ -10,10 +10,10 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use gpui::{px, App, Bounds, Context, Hsla, Pixels, Point, SharedString, TextRun, Window};
-use vim_core::buffer::VimBuffer;
-use vim_core::mode::VisualKind;
-use vim_core::ops as core_ops;
-use vim_core::state::VimState;
+use gpui_vim_core::buffer::VimBuffer;
+use gpui_vim_core::mode::VisualKind;
+use gpui_vim_core::ops as core_ops;
+use gpui_vim_core::state::VimState;
 
 /// Width of the thin (insert-mode) caret bar, in logical pixels.
 const CARET_BAR_WIDTH: f32 = 2.0;
@@ -145,7 +145,7 @@ pub fn compute_line_overlays(inputs: &LineOverlayInputs) -> LineOverlays {
     }
 
     // visual selection (char / line / block) — the span math lives in
-    // vim-core so the demo's selection ops and this renderer share it
+    // gpui-vim-core so the demo's selection ops and this renderer share it
     if let Some(span) = core_ops::span_from_visual(vim, buf) {
         match span_kind(vim) {
             VisualKind::Block => {

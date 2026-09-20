@@ -1,7 +1,7 @@
 mod common;
 
 use common::{edit, Fixture};
-use vim_core::buffer::VimBuffer;
+use gpui_vim_core::buffer::VimBuffer;
 
 const THREE_LINES: &str = "one two three\nhello world\nrust vim engine\n";
 const WORDS: &str = "foo bar baz\n";
@@ -155,7 +155,7 @@ fn delete_dd_linewise() {
 fn change_cw_ciw_cc() {
     // cw acts like ce: trailing space kept
     let mut f = edit("foo bar", 0, 0, &["c", "w"]);
-    assert_eq!(f.vim.mode(), vim_core::Mode::Insert);
+    assert_eq!(f.vim.mode(), gpui_vim_core::Mode::Insert);
     f.type_text("XX");
     f.feed(["<Esc>"]);
     assert_eq!(f.text(), "XX bar");
@@ -301,7 +301,7 @@ fn visual_mode_ops() {
     // v e d
     let f = edit("foo bar", 0, 0, &["v", "e", "d"]);
     assert_eq!(f.text(), " bar");
-    assert_eq!(f.vim.mode(), vim_core::Mode::Normal);
+    assert_eq!(f.vim.mode(), gpui_vim_core::Mode::Normal);
 
     // V j d
     let f = edit(MULTI, 0, 0, &["V", "j", "d"]);
@@ -329,8 +329,8 @@ fn visual_mode_ops() {
     f.feed(["v", "e", "y", "g", "v"]);
     assert_eq!(
         f.vim.mode(),
-        vim_core::Mode::Visual {
-            kind: vim_core::VisualKind::Char
+        gpui_vim_core::Mode::Visual {
+            kind: gpui_vim_core::VisualKind::Char
         }
     );
 }
@@ -486,15 +486,15 @@ fn user_mappings() {
     let mut f = Fixture::at("abc", 0, 0);
     f.vim
         .keymaps_mut()
-        .map_str(vim_core::keymap::ModeClass::Insert, "jk", "<Esc>");
+        .map_str(gpui_vim_core::keymap::ModeClass::Insert, "jk", "<Esc>");
     f.feed(["i"]);
     f.type_text("X");
-    assert_eq!(f.vim.mode(), vim_core::Mode::Insert);
+    assert_eq!(f.vim.mode(), gpui_vim_core::Mode::Insert);
     // typing j alone waits
     f.feed(["j"]);
-    assert_eq!(f.vim.mode(), vim_core::Mode::Insert);
+    assert_eq!(f.vim.mode(), gpui_vim_core::Mode::Insert);
     f.feed(["k"]);
-    assert_eq!(f.vim.mode(), vim_core::Mode::Normal);
+    assert_eq!(f.vim.mode(), gpui_vim_core::Mode::Normal);
     assert_eq!(f.text(), "Xabc");
     assert_eq!(f.cursor(), 0); // esc moved back one
 
@@ -502,7 +502,7 @@ fn user_mappings() {
     let mut f = Fixture::at(MULTI, 0, 0);
     f.vim
         .keymaps_mut()
-        .map_str(vim_core::keymap::ModeClass::Normal, "Q", "g");
+        .map_str(gpui_vim_core::keymap::ModeClass::Normal, "Q", "g");
     // Q expands to g, which then waits for the second g of gg
     f.feed(["Q", "g"]);
     assert_eq!(f.line(), 0);
@@ -514,20 +514,20 @@ fn escape_with_any_modifiers_exits_modes() {
     // escape with command modifiers still attached
     let mut f = Fixture::at("abc", 0, 0);
     f.feed(["i"]);
-    assert_eq!(f.vim.mode(), vim_core::Mode::Insert);
+    assert_eq!(f.vim.mode(), gpui_vim_core::Mode::Insert);
     f.feed(["<D-Esc>"]);
-    assert_eq!(f.vim.mode(), vim_core::Mode::Normal);
+    assert_eq!(f.vim.mode(), gpui_vim_core::Mode::Normal);
 
     let mut f = Fixture::at("abc", 0, 0);
     f.feed(["v"]);
     assert_eq!(
         f.vim.mode(),
-        vim_core::Mode::Visual {
-            kind: vim_core::VisualKind::Char
+        gpui_vim_core::Mode::Visual {
+            kind: gpui_vim_core::VisualKind::Char
         }
     );
     f.feed(["<C-M-S-Esc>"]);
-    assert_eq!(f.vim.mode(), vim_core::Mode::Normal);
+    assert_eq!(f.vim.mode(), gpui_vim_core::Mode::Normal);
 }
 
 #[test]
@@ -535,8 +535,8 @@ fn unknown_keys_fall_through() {
     // ctrl chords the engine does not know go to the host
     // (C-a is bound: number increment; C-z is not)
     let mut f = Fixture::at("abc", 0, 0);
-    let result = f.feed_raw(vim_core::key::Key::ctrl_char('z'));
-    assert_eq!(result, vim_core::KeyResult::Unknown);
+    let result = f.feed_raw(gpui_vim_core::key::Key::ctrl_char('z'));
+    assert_eq!(result, gpui_vim_core::KeyResult::Unknown);
 }
 
 // ---- I / A insert entry ------------------------------------------------------
@@ -545,21 +545,21 @@ fn unknown_keys_fall_through() {
 fn insert_entry_i_and_a() {
     // `I`: first non-blank of the line + insert mode
     let mut f = edit("    indented line\nsecond\n", 0, 8, &["I"]);
-    assert_eq!(f.vim.mode(), vim_core::Mode::Insert);
+    assert_eq!(f.vim.mode(), gpui_vim_core::Mode::Insert);
     assert_eq!(f.cursor(), 4); // first non-blank
     f.type_text("XX");
     assert_eq!(f.text(), "    XXindented line\nsecond\n");
 
     // `A`: end of the line + insert mode
     let mut f = edit("tail\n", 0, 0, &["A"]);
-    assert_eq!(f.vim.mode(), vim_core::Mode::Insert);
+    assert_eq!(f.vim.mode(), gpui_vim_core::Mode::Insert);
     assert_eq!(f.cursor(), 4); // line end (before the newline)
     f.type_text("!");
     assert_eq!(f.text(), "tail!\n");
 
     // `a` on a non-empty line moves one char right; at line end it stays
     let f = edit("abc\n", 0, 2, &["a"]);
-    assert_eq!(f.vim.mode(), vim_core::Mode::Insert);
+    assert_eq!(f.vim.mode(), gpui_vim_core::Mode::Insert);
     assert_eq!(f.cursor(), 3);
 }
 
@@ -572,20 +572,20 @@ fn visual_line_v() {
     f.feed(["V"]);
     assert_eq!(
         f.vim.mode(),
-        vim_core::Mode::Visual {
-            kind: vim_core::VisualKind::Line
+        gpui_vim_core::Mode::Visual {
+            kind: gpui_vim_core::VisualKind::Line
         }
     );
     // `j` extends the selection one line down; `V` again exits
     f.feed(["j"]);
     assert_eq!(
         f.vim.mode(),
-        vim_core::Mode::Visual {
-            kind: vim_core::VisualKind::Line
+        gpui_vim_core::Mode::Visual {
+            kind: gpui_vim_core::VisualKind::Line
         }
     );
     f.feed(["V"]);
-    assert_eq!(f.vim.mode(), vim_core::Mode::Normal);
+    assert_eq!(f.vim.mode(), gpui_vim_core::Mode::Normal);
 
     // `Vj d` deletes whole lines
     let mut f = Fixture::at(MULTI, 1, 0);
@@ -607,25 +607,25 @@ fn cmdline_enter_arriving_as_text_still_executes() {
     // engine must submit the search, not append a newline to the pattern.
     let mut f = Fixture::at("foo bar foo baz", 0, 0);
     f.feed(["/"]);
-    assert_eq!(f.vim.mode(), vim_core::Mode::CommandLine { prompt: '/' });
+    assert_eq!(f.vim.mode(), gpui_vim_core::Mode::CommandLine { prompt: '/' });
     f.feed(["f", "o", "o"]);
-    let result = f.feed_raw(vim_core::key::Key::char('\n'));
-    assert_eq!(result, vim_core::KeyResult::Consumed);
-    assert_eq!(f.vim.mode(), vim_core::Mode::Normal);
+    let result = f.feed_raw(gpui_vim_core::key::Key::char('\n'));
+    assert_eq!(result, gpui_vim_core::KeyResult::Consumed);
+    assert_eq!(f.vim.mode(), gpui_vim_core::Mode::Normal);
     assert_eq!(f.cursor(), 8);
 
     // same for "\r"
     let mut f = Fixture::at("foo bar foo baz", 0, 0);
     f.feed(["/", "b", "a"]);
-    let _ = f.feed_raw(vim_core::key::Key::char('\r'));
-    assert_eq!(f.vim.mode(), vim_core::Mode::Normal);
+    let _ = f.feed_raw(gpui_vim_core::key::Key::char('\r'));
+    assert_eq!(f.vim.mode(), gpui_vim_core::Mode::Normal);
     assert_eq!(f.cursor(), 4);
 
     // a carriage return typed mid-pattern via text must not land in the
     // pattern either
     let mut f = Fixture::at("foo bar foo baz", 0, 0);
     f.feed(["/", "f"]);
-    let _ = f.feed_raw(vim_core::key::Key::char('\n'));
+    let _ = f.feed_raw(gpui_vim_core::key::Key::char('\n'));
     assert_eq!(f.vim.cmdline.buffer, "");
 }
 
@@ -634,12 +634,12 @@ fn cmdline_backspace_arriving_as_text_still_deletes() {
     let mut f = Fixture::at("foo bar", 0, 0);
     f.feed(["/", "f", "o"]);
     assert_eq!(f.vim.cmdline.buffer, "fo");
-    let _ = f.feed_raw(vim_core::key::Key::char('\x7f'));
+    let _ = f.feed_raw(gpui_vim_core::key::Key::char('\x7f'));
     assert_eq!(f.vim.cmdline.buffer, "f");
     // backspacing past the start cancels the prompt
-    let _ = f.feed_raw(vim_core::key::Key::char('\x7f'));
-    let _ = f.feed_raw(vim_core::key::Key::char('\x7f'));
-    assert_eq!(f.vim.mode(), vim_core::Mode::Normal);
+    let _ = f.feed_raw(gpui_vim_core::key::Key::char('\x7f'));
+    let _ = f.feed_raw(gpui_vim_core::key::Key::char('\x7f'));
+    assert_eq!(f.vim.mode(), gpui_vim_core::Mode::Normal);
 }
 
 // ---- undo grouping: change family and open-line are single undo steps --------
@@ -648,7 +648,7 @@ fn cmdline_backspace_arriving_as_text_still_deletes() {
 fn change_c_types_and_undoes_in_one_step() {
     let mut f = Fixture::at("hello world\nsecond\n", 0, 0);
     f.feed(["C"]);
-    assert_eq!(f.vim.mode(), vim_core::Mode::Insert);
+    assert_eq!(f.vim.mode(), gpui_vim_core::Mode::Insert);
     f.type_text("XX");
     f.feed(["<Esc>"]);
     assert_eq!(f.text(), "XX\nsecond\n");
@@ -662,7 +662,7 @@ fn change_c_types_and_undoes_in_one_step() {
 fn change_ciw_is_one_undo_step() {
     let mut f = Fixture::at("foo bar\n", 0, 0);
     f.feed(["c", "i", "w"]);
-    assert_eq!(f.vim.mode(), vim_core::Mode::Insert);
+    assert_eq!(f.vim.mode(), gpui_vim_core::Mode::Insert);
     f.type_text("hi");
     f.feed(["<Esc>"]);
     assert_eq!(f.text(), "hi bar\n");
@@ -674,7 +674,7 @@ fn change_ciw_is_one_undo_step() {
 fn open_line_o_undo_removes_the_line() {
     let mut f = Fixture::at("alpha\nbeta\n", 0, 3);
     f.feed(["o"]);
-    assert_eq!(f.vim.mode(), vim_core::Mode::Insert);
+    assert_eq!(f.vim.mode(), gpui_vim_core::Mode::Insert);
     f.type_text("new");
     f.feed(["<Esc>"]);
     assert_eq!(f.text(), "alpha\nnew\nbeta\n");
@@ -803,7 +803,7 @@ fn visual_marks_shift_and_gv_tracks_the_text() {
     assert_eq!(f.vim.marks.resolve('>'), Some(8)); // stored as an exclusive end
                                                    // gv restores the selection over the SHIFTED text
     f.feed(["g", "v"]);
-    assert!(matches!(f.vim.mode(), vim_core::Mode::Visual { .. }));
+    assert!(matches!(f.vim.mode(), gpui_vim_core::Mode::Visual { .. }));
     assert_eq!(
         f.vim.visual_selection().map(|(a, c, _)| (a, c)),
         Some((5, 7))
@@ -829,7 +829,7 @@ fn ex_noh_clears_highlights() {
     assert!(!f.host.highlights.is_empty());
     f.feed([":", "n", "o", "h", "<CR>"]);
     assert!(f.host.highlights.is_empty());
-    assert_eq!(f.vim.mode(), vim_core::Mode::Normal);
+    assert_eq!(f.vim.mode(), gpui_vim_core::Mode::Normal);
 }
 
 #[test]
@@ -894,7 +894,7 @@ fn ex_substitute_no_match_rings_bell() {
     let mut f = Fixture::at("foo\n", 0, 0);
     f.feed([":", "%", "s", "/", "z", "z", "z", "/", "y", "<CR>"]);
     assert_eq!(f.text(), "foo\n");
-    assert_eq!(f.vim.mode(), vim_core::Mode::Normal);
+    assert_eq!(f.vim.mode(), gpui_vim_core::Mode::Normal);
 }
 
 #[test]
@@ -1018,13 +1018,13 @@ fn dot_ignores_visual_canceled_and_non_changes() {
 fn replace_mode_r_overwrites_and_keeps_cursor() {
     let mut f = Fixture::at("hello world\n", 0, 0);
     f.feed(["R"]);
-    assert_eq!(f.vim.mode(), vim_core::Mode::Replace);
+    assert_eq!(f.vim.mode(), gpui_vim_core::Mode::Replace);
     f.type_text("HELP");
     assert_eq!(f.text(), "HELPo world\n");
     f.feed(["<Esc>"]);
     // unlike insert mode, R does NOT step back on exit
     assert_eq!(f.cursor(), 3); // on 'P', the last typed char
-    assert_eq!(f.vim.mode(), vim_core::Mode::Normal);
+    assert_eq!(f.vim.mode(), gpui_vim_core::Mode::Normal);
 }
 
 #[test]
@@ -1270,26 +1270,26 @@ fn block_toggle_kinds_and_mode_indicator() {
     f.feed(["<C-v>"]);
     assert_eq!(
         f.vim.mode(),
-        vim_core::Mode::Visual {
-            kind: vim_core::VisualKind::Block
+        gpui_vim_core::Mode::Visual {
+            kind: gpui_vim_core::VisualKind::Block
         }
     );
     f.feed(["v"]); // toggle to charwise
     assert_eq!(
         f.vim.mode(),
-        vim_core::Mode::Visual {
-            kind: vim_core::VisualKind::Char
+        gpui_vim_core::Mode::Visual {
+            kind: gpui_vim_core::VisualKind::Char
         }
     );
     f.feed(["<C-v>"]); // and back
     assert_eq!(
         f.vim.mode(),
-        vim_core::Mode::Visual {
-            kind: vim_core::VisualKind::Block
+        gpui_vim_core::Mode::Visual {
+            kind: gpui_vim_core::VisualKind::Block
         }
     );
     f.feed(["<Esc>"]);
-    assert_eq!(f.vim.mode(), vim_core::Mode::Normal);
+    assert_eq!(f.vim.mode(), gpui_vim_core::Mode::Normal);
 }
 
 #[test]
@@ -1319,7 +1319,7 @@ fn ex_feedback_goes_through_status_channel() {
         f.host.statuses.last().map(String::as_str),
         Some("E492: Not an editor command: foo")
     );
-    assert_eq!(f.vim.mode(), vim_core::Mode::Normal);
+    assert_eq!(f.vim.mode(), gpui_vim_core::Mode::Normal);
 }
 
 // ---- regression: insert-session recording (single capture) ----------------------
@@ -1335,13 +1335,13 @@ fn repro_atat_replay_of_insert_macro() {
     assert_eq!(f.text(), "123\nhello\n");
     f.feed(["@", "a"]);
     assert_eq!(f.text(), "123\n123\nhello\n");
-    assert_eq!(f.vim.mode(), vim_core::Mode::Normal);
+    assert_eq!(f.vim.mode(), gpui_vim_core::Mode::Normal);
     f.feed(["@", "@"]);
     assert_eq!(f.text(), "123\n123\n123\nhello\n");
-    assert_eq!(f.vim.mode(), vim_core::Mode::Normal);
+    assert_eq!(f.vim.mode(), gpui_vim_core::Mode::Normal);
     f.feed(["@", "@"]);
     assert_eq!(f.text(), "123\n123\n123\n123\nhello\n");
-    assert_eq!(f.vim.mode(), vim_core::Mode::Normal);
+    assert_eq!(f.vim.mode(), gpui_vim_core::Mode::Normal);
 }
 
 #[test]
@@ -1363,8 +1363,8 @@ fn insert_typing_records_text_exactly_once() {
     // it exactly once.
     let mut f = Fixture::at("ab\n", 0, 0);
     f.feed(["o"]);
-    let declined = f.feed_raw(vim_core::key::Key::char('x'));
-    assert_eq!(declined, vim_core::KeyResult::Unknown);
+    let declined = f.feed_raw(gpui_vim_core::key::Key::char('x'));
+    assert_eq!(declined, gpui_vim_core::KeyResult::Unknown);
     f.type_text("x"); // the host records + places the text
     f.feed(["<Esc>"]);
     assert_eq!(f.text(), "ab\nx\n");
@@ -1391,20 +1391,20 @@ let mapleader = " "
 nmap <Leader>x x
 this is garbage
 "#;
-    let config = vim_core::config::parse(text);
+    let config = gpui_vim_core::config::parse(text);
     assert_eq!(config.settings.len(), 5);
     assert!(config
         .settings
-        .contains(&vim_core::config::Setting::On("number".into())));
+        .contains(&gpui_vim_core::config::Setting::On("number".into())));
     assert!(config
         .settings
-        .contains(&vim_core::config::Setting::Off("hlsearch".into())));
+        .contains(&gpui_vim_core::config::Setting::Off("hlsearch".into())));
     assert!(config
         .settings
-        .contains(&vim_core::config::Setting::Value("ts".into(), "8".into())));
+        .contains(&gpui_vim_core::config::Setting::Value("ts".into(), "8".into())));
     assert!(config
         .settings
-        .contains(&vim_core::config::Setting::Toggle("hlsearch".into())));
+        .contains(&gpui_vim_core::config::Setting::Toggle("hlsearch".into())));
     assert_eq!(config.mappings.len(), 4); // Q + leader-w(2 classes: map→n+v) + leader-x
     assert_eq!(config.ignored, vec!["this is garbage".to_owned()]);
 }
@@ -1414,7 +1414,7 @@ fn config_apply_options_and_mappings() {
     let text = "set nohlsearch\ntset ts=2\nnnoremap Q dd\n";
     let text = text.replace("tset", "set");
     let mut f = Fixture::at("one\ntwo\n", 0, 0);
-    let config = vim_core::config::parse(&text);
+    let config = gpui_vim_core::config::parse(&text);
     f.vim.apply_config(&config);
     assert!(!f.vim.options.hlsearch);
     assert_eq!(f.vim.options.tabstop, 2);
@@ -1429,7 +1429,7 @@ fn config_noremap_vs_map_semantics() {
     // (the RHS `j` is not re-mapped)
     let text = "map j dd\nnoremap k j\n";
     let mut f = Fixture::at("one\ntwo\n", 0, 0);
-    let config = vim_core::config::parse(text);
+    let config = gpui_vim_core::config::parse(text);
     f.vim.apply_config(&config);
     f.feed(["k"]);
     assert_eq!(f.line(), 1);
@@ -1444,20 +1444,20 @@ fn config_leader_action_bridge() {
     // the user's example shape: :map <Leader>cc :action Some.Action<CR>
     let text = "let mapleader = \" \"\nmap <Leader>cc :action Test.Change<CR>\n";
     let mut f = Fixture::at("foo\n", 0, 0);
-    let config = vim_core::config::parse(text);
+    let config = gpui_vim_core::config::parse(text);
     f.vim.apply_config(&config);
     f.feed([" ", "c", "c"]);
     assert_eq!(f.host.actions, vec!["Test.Change".to_owned()]);
-    assert_eq!(f.vim.mode(), vim_core::Mode::Normal);
+    assert_eq!(f.vim.mode(), gpui_vim_core::Mode::Normal);
 }
 
 #[test]
 fn config_source_directive_is_collected() {
-    let config = vim_core::config::parse("source ~/.vimrc\nset number\n");
+    let config = gpui_vim_core::config::parse("source ~/.vimrc\nset number\n");
     assert_eq!(config.sources, vec![std::path::PathBuf::from("~/.vimrc")]);
     assert!(config
         .settings
-        .contains(&vim_core::config::Setting::On("number".into())));
+        .contains(&gpui_vim_core::config::Setting::On("number".into())));
 }
 
 // ---- multi-app rc isolation (layered loading semantics) -------------------------
@@ -1465,7 +1465,7 @@ fn config_source_directive_is_collected() {
 #[test]
 fn lenient_action_flag_gates_reporting() {
     let text = "map <Leader>a :action Other.App.Save<CR>\n";
-    let config = vim_core::config::parse(text);
+    let config = gpui_vim_core::config::parse(text);
 
     // strict (host layer): the miss is surfaced to the host
     let mut f = Fixture::at("foo\n", 0, 0);
@@ -1492,8 +1492,8 @@ fn lenient_action_flag_gates_reporting() {
 fn host_layer_mapping_overrides_user_layer() {
     // later apply_config wins per key: the host layer's Q overrides the
     // user layer's Q
-    let user = vim_core::config::parse("map Q x\n");
-    let host = vim_core::config::parse("nnoremap Q dd\n");
+    let user = gpui_vim_core::config::parse("map Q x\n");
+    let host = gpui_vim_core::config::parse("nnoremap Q dd\n");
     let mut f = Fixture::at("keep\n", 0, 0);
     f.vim.apply_config(&user);
     f.vim.apply_config(&host);
@@ -1544,7 +1544,7 @@ fn ex_range_invalid_bells_without_panic() {
     let mut f = Fixture::at("a\n", 0, 0);
     f.feed([":", "'", "z", "d", "<CR>"]); // unset mark
     assert_eq!(f.text(), "a\n");
-    assert_eq!(f.vim.mode(), vim_core::Mode::Normal);
+    assert_eq!(f.vim.mode(), gpui_vim_core::Mode::Normal);
 }
 
 #[test]
@@ -1569,7 +1569,7 @@ fn gi_inserts_at_last_insert_exit() {
     f.feed(["<Esc>"]); // cursor steps back onto '!' (byte 7) = '^
     f.feed(["g", "g"]); // move away
     f.feed(["g", "i"]);
-    assert_eq!(f.vim.mode(), vim_core::Mode::Insert);
+    assert_eq!(f.vim.mode(), gpui_vim_core::Mode::Insert);
     assert_eq!(f.cursor(), 7);
     f.type_text("?");
     f.feed(["<Esc>"]);
@@ -1676,7 +1676,7 @@ fn mapping_on_builtin_prefix_fires() {
         .keymaps_mut()
         // vim's :map LHS is a single word: `gt`, never `g t`
         .map_str_noremap(
-            vim_core::keymap::ModeClass::Normal,
+            gpui_vim_core::keymap::ModeClass::Normal,
             "gt",
             ":action Test.Tab<CR>",
             true,
@@ -1696,20 +1696,20 @@ fn visual_colon_esc_restores_selection_and_second_esc_exits() {
     // the prompt keeps the LINEWISE shape while open
     assert_eq!(
         f.vim.visual_selection().map(|(_, _, k)| k),
-        Some(vim_core::VisualKind::Line)
+        Some(gpui_vim_core::VisualKind::Line)
     );
     // Esc returns to the intact visual selection (vim semantics)
     f.feed(["<Esc>"]);
     assert_eq!(
         f.vim.mode(),
-        vim_core::Mode::Visual {
-            kind: vim_core::VisualKind::Line
+        gpui_vim_core::Mode::Visual {
+            kind: gpui_vim_core::VisualKind::Line
         }
     );
     assert!(f.vim.visual_selection().is_some());
     // a second Esc exits visual mode and the highlight is gone
     f.feed(["<Esc>"]);
-    assert_eq!(f.vim.mode(), vim_core::Mode::Normal);
+    assert_eq!(f.vim.mode(), gpui_vim_core::Mode::Normal);
     assert!(f.vim.visual_selection().is_none());
 }
 
@@ -1720,7 +1720,7 @@ fn visual_colon_execute_drops_to_normal_on_range() {
     f.feed(["s", "/", "f", "o", "o", "/", "x", "/", "<CR>"]);
     assert_eq!(f.text(), "foo\nx\nx\n");
     // executing the command ends visual mode
-    assert_eq!(f.vim.mode(), vim_core::Mode::Normal);
+    assert_eq!(f.vim.mode(), gpui_vim_core::Mode::Normal);
     assert!(f.vim.visual_selection().is_none());
     // and '<,'> marks were written for a follow-up :'<,'>s
     assert_eq!(f.vim.marks.resolve('<'), Some(4));
@@ -1771,7 +1771,7 @@ fn hlsearch_highlights_update_incrementally_and_match_full_rescan() {
 fn hlsearch_incremental_matches_full_scan_under_random_edits() {
     // seeded pseudo-random edit sequence: after every edit the spliced
     // highlight set must equal a fresh full scan
-    use vim_core::VimBuffer as _;
+    use gpui_vim_core::VimBuffer as _;
     let mut state: u64 = 0x9E3779B97F4A7C15;
     let mut rng_move = |n: usize| {
         state ^= state << 13;
@@ -1841,7 +1841,7 @@ fn gg_fires_immediately_with_gt_mapping_installed() {
     // start mid-buffer so the second g's jump is observable
     let mut f = Fixture::at(MULTI, 2, 0);
     f.vim.keymaps_mut().map_str_noremap(
-        vim_core::keymap::ModeClass::Normal,
+        gpui_vim_core::keymap::ModeClass::Normal,
         "gt",
         ":action Test.Tab<CR>",
         true,
@@ -1855,7 +1855,7 @@ fn gg_fires_immediately_with_gt_mapping_installed() {
 fn gt_mapping_still_fires_with_prefix_wait() {
     let mut f = Fixture::at(MULTI, 0, 0);
     f.vim.keymaps_mut().map_str_noremap(
-        vim_core::keymap::ModeClass::Normal,
+        gpui_vim_core::keymap::ModeClass::Normal,
         "gt",
         ":action Test.Tab<CR>",
         true,
@@ -1871,7 +1871,7 @@ fn unknown_leader_prefix_waits_for_its_mapping() {
     // keep waiting: keys stay queued until the mapping completes
     let mut f = Fixture::at("foo\n", 0, 0);
     f.vim.keymaps_mut().map_str_noremap(
-        vim_core::keymap::ModeClass::Normal,
+        gpui_vim_core::keymap::ModeClass::Normal,
         "\\a",
         ":action Test.Lehrer<CR>",
         true,
@@ -1889,7 +1889,7 @@ fn leader_comma_mapping_fires_despite_repeat_find_builtin() {
     // waiting instead of firing the builtin, so `,d` completes the mapping.
     let mut f = Fixture::at(MULTI, 1, 0);
     f.vim.keymaps_mut().map_str_noremap(
-        vim_core::keymap::ModeClass::Normal,
+        gpui_vim_core::keymap::ModeClass::Normal,
         ",d",
         ":action Test.Leader<CR>",
         true,

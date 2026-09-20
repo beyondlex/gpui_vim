@@ -76,13 +76,13 @@ fn load_rc_layers(editor: &mut Editor) {
 fn register_default_mappings(editor: &mut Editor) {
     editor.tabs_mut().iter_mut().for_each(|tab| {
         tab.vim.keymaps_mut().map_str_noremap(
-            vim_core::keymap::ModeClass::Normal,
+            gpui_vim_core::keymap::ModeClass::Normal,
             "gt",
             ":action demo.tab-next<CR>",
             true,
         );
         tab.vim.keymaps_mut().map_str_noremap(
-            vim_core::keymap::ModeClass::Normal,
+            gpui_vim_core::keymap::ModeClass::Normal,
             "gT",
             ":action demo.tab-prev<CR>",
             true,
@@ -100,7 +100,7 @@ fn home_dir() -> Option<std::path::PathBuf> {
 /// test of both key paths (special keys + printable text). Remove when
 /// driving the app by hand.
 fn schedule_smoke_test(editor: &gpui::Entity<Editor>, cx: &mut App) {
-    use vim_core::key::Key;
+    use gpui_vim_core::key::Key;
 
     if std::env::var_os("GPUI_VIM_SMOKE").is_none() {
         return;

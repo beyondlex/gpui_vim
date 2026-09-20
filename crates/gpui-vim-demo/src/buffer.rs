@@ -6,8 +6,8 @@
 use std::cell::RefCell;
 use std::ops::Range;
 use std::rc::Rc;
-use vim_core::buffer::VimBuffer;
-use vim_core::buffer::VimBufferMut;
+use gpui_vim_core::buffer::VimBuffer;
+use gpui_vim_core::buffer::VimBufferMut;
 
 pub type SharedRope = Rc<RefCell<ropey::Rope>>;
 

@@ -1,6 +1,7 @@
 [package]
 name = "gpui-vim"
-description = "gpui integration for the vim-core engine: keystroke interception and mode UI state."
+version = "0.1.1"
+description = "gpui integration for the gpui-vim-core engine: keystroke interception and mode UI state."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -8,6 +9,6 @@ authors.workspace = true
 repository.workspace = true
 
 [dependencies]
-vim-core = { path = "../vim-core", version = "0.1.0" }
+gpui-vim-core = { path = "../gpui-vim-core", version = "0.1.0" }
 gpui = "0.2"
 unicode-width = { workspace = true }
