@@ -1,7 +1,7 @@
-use vim_core::buffer::{VimBuffer, VimBufferMut};
-use vim_core::host::VimHost;
-use vim_core::key::Key;
-use vim_core::state::{Ctx, VimState};
+use gpui_vim_core::buffer::{VimBuffer, VimBufferMut};
+use gpui_vim_core::host::VimHost;
+use gpui_vim_core::key::Key;
+use gpui_vim_core::state::{Ctx, VimState};
 
 struct B(String);
 impl VimBuffer for B {
@@ -74,7 +74,7 @@ fn user_style_three_key_leader_mapping_fires() {
     // 复现用户场景：~/.config/pandagit/vimrc 里 `map <Leader>ah :action AcceptLeft<CR>`
     //（文件内无 let mapleader → <Leader> = 库默认反斜杠）
     let text = "map <Leader>ah :action AcceptLeft<CR>\nmap <Leader>al :action AcceptRight<CR>";
-    let cfg = vim_core::config::parse(text);
+    let cfg = gpui_vim_core::config::parse(text);
     assert_eq!(cfg.mappings.len(), 4, "两条 map × Normal/Visual");
 
     let mut vim = VimState::new();
@@ -98,7 +98,7 @@ fn user_style_three_key_leader_mapping_fires() {
 
 #[test]
 fn leader_mapping_parses_and_fires() {
-    let cfg = vim_core::config::parse("noremap <Leader>d :action Foo<CR>");
+    let cfg = gpui_vim_core::config::parse("noremap <Leader>d :action Foo<CR>");
     eprintln!("mappings={}", cfg.mappings.len());
     for m in &cfg.mappings {
         eprintln!(

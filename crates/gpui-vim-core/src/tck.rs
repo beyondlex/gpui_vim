@@ -10,9 +10,9 @@
 //! #[test]
 //! fn my_buffer_meets_engine_contract() {
 //!     let mut buf = MyBuffer::default();
-//!     vim_core::tck::buffer_edit_contract(&mut buf).unwrap();
+//!     gpui_vim_core::tck::buffer_edit_contract(&mut buf).unwrap();
 //!     let mut host = MyHost::default();
-//!     vim_core::tck::engine_smoke_contract(&mut buf, &mut host).unwrap();
+//!     gpui_vim_core::tck::engine_smoke_contract(&mut buf, &mut host).unwrap();
 //! }
 //! ```
 //!

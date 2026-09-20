@@ -25,12 +25,12 @@
 
 use std::ops::Range;
 
-use vim_core::buffer::{VimBuffer, VimBufferMut};
-use vim_core::host::VimHost;
-use vim_core::key::Key;
-use vim_core::mode::{Mode, VisualKind};
-use vim_core::registers::UNNAMED;
-use vim_core::state::{Ctx, KeyResult, VimState};
+use gpui_vim_core::buffer::{VimBuffer, VimBufferMut};
+use gpui_vim_core::host::VimHost;
+use gpui_vim_core::key::Key;
+use gpui_vim_core::mode::{Mode, VisualKind};
+use gpui_vim_core::registers::UNNAMED;
+use gpui_vim_core::state::{Ctx, KeyResult, VimState};
 
 // ---------- flattened document ----------
 
@@ -790,9 +790,9 @@ mod tests {
 
 #[cfg(test)]
 mod tck_tests {
-    //! 引擎 TCK（vim_core::tck）对 PagerBuf 的验收。
+    //! 引擎 TCK（gpui_vim_core::tck）对 PagerBuf 的验收。
     use super::*;
-    use vim_core::tck;
+    use gpui_vim_core::tck;
 
     /// 只读契约（编辑/冒烟契约不适用——VimBufferMut 为刻意的空实现）。
     #[test]

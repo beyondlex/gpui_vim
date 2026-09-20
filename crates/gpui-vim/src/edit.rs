@@ -24,11 +24,11 @@ use gpui::{
     Focusable, Point, ScrollHandle, SharedString, Window,
 };
 use unicode_width::UnicodeWidthChar as _;
-use vim_core::buffer::{clamp_to_line_end, VimBuffer, VimBufferMut};
-use vim_core::host::{ScrollAnchor, VimHost};
-use vim_core::key::KeyKind;
-use vim_core::mode::{Mode, VisualKind};
-use vim_core::state::{Ctx, KeyResult, VimState};
+use gpui_vim_core::buffer::{clamp_to_line_end, VimBuffer, VimBufferMut};
+use gpui_vim_core::host::{ScrollAnchor, VimHost};
+use gpui_vim_core::key::KeyKind;
+use gpui_vim_core::mode::{Mode, VisualKind};
+use gpui_vim_core::state::{Ctx, KeyResult, VimState};
 
 // ---------- 视觉样式 ----------
 
@@ -913,7 +913,7 @@ impl VimEdit {
             buf: &mut self.buf,
             host: &mut self.host,
         };
-        self.vim.handle_key(&mut ctx, vim_core::key::Key::char('v'));
+        self.vim.handle_key(&mut ctx, gpui_vim_core::key::Key::char('v'));
     }
 
     /// 窗口坐标 → 扁平偏移。行 = 视口行 + 滚动补偿；列 = 等宽字宽估算。
@@ -1188,8 +1188,8 @@ impl crate::VimEditor for VimEdit {
 #[cfg(test)]
 mod multiline_tests {
     use super::*;
-    use vim_core::key::Key;
-    use vim_core::state::Ctx;
+    use gpui_vim_core::key::Key;
+    use gpui_vim_core::state::Ctx;
 
     /// 组装引擎 + 单行初始内容的 buffer（正文编辑器打开时的状态）。
     fn setup() -> (SharedLines, LinesBuf, EditHost, VimState) {
@@ -1291,9 +1291,9 @@ mod multiline_tests {
 
 #[cfg(test)]
 mod tck_tests {
-    //! 引擎 TCK（vim_core::tck）对 LinesBuf 的验收。
+    //! 引擎 TCK（gpui_vim_core::tck）对 LinesBuf 的验收。
     use super::*;
-    use vim_core::tck;
+    use gpui_vim_core::tck;
 
     /// LinesBuf 满足编辑契约与引擎冒烟（宿主侧用真实 EditHost）。
     #[test]
