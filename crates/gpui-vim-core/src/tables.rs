@@ -55,6 +55,7 @@ pub enum NormalCmd {
     DecrementNumber,             // C-x
     WriteQuit,                   // ZZ
     QuitNoSave,                  // ZQ
+    ScrollLines { down: bool },  // C-e / C-y: scroll the view one line
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -124,10 +125,11 @@ impl CmdKind {
                     | NormalCmd::RepeatChange
                     | NormalCmd::JumpBackward
                     | NormalCmd::JumpForward
-                    | NormalCmd::OlderChange
-                    | NormalCmd::NewerChange
-                    | NormalCmd::WriteQuit
-                    | NormalCmd::QuitNoSave
+                | NormalCmd::OlderChange
+                | NormalCmd::NewerChange
+                | NormalCmd::WriteQuit
+                | NormalCmd::QuitNoSave
+                | NormalCmd::ScrollLines { .. }
             ),
             CmdKind::Visual(cmd) => !matches!(
                 cmd,
@@ -235,9 +237,10 @@ fn build_rows() -> Vec<(Vec<Key>, Phase, CmdKind)> {
     b.motion_all(&["{"], Motion::ParaPrev);
     b.motion_all(&[")"], Motion::SentenceNext);
     b.motion_all(&["("], Motion::SentencePrev);
+    // `forward` on SearchNext is the REPEAT polarity: `n` repeats the last
+    // search in its own direction, `N` mirrors it (`?` + `n` goes up).
     b.motion_all(&["n"], Motion::SearchNext { forward: true });
-    b.motion_all(&["N"], Motion::SearchNext { forward: false });
-    b.motion_all(&["*"], Motion::StarSearch { forward: true });
+    b.motion_all(&["N"], Motion::SearchNext { forward: false });    b.motion_all(&["*"], Motion::StarSearch { forward: true });
     b.motion_all(&["#"], Motion::StarSearch { forward: false });
     b.motion_all(&["|"], Motion::Column);
     b.motion_all(&["H"], Motion::ScreenTop);
@@ -463,6 +466,13 @@ fn build_rows() -> Vec<(Vec<Key>, Phase, CmdKind)> {
     b.normal(&["q"], CmdKind::Normal(NormalCmd::RecordMacro));
     b.normal(&["<C-o>"], CmdKind::Normal(NormalCmd::JumpBackward));
     b.normal(&["<C-i>"], CmdKind::Normal(NormalCmd::JumpForward));
+    // <Tab> and <C-i> are the SAME key on a terminal: vim jumps forward on
+    // both (the crossterm key layer delivers plain "tab" for the Tab key)
+    b.normal(&["<Tab>"], CmdKind::Normal(NormalCmd::JumpForward));
+    // free scrolling: C-e / C-y move the VIEW one line, cursor follows only
+    // when it would leave the viewport
+    b.normal(&["<C-e>"], CmdKind::Normal(NormalCmd::ScrollLines { down: true }));
+    b.normal(&["<C-y>"], CmdKind::Normal(NormalCmd::ScrollLines { down: false }));
     b.normal(&["g", ";"], CmdKind::Normal(NormalCmd::OlderChange));
     b.normal(&["g", ","], CmdKind::Normal(NormalCmd::NewerChange));
     b.normal(&["<C-a>"], CmdKind::Normal(NormalCmd::IncrementNumber));
@@ -521,6 +531,7 @@ fn build_rows() -> Vec<(Vec<Key>, Phase, CmdKind)> {
     b.visual(&["x"], CmdKind::Operator(Operator::Delete));
     b.visual(&["<Del>"], CmdKind::Operator(Operator::Delete));
     b.visual(&["y"], CmdKind::Operator(Operator::Yank));
+    b.visual(&["Y"], CmdKind::Operator(Operator::Yank));
     b.visual(&["c"], CmdKind::Operator(Operator::Change));
     b.visual(&["s"], CmdKind::Operator(Operator::Change));
     b.visual(&["C"], CmdKind::Operator(Operator::Change));

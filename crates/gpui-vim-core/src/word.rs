@@ -209,7 +209,10 @@ pub fn prev_word_end(buf: &dyn VimBuffer, offset: usize, big: bool) -> usize {
     o
 }
 
-/// `f`/`t`/`F`/`T` helpers: find `target` on the current line.
+/// `f`/`t`/`F`/`T` helpers: find `target` on the current line. The `till`
+/// forms stop one char BEFORE/AFTER the hit — that stop position must still
+/// be on the SAME line, or the motion fails (vim: `tx` with the only `x` at
+/// column 0 beeps instead of parking the cursor on the previous line's `\n`).
 pub fn find_char_forward(
     buf: &dyn VimBuffer,
     offset: usize,
@@ -217,15 +220,19 @@ pub fn find_char_forward(
     till: bool,
 ) -> Option<usize> {
     let line = buf.offset_to_line(offset);
+    let line_start = buf.line_start(line);
     let mut o = buf.next_char_offset(offset).unwrap_or(offset);
     let end = buf.line_end(line);
     while o < end {
         if buf.char_at(o) == Some(target) {
-            return Some(if till {
-                buf.prev_char_offset(o).unwrap_or(offset)
-            } else {
-                o
-            });
+            if till {
+                return match buf.prev_char_offset(o) {
+                    Some(prev) if prev >= line_start => Some(prev),
+                    // hit is the first char of the line: no room to stop
+                    _ => None,
+                };
+            }
+            return Some(o);
         }
         o = buf.next_char_offset(o)?;
     }
@@ -241,17 +248,22 @@ pub fn find_char_backward(
     let line = buf.offset_to_line(offset);
     let mut o = offset;
     let start = buf.line_start(line);
+    let line_end = buf.line_end(line);
     while o > start {
         let Some(prev) = buf.prev_char_offset(o) else {
             break;
         };
         o = prev;
         if buf.char_at(o) == Some(target) {
-            return Some(if till {
-                buf.next_char_offset(o).unwrap_or(offset)
-            } else {
-                o
-            });
+            if till {
+                return match buf.next_char_offset(o) {
+                    // the stop char must be ON the line (hit can't be the
+                    // last content char — there'd be nothing to stop on)
+                    Some(next) if next < line_end => Some(next),
+                    _ => None,
+                };
+            }
+            return Some(o);
         }
     }
     None

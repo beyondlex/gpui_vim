@@ -76,6 +76,14 @@ pub trait VimHost {
     /// (e.g. prompting about unsaved changes is the host's call).
     fn request_close(&mut self) {}
 
+    /// `:q`/`:q!`/`:wq`/`ZZ`/`ZQ` with the force flag: `forced == false`
+    /// means a plain `:q`, which the host may REFUSE (vim's E37: No write
+    /// since last change). The default keeps the old unconditional close.
+    fn request_close_forced(&mut self, forced: bool) {
+        let _ = forced;
+        self.request_close();
+    }
+
     /// Non-fatal feedback text for the status UI: `E486: Pattern not found`,
     /// substitution counts, unknown Ex commands. Optional (default no-op);
     /// errors that need a decision still go through `bell`.

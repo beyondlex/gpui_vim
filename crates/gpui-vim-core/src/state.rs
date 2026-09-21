@@ -229,6 +229,11 @@ pub struct VimState {
     pub keymaps: Keymaps,
     tables: CommandTables,
 
+    /// Replace (`R`) mode: characters the typing overwrote, newest last.
+    /// `None` entries mark text typed PAST the line end (no original to
+    /// restore). Backspace pops this stack and restores, like vim.
+    pub(crate) replace_overwritten: Vec<Option<char>>,
+
     undo_seq: u64,
     open_undo: Option<u64>,
     /// Bumped by every buffer mutation (the `edit_*` funnels, engine-driven
@@ -299,6 +304,7 @@ impl VimState {
             cmdline: Cmdline::default(),
             keymaps: Keymaps::default(),
             tables: CommandTables::build(),
+            replace_overwritten: Vec::new(),
             undo_seq: 0,
             open_undo: None,
             edit_generation: 0,
@@ -1115,18 +1121,25 @@ impl VimState {
         };
         let at = self.cursor.offset;
         if self.mode == Mode::Replace {
-            // overwrite up to the text length, then insert the remainder
+            // overwrite up to the text length, then insert the remainder.
+            // Each overwritten char is stashed so Backspace can restore it
+            // (vim's Replace-mode BS); chars appended past the line end
+            // record `None` — backspacing over them plain-deletes.
             let mut end = at;
             let line_end = ctx.buf.line_end(ctx.buf.offset_to_line(at));
+            let mut overwritten = 0usize;
             for _ in 0..expanded.chars().count() {
-                let Some(next) = ctx.buf.next_char_offset(end) else {
-                    break;
-                };
-                if next > line_end {
-                    break;
+                match ctx.buf.next_char_offset(end) {
+                    Some(next) if next <= line_end => {
+                        self.replace_overwritten.push(ctx.buf.char_at(end));
+                        end = next;
+                        overwritten += 1;
+                    }
+                    _ => break,
                 }
-                end = next;
             }
+            let appended = expanded.chars().count().saturating_sub(overwritten);
+            self.replace_overwritten.extend(std::iter::repeat_n(None, appended));
             self.edit_replace(ctx, at..end.min(line_end.max(at)), &expanded);
         } else {
             self.edit_insert(ctx, at, &expanded);
@@ -1910,7 +1923,13 @@ impl VimState {
                         };
                         self.visual_anchor = Some(span.start);
                         let end = span.end.min(ctx.buf.len());
-                        self.cursor.offset = ctx.buf.prev_char_offset(end).unwrap_or(span.start);
+                        // an EMPTY object range (vi( on `()`) collapses to a
+                        // zero-width selection at its start
+                        self.cursor.offset = if end > span.start {
+                            ctx.buf.prev_char_offset(end).unwrap_or(span.start)
+                        } else {
+                            span.start
+                        };
                         self.cursor.desired_col = None;
                     }
                     _ if self.op.is_some() => {
@@ -2388,13 +2407,27 @@ impl VimState {
                     self.mode = Mode::Visual { kind };
                 }
             }
-            // ZZ / ZQ: the host owns persistence and window lifetime
+            // ZZ / ZQ: the host owns persistence and window lifetime. Both
+            // may close with unsaved changes (ZZ writes first, ZQ is :q!)
             NormalCmd::WriteQuit => {
                 ctx.host.save();
-                ctx.host.request_close();
+                ctx.host.request_close_forced(true);
             }
             NormalCmd::QuitNoSave => {
-                ctx.host.request_close();
+                ctx.host.request_close_forced(true);
+            }
+            // C-e / C-y: scroll the VIEW `count` lines; the cursor only
+            // follows when the scroll would push it out of the viewport
+            NormalCmd::ScrollLines { down } => {
+                let count = self.take_total_count().max(1);
+                let line = ctx.buf.offset_to_line(self.cursor.offset);
+                let delta = if down {
+                    count as i32
+                } else {
+                    -(count as i32)
+                };
+                ctx.host.scroll_lines(delta);
+                ctx.host.scroll_to_line(line);
             }
         }
     }
@@ -2581,6 +2614,9 @@ impl VimState {
             }
         }
         self.begin_insert(ctx, kind);
+        if kind == InsertKind::Replace {
+            self.replace_overwritten.clear();
+        }
     }
 
     // ---- char-argument commands -------------------------------------------------
@@ -2637,6 +2673,16 @@ impl VimState {
                 self.macro_capture = Some((c, Vec::new()));
             }
             CharArgCmd::MacroPlay => {
+                // `@:` repeats the last executed Ex command line
+                if c == ':' {
+                    match self.cmdline.last_command.clone() {
+                        Some(line) => self.execute_ex(ctx, &line),
+                        None => ctx.host.bell(),
+                    }
+                    self.char_arg = None;
+                    self.end_command();
+                    return ProcessOutcome::Consumed;
+                }
                 let reg = if c == '@' {
                     self.last_macro_played
                 } else {

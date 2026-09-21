@@ -199,7 +199,10 @@ impl Motion {
                 MotionKind::Exclusive,
             ),
             Motion::LineEnd => {
-                let line = buf.offset_to_line(vim.cursor.offset);
+                // `count$` ends at the END of the count-th line down (`2$`,
+                // `d2$` cross the newline like vim)
+                let line = (buf.offset_to_line(vim.cursor.offset) + count - 1)
+                    .min(buf.line_count() - 1);
                 let end = buf.line_end(line);
                 if end == buf.line_start(line) {
                     MotionResult::new(end, MotionKind::Inclusive)
@@ -282,7 +285,14 @@ impl Motion {
                 };
                 Self::find_from(vim, buf, target_char, forward, till, count)
             }
-            // %: jump to the bracket matching the one under the cursor
+            // %: jump to the bracket matching the one under the cursor.
+            // With an explicit count vim jumps to that PERCENTAGE of the
+            // file instead (`50%` = halfway down, first non-blank).
+            Motion::MatchBracket if count > 1 => {
+                let total = buf.line_count() as u64;
+                let line = (count as u64 * total / 100).clamp(0, total - 1) as usize;
+                MotionResult::new(buf.line_start(line), MotionKind::Linewise)
+            }
             Motion::MatchBracket => match word::match_bracket(buf, vim.cursor.offset) {
                 Some(o) => MotionResult::new(o, MotionKind::Inclusive),
                 None => MotionResult::stuck(vim.cursor.offset),
@@ -334,9 +344,13 @@ impl Motion {
                 MotionResult::new(o, MotionKind::Exclusive)
             }
             // n / N: jump to the count-th next/previous match of the
-            // active pattern
+            // active pattern. The table's `forward` flag is the REPEAT
+            // polarity (`n` = same direction as the last search, `N` =
+            // opposite), not the direction itself: after `?foo` a plain `n`
+            // must keep searching BACKWARD, like vim.
             Motion::SearchNext { forward } => {
-                match search::jump_to_match(vim, buf, forward, count) {
+                let dir = if forward { vim.search.forward } else { !vim.search.forward };
+                match search::jump_to_match(vim, buf, dir, count) {
                     Some(o) => {
                         // re-publish the matches: after Esc dismissed the
                         // highlights (`:noh` semantics) `n`/`N` re-arms them
