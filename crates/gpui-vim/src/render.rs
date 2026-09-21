@@ -264,6 +264,8 @@ pub fn paint_vim_line(
     let _ = shaped.paint(
         point(bounds.origin.x, bounds.origin.y),
         line_height,
+        gpui::TextAlign::Left,
+        None,
         window,
         cx,
     );
@@ -411,7 +413,7 @@ impl CaretBlinker {
     pub fn spawn_loop<E: 'static>(self: &Rc<Self>, cx: &mut Context<E>) {
         let blinker = Rc::clone(self);
         cx.spawn(async move |entity, cx| loop {
-            gpui::Timer::after(BLINK_INTERVAL).await;
+            cx.background_executor().timer(BLINK_INTERVAL).await;
             let alive = entity
                 .update(cx, |_, cx| {
                     blinker.tick();

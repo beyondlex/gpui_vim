@@ -300,7 +300,7 @@ impl Editor {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        window.focus(&self.focus_handle);
+        window.focus(&self.focus_handle, cx);
         let offset = self.byte_at_point(event.position);
         {
             let tab = self.tab_mut();
@@ -493,7 +493,7 @@ impl Render for Editor {
         // focus recovery: claim focus whenever the window is active but the
         // editor handle is not focused (e.g. after app activation)
         if window.is_window_active() && !self.focus_handle.contains_focused(window, cx) {
-            window.focus(&self.focus_handle);
+            window.focus(&self.focus_handle, cx);
         }
         let view = cx.entity();
         div()
@@ -548,7 +548,7 @@ impl Editor {
                 })
                 .flex_1()
                 .size_full()
-                .track_scroll(self.scroll_handle.clone()),
+                .track_scroll(&self.scroll_handle),
             )
             .child(
                 // paint-only surface: IME plumbing + geometry capture

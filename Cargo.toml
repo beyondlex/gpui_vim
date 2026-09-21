@@ -16,3 +16,11 @@ unicode-width = "0.2"
 
 [profile.dev]
 opt-level = 1
+
+# 使用优化后的 gpui：独立发行版 gpui-x（不再依赖整个 zed monorepo）；
+# gpui-vim/gpui-vim-demo 的 gpui-vim-core 依赖走 registry（本仓作为 git
+# 依赖被消费时 patch 不生效，消费方与本仓各自统一到 registry 同一拷贝），
+# 本仓内迭代 gpui-vim-core 时经下方 path patch 本地生效（发版后删除）
+[patch.crates-io]
+gpui = { git = "https://github.com/beyondlex/gpui-x", branch = "main" }
+gpui-vim-core = { path = "crates/gpui-vim-core" }

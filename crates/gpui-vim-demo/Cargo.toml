@@ -13,7 +13,12 @@ name = "gpui-vim-demo"
 path = "src/main.rs"
 
 [dependencies]
-gpui-vim-core = { path = "../gpui-vim-core" }
+gpui-vim-core = "0.1"
 gpui-vim = { path = "../gpui-vim" }
 gpui = "0.2"
+# 应用启动入口 helper（未发布 crates.io，取自 gpui-x 同源）。
+# font-kit 必须显式开启，否则 gpui_macos 退到 NoopTextSystem（无文字）
+gpui_platform = { git = "https://github.com/beyondlex/gpui-x", branch = "main", features = [
+    "font-kit",
+] }
 ropey = { workspace = true }
