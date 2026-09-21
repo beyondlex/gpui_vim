@@ -473,16 +473,21 @@ pub fn format_lines(vim: &mut VimState, ctx: &mut Ctx, start: usize, last_line: 
 /// Contract: exactly one trailing `'\n'` is appended per call — callers
 /// joining several paragraphs are responsible for dropping the final
 /// terminator before writing back to the buffer.
+///
+/// Widths are DISPLAY columns (CJK chars cover two cells), matching how the
+/// terminal renders the reflowed paragraph.
 fn flush_paragraph(paragraph: &mut Vec<String>, indent: &str, width: usize, out: &mut String) {
-    let mut col = indent.chars().count();
+    let width_of = |s: &str| -> usize { s.chars().map(crate::buffer::char_display_width).sum() };
+    let indent_w = width_of(indent);
+    let mut col = indent_w;
     let mut line = String::from(indent);
     for word in paragraph.drain(..) {
-        let w = word.chars().count();
-        if col > indent.chars().count() && col + w > width {
+        let w = width_of(&word);
+        if col > indent_w && col + w > width {
             out.push_str(line.trim_end());
             out.push('\n');
             line = String::from(indent);
-            col = indent.chars().count();
+            col = indent_w;
         }
         line.push_str(&word);
         line.push(' ');

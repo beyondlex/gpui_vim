@@ -30,18 +30,25 @@ fn normalize_control_char(key: Key) -> Key {
 #[derive(Default)]
 pub struct Cmdline {
     pub buffer: String,
-    /// History per prompt: `/` and `?` share search history in vim, `:` has
-    /// its own command history.
+    /// History per prompt: `/` and `?` SHARE the search history (vim), `:`
+    /// has its own. Keys are canonicalized through [`history_key`].
     pub history: HashMap<char, Vec<String>>,
     /// Position while browsing history with Up/Down; None = typing.
     pub history_pos: Option<usize>,
     /// In-progress input stashed while browsing history.
     pub stash: Option<String>,
+    /// Last executed Ex command line (`@:` replays it).
+    pub last_command: Option<String>,
 }
 
 impl Cmdline {
+    /// `/` and `?` share one search history, like vim.
+    fn history_key(prompt: char) -> char {
+        if prompt == ':' { ':' } else { '/' }
+    }
+
     fn history_for(&mut self, prompt: char) -> &mut Vec<String> {
-        self.history.entry(prompt).or_default()
+        self.history.entry(Self::history_key(prompt)).or_default()
     }
 }
 
@@ -154,6 +161,9 @@ impl VimState {
                     self.cmdline.stash = None;
                     if prompt == ':' {
                         self.mode = Mode::Normal;
+                        if !entry.is_empty() {
+                            self.cmdline.last_command = Some(entry.clone());
+                        }
                         self.execute_ex(ctx, &entry);
                         // executing a visual `:` command ends visual mode
                         // (marks written, anchor cleared), like vim
@@ -180,7 +190,8 @@ impl VimState {
                     KeyResult::Consumed
                 }
                 "up" | "down" => {
-                    let Some(history) = self.cmdline.history.get(&prompt) else {
+                    let Some(history) = self.cmdline.history.get(&Cmdline::history_key(prompt))
+                    else {
                         return KeyResult::Consumed;
                     };
                     if history.is_empty() {
@@ -245,7 +256,7 @@ impl VimState {
     /// `:bn[ext]`/`:bp[revious]`, and IdeaVim's `:action <id>` bridge.
     /// Unknown commands get E492 and return to normal mode (mode is already
     /// Normal here).
-    fn execute_ex(&mut self, ctx: &mut Ctx, line: &str) {
+    pub(crate) fn execute_ex(&mut self, ctx: &mut Ctx, line: &str) {
         let line = line.trim();
         if line.is_empty() {
             return;
@@ -262,6 +273,14 @@ impl VimState {
         };
         let line = line.trim();
         if line.is_empty() {
+            // a bare `:5` moves to line 5 (first non-blank); a plain `:`
+            // (no range) is a no-op
+            if let Some((first, _)) = range {
+                let line_no = first.min(ctx.buf.line_count().saturating_sub(1));
+                self.cursor.offset = ctx.buf.first_non_blank(line_no);
+                self.cursor.desired_col = None;
+                ctx.host.scroll_to_line(line_no);
+            }
             return;
         }
         match line {
@@ -273,13 +292,18 @@ impl VimState {
                 ctx.host.save();
                 return;
             }
-            "q" | "quit" | "q!" | "quit!" => {
-                ctx.host.request_close();
+            "q" | "quit" => {
+                // not forced: the host may refuse (vim E37 on modified)
+                ctx.host.request_close_forced(false);
+                return;
+            }
+            "q!" | "quit!" => {
+                ctx.host.request_close_forced(true);
                 return;
             }
             "wq" | "x" | "xit" => {
                 ctx.host.save();
-                ctx.host.request_close();
+                ctx.host.request_close_forced(true);
                 return;
             }
             _ => {}
@@ -380,6 +404,14 @@ impl VimState {
                             .resolve('>')
                             .map(|off| ctx.buf.offset_to_line(off))
                     }),
+                // `'a`-style marks: resolve through the mark table (the range
+                // scanner accepts any `'x`; dropping them here made
+                // `:'a,'b d` fail with E16 even though they parsed)
+                other if other.len() == 2 && other.starts_with('\'') => other[1..]
+                    .chars()
+                    .next()
+                    .and_then(|name| vim.marks.resolve(name))
+                    .map(|off| ctx.buf.offset_to_line(off.min(ctx.buf.len()))),
                 other => other.parse::<usize>().ok().map(|n| n.saturating_sub(1)),
             }
         }
@@ -560,10 +592,17 @@ impl VimState {
         } else {
             pattern.to_owned()
         };
-        let Some(builder) = search::compile(self, &pattern) else {
+        let Some(mut builder) = search::compile(self, &pattern) else {
             ctx.host.bell();
             return true;
         };
+        // `i` forces case-insensitive for this substitution, `I` forces
+        // case-sensitive (overriding ignorecase/smartcase, like vim)
+        if flags.contains('i') {
+            builder.case_insensitive(true);
+        } else if flags.contains('I') {
+            builder.case_insensitive(false);
+        }
         let Ok(re) = builder.build() else {
             ctx.host.bell();
             return true;

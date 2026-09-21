@@ -130,6 +130,33 @@ impl VimState {
     fn insert_backspace(&mut self, ctx: &mut Ctx) {
         let at = self.cursor.offset;
         let line_start = ctx.buf.line_start(ctx.buf.offset_to_line(at));
+
+        // Replace mode: BS restores the overwritten character and steps
+        // back (vim `R` + BS). `None` entries were APPENDED past the line
+        // end — there is nothing to restore, so they plain-delete.
+        if self.mode == Mode::Replace {
+            if let Some(orig) = self.replace_overwritten.pop() {
+                if at > line_start {
+                    if let Some(prev) = ctx.buf.prev_char_offset(at) {
+                        self.begin_edit(ctx);
+                        match orig {
+                            Some(c) => self.edit_replace(ctx, prev..at, &c.to_string()),
+                            None => self.edit_delete(ctx, prev..at),
+                        }
+                        self.cursor.offset = prev;
+                        ctx.host.changed();
+                    }
+                } else if at > 0 {
+                    // crossed the line start: join with the previous line
+                    self.begin_edit(ctx);
+                    self.edit_delete(ctx, at - 1..at);
+                    self.cursor.offset = at - 1;
+                    ctx.host.changed();
+                }
+                return;
+            }
+        }
+
         if at > line_start {
             if let Some(prev) = ctx.buf.prev_char_offset(at) {
                 self.begin_edit(ctx);
@@ -187,7 +214,7 @@ impl VimState {
 
     /// Called when insert mode is left implicitly (host navigation etc.).
     pub fn ensure_normal_mode(&mut self, ctx: &mut Ctx) {
-        if matches!(self.mode, Mode::Insert) {
+        if matches!(self.mode, Mode::Insert | Mode::Replace) {
             self.exit_insert(ctx);
         }
     }

@@ -247,7 +247,10 @@ fn quote_range(
     } else {
         ObjectRange::charwise(open, close + quote.len_utf8())
     };
-    if range.start >= range.end {
+    // inner may be EMPTY (`ci"` on `""` inserts between the quotes, like
+    // vim); only the outer form — which always spans both quotes — is
+    // required to be non-empty
+    if !inner && range.start >= range.end {
         None
     } else {
         Some(range)
@@ -261,30 +264,43 @@ fn block_range(
     open: char,
     close: char,
 ) -> Option<ObjectRange> {
-    // scan backwards for the innermost unmatched `open`
-    let mut depth = 0i32;
-    let mut open_pos = None;
-    let mut o = offset;
-    while let Some(prev) = buf.prev_char_offset(o) {
-        o = prev;
-        match buf.char_at(o) {
-            Some(c) if c == close => depth += 1,
-            Some(c) if c == open => {
-                if depth == 0 {
-                    open_pos = Some(o);
-                    break;
+    // an OPEN bracket under the cursor opens the block (vim): scan forward
+    // from the NEXT char. A close under the cursor must not count — the
+    // block containing the cursor extends past it.
+    let opened_here = buf.char_at(offset) == Some(open);
+    let open_pos = if opened_here {
+        Some(offset)
+    } else {
+        // scan backwards for the innermost unmatched `open`
+        let mut depth = 0i32;
+        let mut open_pos = None;
+        let mut o = offset;
+        while let Some(prev) = buf.prev_char_offset(o) {
+            o = prev;
+            match buf.char_at(o) {
+                Some(c) if c == close => depth += 1,
+                Some(c) if c == open => {
+                    if depth == 0 {
+                        open_pos = Some(o);
+                        break;
+                    }
+                    depth -= 1;
                 }
-                depth -= 1;
+                _ => {}
             }
-            _ => {}
         }
-    }
+        open_pos
+    };
     let open_pos = open_pos?;
 
     // scan forwards from the cursor for the innermost unmatched `close`
     let mut depth = 0i32;
     let mut close_pos = None;
-    let mut o = offset;
+    let mut o = if opened_here {
+        buf.next_char_offset(offset)?
+    } else {
+        offset
+    };
     while let Some(c) = buf.char_at(o) {
         if c == open {
             depth += 1;
@@ -300,10 +316,9 @@ fn block_range(
     let close_pos = close_pos?;
 
     if inner {
+        // empty pairs are fine: `ci(` on `()` must be able to insert between
+        // the brackets (zero-width inner range)
         let start = open_pos + open.len_utf8();
-        if start >= close_pos {
-            return None;
-        }
         Some(ObjectRange::charwise(start, close_pos))
     } else {
         Some(ObjectRange::charwise(
@@ -377,10 +392,8 @@ fn tag_range(buf: &dyn VimBuffer, offset: usize, inner: bool) -> Option<ObjectRa
     }
     let (open_start, close_end) = best?;
     if inner {
+        // empty elements (`<p></p>`) yield a zero-width inner range
         let after_open = text[open_start..].find('>')? + open_start + 1;
-        if after_open >= close_end {
-            return None;
-        }
         Some(ObjectRange::charwise(after_open, close_end))
     } else {
         Some(ObjectRange::charwise(open_start, close_end))

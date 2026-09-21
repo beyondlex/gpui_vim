@@ -39,6 +39,9 @@ impl Registers {
         match name {
             UNNAMED => self.last.as_ref(),
             BLACKHOLE => None,
+            // `"A` reads register `a` — the uppercase spelling is the append
+            // form, not a separate slot
+            c if c.is_ascii_uppercase() => self.named.get(&c.to_ascii_lowercase()),
             _ => self.named.get(&name),
         }
     }
@@ -61,7 +64,8 @@ impl Registers {
 
     /// Write to a register. `name` of `UNNAMED` writes to the unnamed slot
     /// only. Every write also updates the unnamed mirror (except the
-    /// blackhole), matching vim.
+    /// blackhole), matching vim. Uppercase `A`-`Z` APPEND to the lowercase
+    /// register instead of writing a separate slot (vim's `"Ayy`).
     pub fn store(&mut self, name: char, text: String, kind: RegisterKind) {
         let register = Register {
             text: text.clone(),
@@ -74,14 +78,50 @@ impl Registers {
             self.last = Some(register);
             return;
         }
+        if name.is_ascii_uppercase() {
+            self.append_to_named(name, text, kind);
+            return;
+        }
         self.named.insert(name, register.clone());
         self.last = Some(register);
+    }
+
+    /// Uppercase-register append: concatenate onto the lowercase register.
+    /// Either side linewise makes the result linewise (text re-joined on
+    /// line boundaries); same-kind appends concatenate byte for byte.
+    fn append_to_named(&mut self, name: char, text: String, kind: RegisterKind) {
+        let lower = name.to_ascii_lowercase();
+        let (merged, merged_kind) = match self.named.get(&lower) {
+            Some(existing) => {
+                let mut kind = kind;
+                let mut text = text;
+                if existing.kind == RegisterKind::Linewise || kind == RegisterKind::Linewise {
+                    kind = RegisterKind::Linewise;
+                    if !existing.text.ends_with('\n') {
+                        text.insert(0, '\n');
+                    }
+                    if !text.ends_with('\n') {
+                        text.push('\n');
+                    }
+                }
+                (format!("{}{}", existing.text, text), kind)
+            }
+            None => (text, kind),
+        };
+        self.store(lower, merged, merged_kind);
     }
 
     /// Yank semantics: explicit register, else `"0` + unnamed.
     pub fn store_yank(&mut self, explicit: Option<char>, text: String, kind: RegisterKind) {
         match explicit {
-            Some(name) if name != UNNAMED => self.store(name, text.clone(), kind),
+            Some(name) if name != UNNAMED => {
+                self.store(name, text.clone(), kind);
+                // an uppercase append re-points `last` at the MERGED register
+                // inside `store`; don't clobber it with the fragment below
+                if name.is_ascii_uppercase() {
+                    return;
+                }
+            }
             _ => self.store(YANK, text.clone(), kind),
         }
         // A yank ALWAYS re-points the unnamed register at what was written —

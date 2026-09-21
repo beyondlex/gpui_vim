@@ -139,7 +139,8 @@ pub fn jump_to_match(
 }
 
 /// `*` / `#`: build a whole-word pattern from the word under the cursor and
-/// search for it.
+/// search for it. When the cursor is NOT on a word, vim uses the closest
+/// word FORWARD on the same line.
 pub fn search_word_under_cursor(
     vim: &mut VimState,
     buf: &dyn VimBuffer,
@@ -147,10 +148,24 @@ pub fn search_word_under_cursor(
     forward: bool,
 ) {
     let offset = vim.cursor.offset;
+    // not on a word char: scan forward to the next one within this line
+    let offset = if !matches!(buf.char_at(offset), Some(c) if is_word_char(c)) {
+        let line_end = buf.line_end(buf.offset_to_line(offset));
+        let mut o = offset;
+        while o < line_end && !matches!(buf.char_at(o), Some(c) if is_word_char(c)) {
+            o += buf.char_at(o).map(|c| c.len_utf8()).unwrap_or(1);
+        }
+        o
+    } else {
+        offset
+    };
     let Some((start, end)) = word_bounds_at(buf, offset) else {
         return;
     };
     let literal = buf.slice(start..end);
+    if literal.is_empty() {
+        return;
+    }
     let escaped = regex::escape(&literal);
     let pattern = format!(r"\b{escaped}\b");
     set_pattern_inner(vim, buf, host, pattern, forward);
@@ -158,7 +173,11 @@ pub fn search_word_under_cursor(
 }
 
 /// Word bounds around `offset` (the run of word chars containing it).
+/// Returns `None` when `offset` sits on a non-word char.
 pub fn word_bounds_at(buf: &dyn VimBuffer, offset: usize) -> Option<(usize, usize)> {
+    if !matches!(buf.char_at(offset), Some(c) if is_word_char(c)) {
+        return None;
+    }
     let mut start = offset;
     while let Some(prev) = buf.prev_char_offset(start) {
         match buf.char_at(prev) {
@@ -166,14 +185,15 @@ pub fn word_bounds_at(buf: &dyn VimBuffer, offset: usize) -> Option<(usize, usiz
             _ => break,
         }
     }
-    let mut end = buf.next_char_offset(offset).unwrap_or(offset);
-    while let Some(next_char) = buf.char_at(end) {
-        if !is_word_char(next_char) {
-            break;
+    let mut end = start;
+    while let Some(next) = buf.next_char_offset(end) {
+        match buf.char_at(next) {
+            Some(c) if is_word_char(c) => end = next,
+            _ => break,
         }
-        end += next_char.len_utf8();
     }
-    Some((start, end))
+    // `end` is the last char OF the word; the bound is exclusive
+    Some((start, end + buf.char_at(end).map(|c| c.len_utf8()).unwrap_or(1)))
 }
 
 /// Publish incremental highlights while the user types in the command line.

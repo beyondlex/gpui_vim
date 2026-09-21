@@ -106,6 +106,8 @@ pub struct HostView {
     pub saved: usize,
     /// `:q` flag (Ex command tests).
     pub close_requested: bool,
+    /// Force flag of the latest close request (`:q!`/`:wq`/`ZZ` = true).
+    pub close_forced: bool,
     /// status_message texts (Ex feedback tests).
     pub statuses: Vec<String>,
     /// dispatch_host_action ids (config bridge tests).
@@ -140,6 +142,12 @@ impl VimHost for HostView {
 
     fn request_close(&mut self) {
         self.close_requested = true;
+        self.close_forced = false;
+    }
+
+    fn request_close_forced(&mut self, forced: bool) {
+        self.close_requested = true;
+        self.close_forced = forced;
     }
 
     fn status_message(&mut self, message: &str) {
@@ -200,6 +208,7 @@ impl Fixture {
                 group_count: 0,
                 saved: 0,
                 close_requested: false,
+                close_forced: false,
                 statuses: Vec::new(),
                 actions: Vec::new(),
                 undo_stack: Vec::new(),
