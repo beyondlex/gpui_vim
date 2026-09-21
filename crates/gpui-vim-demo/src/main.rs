@@ -6,12 +6,13 @@ mod editor;
 mod host;
 
 use gpui::prelude::*;
-use gpui::{px, size, App, Application, Bounds, KeyBinding, WindowBounds, WindowOptions};
+use gpui::{px, size, App, Bounds, KeyBinding, WindowBounds, WindowOptions};
+use gpui_platform::application;
 
 use crate::editor::{Copy, Editor, Paste, Save, SAMPLE};
 
 fn main() {
-    Application::new().run(|cx: &mut App| {
+    application().run(|cx: &mut App| {
         // host-level bindings: platform chords the engine passes through
         cx.bind_keys([
             KeyBinding::new("cmd-s", Save, None),
@@ -31,7 +32,8 @@ fn main() {
             },
             |window, cx| {
                 let editor = cx.new(|cx| Editor::new(SAMPLE, cx));
-                window.focus(&editor.read(cx).focus_handle);
+                let focus = editor.read(cx).focus_handle.clone();
+                window.focus(&focus, cx);
                 // route every keystroke through the vim engine first.
                 // The Subscription MUST be kept alive — it unsubscribes on
                 // drop — so store it on the view instead of a local.
@@ -107,8 +109,10 @@ fn schedule_smoke_test(editor: &gpui::Entity<Editor>, cx: &mut App) {
     }
     let editor = editor.clone();
     cx.spawn(async move |cx| {
-        gpui::Timer::after(std::time::Duration::from_secs(2)).await;
-        let result = editor.update(cx, |editor, cx| {
+        cx.background_executor()
+            .timer(std::time::Duration::from_secs(2))
+            .await;
+        editor.update(cx, |editor, cx| {
             // motions via the interceptor path
             for k in ["j", "w"] {
                 gpui_vim::dispatch_key(editor, Key::parse(k));
@@ -125,9 +129,6 @@ fn schedule_smoke_test(editor: &gpui::Entity<Editor>, cx: &mut App) {
             eprintln!("[smoke] after u:   {:?}", editor.text());
             cx.notify();
         });
-        if let Err(e) = result {
-            eprintln!("smoke test failed: {e}");
-        }
     })
     .detach();
 }
