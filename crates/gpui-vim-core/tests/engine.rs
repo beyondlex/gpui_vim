@@ -987,11 +987,49 @@ fn dot_repeats_ex_substitute() {
 }
 
 #[test]
-fn dot_ignores_visual_canceled_and_non_changes() {
-    // visual changes are not repeatable in v1
+fn dot_repeats_visual_changes() {
+    // charwise: `v` + motion + `d` replays by re-entering visual mode
     let mut f = Fixture::at("abc def\n", 0, 0);
     f.feed(["v", "l", "d"]);
     assert_eq!(f.text(), "c def\n");
+    f.feed(["."]);
+    assert_eq!(f.text(), "def\n");
+
+    // linewise: `V` + motion + `d` — the replay deletes TWO lines again
+    let mut f = Fixture::at("one\ntwo\nthree\nfour\nfive\nsix\n", 0, 0);
+    f.feed(["V", "j", "d"]);
+    assert_eq!(f.text(), "three\nfour\nfive\nsix\n");
+    f.feed(["."]);
+    assert_eq!(f.text(), "five\nsix\n");
+
+    // an operator that mutates in place (`>`) repeats too
+    let mut f = Fixture::at("a\nb\nc\n", 0, 0);
+    f.feed(["V", "j", ">"]);
+    assert_eq!(f.text(), "    a\n    b\nc\n");
+    f.feed(["."]);
+    assert_eq!(f.text(), "        a\n        b\nc\n");
+}
+
+#[test]
+fn dot_repeats_visual_change_with_insert() {
+    // `vc<text><Esc>`: replay re-enters visual, changes the selection,
+    // re-applies the typed text
+    let mut f = Fixture::at("foo bar\nzap qux\n", 0, 0);
+    f.feed(["v", "i", "w", "c"]);
+    f.type_text("hi");
+    f.feed(["<Esc>"]);
+    assert_eq!(f.text(), "hi bar\nzap qux\n");
+    f.feed(["j", "w", "."]);
+    assert_eq!(f.text(), "hi bar\nzap hi\n");
+}
+
+#[test]
+fn dot_ignores_visual_canceled_and_non_changes() {
+    // a visual selection abandoned with Esc never becomes the last change
+    let mut f = Fixture::at("abc def\n", 0, 0);
+    f.feed(["x"]); // last change = x
+    assert_eq!(f.text(), "bc def\n");
+    f.feed(["v", "l", "<Esc>"]);
     f.feed(["."]);
     assert_eq!(f.text(), "c def\n");
 
@@ -1010,6 +1048,24 @@ fn dot_ignores_visual_canceled_and_non_changes() {
     f.feed(["j"]); // keeps the column: cursor on 'd'
     f.feed(["."]); // still replays x, not the motion
     assert_eq!(f.text(), "ab\nc\n");
+}
+
+#[test]
+fn dot_does_not_repeat_visual_block_insert() {
+    // block I/A/c replicate per row at insert exit — the typed text step
+    // can't reproduce that, so the block change must not leak into `.`
+    let mut f = Fixture::at("aa\nbb\ncc\n", 0, 0);
+    f.feed(["x"]); // last change = x
+    f.feed(["<C-v>"]);
+    f.feed(["j", "j"]);
+    f.feed(["I"]);
+    f.type_text("#");
+    f.feed(["<Esc>"]);
+    assert_eq!(f.text(), "#a\n#bb\n#cc\n");
+    f.feed(["."]);
+    // `.` replays the earlier `x` (deletes one char under the cursor) — the
+    // block insert never became the last change
+    assert_eq!(f.text(), "#a\n#b\n#cc\n");
 }
 
 // ---- R replace mode (ROADMAP task 6) -------------------------------------------
