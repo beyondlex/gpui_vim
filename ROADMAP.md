@@ -184,7 +184,10 @@ changelist，平移规则相同。
 > 期间的打字在 macOS 上不走按键管线（IME 路径），所以文本录为 `Text` 步骤，
 > 重放时经合成 marker（`DOT_TEXT_MARKER`，`Key::parse` 不可产生，无碰撞）直落
 > buffer，避免宿主二次插入。提交点：`end_command`/`complete_operator_with_span`
-> /`exit_insert`/`execute_ex`；visual 变更 v1 不可重复（`recording_blocked`）；
+> /`exit_insert`/`execute_ex`；visual 变更可重复：visual 模式下 commit 保持
+> 累积（`v` + 运动 + 操作符作为一个变更），选区落定时提交，重放按键即重新进入
+> visual 重建选区;blockwise 的 `I`/`A`/`c`/`p` 仍不可重复（逐行复制依赖退出
+> 插入时的行表,`Text` 步骤无法复现,`recording_blocked`）；
 > `Esc` 取消半截命令即丢弃；`N.` = 重放 N 次（与 vim 的乘法语义一致）；IME 合成
 > 预览经 `set_recording_suppressed` 抑制，只有上屏文本可重复。顺带修复：
 > cmdline 模式的按键此前不进录制路径；重放 `:` 时主循环不再提前 break。

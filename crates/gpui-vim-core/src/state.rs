@@ -1358,7 +1358,10 @@ impl VimState {
                     text: String::new(),
                 });
                 self.begin_insert(ctx, InsertKind::Insert);
-                self.discard_change_record();
+                // blockwise `c` needs per-row text replication that a replay of
+                // the recorded keys cannot reproduce (the typed text is applied
+                // as one inline step) — keep it out of `.`
+                self.recording_blocked = true;
             }
             _ => ctx.host.bell(),
         }
@@ -1431,11 +1434,12 @@ impl VimState {
             text: String::new(),
         });
         self.begin_insert(ctx, InsertKind::Insert);
-        self.discard_change_record();
+        // visual-block I/A: like block `c`, the row replication is not
+        // reproducible from a replayed text step — keep it out of `.`
+        self.recording_blocked = true;
     }
 
     pub(crate) fn finish_visual_op(&mut self, ctx: &mut Ctx) {
-        self.discard_change_record();
         if let Some((anchor, cursor, kind)) = self.visual_selection() {
             let (lo, hi) = if anchor <= cursor {
                 (anchor, cursor)
@@ -1449,6 +1453,12 @@ impl VimState {
         if !matches!(self.mode, Mode::Insert | Mode::Replace) {
             self.mode = Mode::Normal;
         }
+        // the visual keys (`v`, the motions, the operator) were recorded by
+        // the pipeline; committing them makes visual changes `.`-repeatable —
+        // replay re-enters visual mode and rebuilds the selection at the
+        // cursor. Committed AFTER the mode drop: `commit_change_record` keeps
+        // accumulating while the mode is still Visual.
+        self.commit_change_record();
         self.cursor.offset = clamp_to_line_end(ctx.buf, self.cursor.offset);
         ctx.host.changed();
     }
@@ -1979,8 +1989,6 @@ impl VimState {
     /// Apply an operator to the current visual selection and leave visual mode
     /// (unless the operator opened insert, e.g. `c`).
     fn apply_visual_operator(&mut self, ctx: &mut Ctx, op: Operator) {
-        // visual-mode changes are not `.`-repeatable in v1
-        self.recording_blocked = true;
         if matches!(
             self.mode,
             Mode::Visual {
@@ -2041,6 +2049,11 @@ impl VimState {
         }
         if self.recording_blocked {
             self.discard_change_record();
+        } else if matches!(self.mode, Mode::Visual { .. }) {
+            // a visual change spans several commands (`v`, the motions, the
+            // operator) — keep accumulating; the commit lands when the
+            // selection resolves (`finish_visual_op`, `exit_insert`)
+            return;
         } else if self.recording_mutated && !self.recording.is_empty() {
             self.last_change = std::mem::take(&mut self.recording);
             self.recording_mutated = false;
@@ -2050,7 +2063,8 @@ impl VimState {
         }
     }
 
-    /// Visual-mode changes are not repeatable in v1: discard the recording.
+    /// Drop the in-progress recording (Esc / canceled command): the keys
+    /// typed so far never became a change and must not leak into the next one.
     pub(crate) fn discard_change_record(&mut self) {
         self.recording.clear();
         self.recording_mutated = false;
