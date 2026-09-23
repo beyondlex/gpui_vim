@@ -203,3 +203,49 @@ fn space_key_matches_char_space_mappings() {
     f.feed(["x"]);
     assert_eq!(f.text(), "oo\n");
 }
+
+// ---- $ / g_ land on a character start (multibyte-safe) -----------------------
+
+#[test]
+fn dollar_lands_on_last_char_not_mid_char() {
+    // `$` used to return `line_end - 1` in bytes, which is INSIDE 文 for
+    // `中文`: the cursor sat mid-char, the block cursor vanished, and `x`
+    // deleted nothing (real vim: `$x` removes 文).
+    let mut f = edit("中文", 0, 0, &["$"]);
+    assert_eq!(f.cursor(), 3, "光标落在末字符 文 的起点");
+    f.feed(["x"]);
+    assert_eq!(f.text(), "中");
+
+    // ASCII behavior is unchanged (end - 1 == start of the 1-byte last char)
+    let f = edit("abc", 0, 0, &["$"]);
+    assert_eq!(f.cursor(), 2);
+}
+
+#[test]
+fn dollar_delete_span_covers_wide_last_char() {
+    // `d$` from the first char must remove the WHOLE line content
+    let f = edit("中文x", 0, 0, &["d", "$"]);
+    assert_eq!(f.text(), "");
+
+    // 2$ reaches the second line's last char even when multibyte
+    let f = edit("ab\n中文", 0, 0, &["2", "$"]);
+    assert_eq!(f.cursor(), 6);
+}
+
+#[test]
+fn g__skips_trailing_blanks_and_lands_on_char_start() {
+    // g_ goes to the last NON-BLANK char; it also used to return `end - 1`,
+    // i.e. the trailing blank itself (and mid-char after a wide char).
+    let f = edit("abc  ", 0, 0, &["g", "_"]);
+    assert_eq!(f.cursor(), 2, "落在 c 上，跳过行尾空格");
+
+    let f = edit("中文  ", 0, 0, &["g", "_"]);
+    assert_eq!(f.cursor(), 3, "落在 文 的起点");
+
+    let f = edit("中文", 0, 0, &["g", "_"]);
+    assert_eq!(f.cursor(), 3);
+
+    // all-blank line: g_ stays at the line start (vim behavior)
+    let f = edit("a\n   \nb", 1, 0, &["g", "_"]);
+    assert_eq!(f.cursor(), 2);
+}
