@@ -1754,8 +1754,9 @@ impl VimState {
         }
 
         // Esc aborts the selection unconditionally — even with a partial
-        // prefix pending (unlike normal mode, where the trie walk runs first)
-        if key == Key::escape() || key == Key::ctrl_char('[') {
+        // prefix pending (unlike normal mode, where the trie walk runs first).
+        // <C-c> is vim's cancel synonym.
+        if key == Key::escape() || key == Key::ctrl_char('[') || key == Key::ctrl_char('c') {
             self.reset_pending();
             self.exit_visual(ctx);
             return ProcessOutcome::Consumed;

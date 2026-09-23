@@ -183,6 +183,10 @@ fn build_rows() -> Vec<(Vec<Key>, Phase, CmdKind)> {
 
     // ---- motions (all phases) ------------------------------------------
     b.motion_all(&["h"], Motion::Left);
+    // <BS> is h's twin in vim notation (normal moves left, operator-pending
+    // makes `d<BS>` delete left, visual shrinks the selection). Insert and
+    // the cmdline consume backspace before the tries ever see it.
+    b.motion_all(&["<BS>"], Motion::Left);
     b.motion_all(&["l"], Motion::Right);
     b.motion_all(&["j"], Motion::Down);
     b.motion_all(&["k"], Motion::Up);
