@@ -133,6 +133,11 @@ impl VimState {
             return KeyResult::Consumed;
         };
         let key = normalize_control_char(key);
+        // <C-c> cancels the prompt (vim's interrupt), not just <Esc>
+        if key == Key::ctrl_char('c') {
+            self.cancel_cmdline(ctx);
+            return KeyResult::Consumed;
+        }
         match &key.kind {
             KeyKind::Char(c) if key.modifiers.is_plain() => {
                 self.cmdline.buffer.push(*c);

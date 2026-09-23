@@ -249,3 +249,46 @@ fn g__skips_trailing_blanks_and_lands_on_char_start() {
     let f = edit("a\n   \nb", 1, 0, &["g", "_"]);
     assert_eq!(f.cursor(), 2);
 }
+
+// ---- <BS> as the h-twin motion + <C-c> cancels (terminal-key parity) ---------
+
+#[test]
+fn bs_moves_left_in_normal_and_operator_pending() {
+    // vim notation: <BS> == <C-h> == h outside insert/cmdline. The tries had
+    // no binding at all — normal <BS> only rang the bell.
+    let f = edit("abc", 0, 2, &["<BS>"]);
+    assert_eq!(f.cursor(), 1, "normal <BS> 左移一格");
+
+    // d<BS> == dh: delete the char to the left
+    let f = edit("abc", 0, 2, &["d", "<BS>"]);
+    assert_eq!(f.text(), "ac");
+    assert_eq!(f.cursor(), 1);
+}
+
+#[test]
+fn bs_in_visual_shrinks_selection() {
+    let f = edit("abcdef", 0, 3, &["v", "<BS>"]);
+    assert_eq!(f.cursor(), 2, "选区活动端左移");
+    assert!(matches!(f.vim.mode(), gpui_vim_core::Mode::Visual { .. }));
+}
+
+#[test]
+fn ctrl_c_cancels_cmdline_like_esc() {
+    let mut f = Fixture::at("foo\n", 0, 0);
+    f.feed([":", "x"]);
+    assert!(matches!(f.vim.mode(), gpui_vim_core::Mode::CommandLine { .. }));
+    f.feed_raw(Key::parse("<C-c>"));
+    assert!(matches!(f.vim.mode(), gpui_vim_core::Mode::Normal));
+    assert_eq!(f.vim.cmdline.buffer, "");
+
+    // search prompts behave the same, including an empty prompt
+    f.feed(["/", "a"]);
+    f.feed_raw(Key::parse("<C-c>"));
+    assert!(matches!(f.vim.mode(), gpui_vim_core::Mode::Normal));
+}
+
+#[test]
+fn ctrl_c_exits_visual() {
+    let f = edit("abcdef", 0, 1, &["v", "l", "l", "<C-c>"]);
+    assert!(matches!(f.vim.mode(), gpui_vim_core::Mode::Normal));
+}
