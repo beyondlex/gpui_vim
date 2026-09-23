@@ -207,20 +207,38 @@ impl Motion {
                 if end == buf.line_start(line) {
                     MotionResult::new(end, MotionKind::Inclusive)
                 } else {
-                    MotionResult::new(end - 1, MotionKind::Inclusive)
+                    // start of the LAST character: byte arithmetic `end - 1`
+                    // lands mid-char when the line ends with a multibyte
+                    // char (`中文` + `$` must sit on 文, not inside it)
+                    let last_start = buf
+                        .prev_char_offset(end)
+                        .unwrap_or(end - 1)
+                        .max(buf.line_start(line));
+                    MotionResult::new(last_start, MotionKind::Inclusive)
                 }
             }
             // g_: last NON-blank char of the count-th line
             Motion::LastLineNonBlank => {
-                // g_: to the last non-blank of the (count-th) line
+                // g_: to the last non-blank of the (count-th) line; trailing
+                // blanks are skipped, and the landing spot is a character
+                // start (same multibyte hazard as `$`)
                 let line =
                     (buf.offset_to_line(vim.cursor.offset) + count - 1).min(buf.line_count() - 1);
                 let end = buf.line_end(line);
-                if end > buf.line_start(line) {
-                    MotionResult::new(end - 1, MotionKind::Inclusive)
-                } else {
-                    MotionResult::new(end, MotionKind::Inclusive)
+                let mut o = end;
+                while let Some(prev) = buf.prev_char_offset(o) {
+                    if prev < buf.line_start(line) {
+                        break;
+                    }
+                    match buf.char_at(prev) {
+                        Some(c) if c != ' ' && c != '\t' => {
+                            o = prev;
+                            break;
+                        }
+                        _ => o = prev,
+                    }
                 }
+                MotionResult::new(o, MotionKind::Inclusive)
             }
             // w / W: start of the next word run
             Motion::WordStart { big } => {
