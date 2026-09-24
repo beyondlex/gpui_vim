@@ -1,7 +1,7 @@
 [package]
 name = "gpui-vim-core"
 description = "A host-agnostic Vim engine: modes, motions, operators, text objects, registers, search and marks."
-version = "0.1.1"
+version = "0.1.2"
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
