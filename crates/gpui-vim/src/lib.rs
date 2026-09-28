@@ -1,4 +1,4 @@
-//! gpui integration for the `gpui-vim-core` engine.
+//! gpui integration for the `vimcore` engine.
 //!
 //! Hosts embed a [`VimState`] in their editor view, implement the
 //! [`VimEditor`] trait, and register the engine with [`attach`]. The engine
@@ -30,11 +30,11 @@ pub mod config;
 pub mod edit;
 pub mod pager;
 pub mod render;
-use gpui_vim_core::buffer::VimBufferMut;
-use gpui_vim_core::host::VimHost;
-use gpui_vim_core::key::{Key, KeyKind, Modifiers};
-use gpui_vim_core::state::{Ctx, KeyResult, VimState};
-use gpui_vim_core::Mode;
+use vimcore::buffer::VimBufferMut;
+use vimcore::host::VimHost;
+use vimcore::key::{Key, KeyKind, Modifiers};
+use vimcore::state::{Ctx, KeyResult, VimState};
+use vimcore::Mode;
 
 /// The host-side contract for an editor that embeds the engine.
 ///
@@ -215,8 +215,8 @@ mod tests {
     use std::cell::RefCell;
     use std::ops::Range;
     use std::rc::Rc;
-    use gpui_vim_core::buffer::{VimBuffer, VimBufferMut};
-    use gpui_vim_core::host::VimHost;
+    use vimcore::buffer::{VimBuffer, VimBufferMut};
+    use vimcore::host::VimHost;
 
     /// Minimal host fixture so tests can run keys through the full
     /// conversion → engine pipeline.
@@ -354,7 +354,7 @@ mod tests {
         }
         assert!(matches!(
             vim.mode(),
-            gpui_vim_core::Mode::CommandLine { prompt: '/' }
+            vimcore::Mode::CommandLine { prompt: '/' }
         ));
         assert_eq!(vim.cmdline.buffer, "foo");
 
@@ -367,7 +367,7 @@ mod tests {
             dispatch(&mut vim, &mut buf.clone(), to_core_key(&enter)),
             KeyResult::Consumed
         );
-        assert_eq!(vim.mode(), gpui_vim_core::Mode::Normal);
+        assert_eq!(vim.mode(), vimcore::Mode::Normal);
         assert_eq!(vim.cursor_offset(), 8); // jumped to the second "foo"
         assert_eq!(vim.cmdline.buffer, "");
     }
@@ -388,14 +388,14 @@ mod tests {
         let buf = TestBuf(Rc::new(RefCell::new("    indented\n".to_owned())));
         let mut vim = VimState::new();
         dispatch(&mut vim, &mut buf.clone(), to_core_key(&mk("i", 'I')));
-        assert_eq!(vim.mode(), gpui_vim_core::Mode::Insert);
+        assert_eq!(vim.mode(), vimcore::Mode::Insert);
         assert_eq!(vim.cursor_offset(), 4);
 
         // `A`: line end + insert mode
         let buf = TestBuf(Rc::new(RefCell::new("tail\n".to_owned())));
         let mut vim = VimState::new();
         dispatch(&mut vim, &mut buf.clone(), to_core_key(&mk("a", 'A')));
-        assert_eq!(vim.mode(), gpui_vim_core::Mode::Insert);
+        assert_eq!(vim.mode(), vimcore::Mode::Insert);
         assert_eq!(vim.cursor_offset(), 4);
 
         // `V`: visual-line mode
@@ -404,8 +404,8 @@ mod tests {
         dispatch(&mut vim, &mut buf.clone(), to_core_key(&mk("v", 'V')));
         assert_eq!(
             vim.mode(),
-            gpui_vim_core::Mode::Visual {
-                kind: gpui_vim_core::VisualKind::Line
+            vimcore::Mode::Visual {
+                kind: vimcore::VisualKind::Line
             }
         );
     }
@@ -418,8 +418,8 @@ mod render_tests {
     use gpui::{px, FontStyle, FontWeight, Hsla};
     use std::cell::RefCell;
     use std::rc::Rc;
-    use gpui_vim_core::key::Key;
-    use gpui_vim_core::state::VimState;
+    use vimcore::key::Key;
+    use vimcore::state::VimState;
 
     fn style() -> OverlayStyle {
         OverlayStyle {
@@ -516,7 +516,7 @@ mod render_tests {
         dispatch(
             &mut vim,
             &mut buf.clone(),
-            gpui_vim_core::key::Key::ctrl_char('v'),
+            vimcore::key::Key::ctrl_char('v'),
         );
         dispatch(&mut vim, &mut buf.clone(), Key::char('j'));
         dispatch(&mut vim, &mut buf.clone(), Key::char('l'));

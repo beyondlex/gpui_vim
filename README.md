@@ -10,7 +10,7 @@
 ├────────────────────────────────────────────────┤
 │ gpui-vim        集成层：按键拦截、模式上下文      │
 ├────────────────────────────────────────────────┤
-│ vim-core        纯 Rust 引擎（零 gpui 依赖）     │
+│ vimcore        纯 Rust 引擎（零 gpui 依赖）     │
 │   模式机 · 按键流水线 · Trie 命令表               │
 │   motion · operator · text object               │
 │   寄存器 · 搜索 · marks · undo 语义              │
@@ -58,7 +58,7 @@ b.normal(&["Z", "Z"], CmdKind::Normal(NormalCmd::SaveAndQuit));
 
 ## 关键设计（承自 IdeaVim）
 
-- **引擎零依赖**：`vim-core` 不依赖 gpui，`KeyResult::Unknown` 表示"引擎不处理、还给宿主"，与宿主 keymap / 系统快捷键共存
+- **引擎零依赖**：`vimcore` 不依赖 gpui，`KeyResult::Unknown` 表示"引擎不处理、还给宿主"，与宿主 keymap / 系统快捷键共存
 - **数据驱动命令表**：静态命令表 + 每模式一棵按键 Trie（对应 IdeaVim 的 `KeyStrokeTrie`），Trie 中间节点即 operator-pending 等待态
 - **引擎持有光标**：插件模型下引擎自己管理 cursor/mode/选区锚点，宿主只实现 buffer 读写与视口/剪贴板/undo 钩子（比 IdeaVim 的宿主持有 caret 模型简单得多）
 - **单一边界坐标**：引擎内部统一 UTF-8 字节偏移，仅在 gpui `InputHandler`（UTF-16）边界转换一次
@@ -68,8 +68,7 @@ b.normal(&["Z", "Z"], CmdKind::Normal(NormalCmd::SaveAndQuit));
 
 ```
 crates/
-├── vim-core/       纯引擎：模式、motions、operators、text objects、registers、
-│                   search、marks、宏、jumplist、`.`、Ex 命令、undo、配置解析
+(纯引擎已剥离为独立仓库：beyondlex/vimcore，含 TCK 契约)
 ├── gpui-vim/       gpui 集成：VimEditor trait、attach 拦截、dispatch_text（IME）、
 │                   render 组件（overlay/行绘制/闪烁）、~/.gpui-vimrc 加载
 └── gpui-vim-demo/  参考宿主：ropey buffer + 编辑器视图 + IME + 鼠标 + 状态栏
@@ -79,7 +78,7 @@ crates/
 
 ```rust
 use gpui::prelude::*;
-use vim_core::state::VimState;
+use vimcore::state::VimState;
 
 struct Editor {
     vim: VimState,
