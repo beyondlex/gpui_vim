@@ -6,7 +6,7 @@
 
 use std::path::{Path, PathBuf};
 
-use gpui_vim_core::config::{self, ConfigStats};
+use vimcore::config::{self, ConfigStats};
 
 use crate::VimEditor;
 
