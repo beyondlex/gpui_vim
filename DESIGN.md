@@ -1,3 +1,5 @@
+> **2026-09-28**：纯引擎已剥离为独立仓库 [beyondlex/vimcore](https://github.com/beyondlex/vimcore)（crate 名 `vimcore`，原 `gpui-vimcore`/`vimcore`）。本文其余内容中的旧名以当前名为准阅读。
+
 # 三仓协作设计：gpui_vim × PandaGit × PandaMail
 
 > 依据：doc-poste `gpui-vim/assessment.mdx` 的实用性评估（2026-09），加两轮对
@@ -7,7 +9,7 @@
 >
 > **进展（2026-09-17）**：阶段 0（INTEGRATION.md 三模式决策文档）、阶段 1
 > （`gpui_vim::edit`，pandamail 已迁薄门面）、阶段 2a（`gpui_vim::pager`，
-> pandamail 已委托）、P2 的 TCK（`vim_core::tck`，gpui-vim 与 pandagit 已接
+> pandamail 已委托）、P2 的 TCK（`vimcore::tck`，gpui-vim 与 pandagit 已接
 > 入；TCK 首战即抓到 PagerBuf line_range 缺终止 `\n` 的契约违反）均已落地。
 > 待做：阶段 2b（Ex 注册表 + 命令行 widget）、pandagit config_editor/cmd.rs
 > 迁移、能力位、发布策略。
@@ -33,7 +35,7 @@ vimscript、多光标）继续列为非目标（ROADMAP「已知非目标」）�
 
 | 仓库 | 角色 | 状态 | 关键数字 |
 |---|---|---|---|
-| gpui_vim | 引擎 + 集成层 + demo | main 干净，与 origin 同步 | vim-core ~10k 行 / 116 个无头测试；gpui-vim（attach、to_core_key、dispatch_text、render）；ROADMAP 任务 1-14 基本收官 |
+| gpui_vim | 引擎 + 集成层 + demo | main 干净，与 origin 同步 | vimcore ~10k 行 / 116 个无头测试；gpui-vim（attach、to_core_key、dispatch_text、render）；ROADMAP 任务 1-14 基本收官 |
 | pandagit | 宿主（最重） | 有 diff_view 方向未提交改动（勿混入） | `merge_view/vim.rs` 1479 行宿主适配；`cmd.rs` 1197 行自建命令行；`config_editor.rs` 734 行配置编辑窗口；`keymap.rs` 533 行 TOML 键位 + 内置 vimrc；**全仓无 IME** |
 | pandamail | 宿主（轻） | 有 webview 方向未提交改动（勿混入） | `vimtext.rs` 1186 行 VimEdit（含 IME、单行折叠、鼠标）；`pager.rs` 866 行只读 pager；`lineedit.rs` 398 行自建输入框；`app.rs` 手写 ex 分发（send/sync/expunge/…） |
 
@@ -52,7 +54,7 @@ vimscript、多光标）继续列为非目标（ROADMAP「已知非目标」）�
 
 ### 2.3 依赖形态
 
-三仓目前是**兄弟目录路径依赖**（`vim-core = { path = "../gpui_vim/crates/vim-core" }`），
+三仓目前是**兄弟目录路径依赖**（`vimcore = { path = "../gpui_vim/crates/vimcore" }`），
 gpui 本体均取 crates.io `0.2`。引擎任何 trait 变更会同时打断两仓编译——
 这决定了下文的「三仓联动验证」流程与 P2 的发布策略。
 
@@ -66,7 +68,7 @@ gpui 本体均取 crates.io `0.2`。引擎任何 trait 变更会同时打断两�
 | 0 | 嵌入模式决策文档 | P0 | gpui_vim `INTEGRATION.md` |
 | 1 | VimEdit 组件化（可复用编辑实体） | P0 | gpui_vim `gpui-vim::edit` ← pandamail `vimtext.rs` |
 | 2a | 只读 pager 组件 | P1 | gpui_vim `gpui-vim::pager` ← pandamail `pager.rs` |
-| 2b | Ex 命令注册表 + 命令行组件 | P1 | gpui_vim（vim-core 注册表 + gpui-vim UI）← pandagit `cmd.rs` / pandamail `lineedit.rs` |
+| 2b | Ex 命令注册表 + 命令行组件 | P1 | gpui_vim（vimcore 注册表 + gpui-vim UI）← pandagit `cmd.rs` / pandamail `lineedit.rs` |
 | 3 | 能力位、TCK、发布与平台矩阵 | P2 | 三仓 |
 
 顺序约束：
@@ -177,7 +179,7 @@ demo 增加一个只读面板示例（帮助页或 README 渲染）。
 
 **方案**：
 
-1. vim-core（`cmdline.rs`）新增注册表：
+1. vimcore（`cmdline.rs`）新增注册表：
    - `register_ex(name, aliases, completion, handler)`，handler 收
      `(范围前缀, 参数串)` 与 `&mut Ctx`；
    - **内置 Ex 套件（`:w :q :set :s` 等）改为注册表里的预注册项**——对外
@@ -222,7 +224,7 @@ demo 增加一个只读面板示例（帮助页或 README 渲染）。
 
 ### 8.2 宿主契约测试套件（TCK）
 
-新文件 `crates/vim-core/tests/tck/`（或独立 `gpui-vim-tck` crate），把
+新文件 `crates/vimcore/tests/tck/`（或独立 `gpui-vim-tck` crate），把
 INTEGRATION.md「Notes & current limitations」里的每条警告变成可执行验收，
 供宿主对自己的 buffer/host 实现运行：
 
@@ -238,7 +240,7 @@ pandagit（`MergeVimBuffer`、config editor buffer）与 pandamail
 
 ### 8.3 发布与平台策略
 
-- crates.io：`vim-core`（零 gpui 依赖）先发，`gpui-vim` 随后；版本要求
+- crates.io：`vimcore`（零 gpui 依赖）先发，`gpui-vim` 随后；版本要求
   widget/pager/ex 三个 API 面冻结。
 - gpui 0.x 跟随规则：宿主锁 `gpui = "=0.2.x"` 直至 gpui 稳定；引擎升级
   gpui 时在 CHANGELOG 声明兼容矩阵，宿主按矩阵排期跟随。
@@ -255,7 +257,7 @@ pandagit（`MergeVimBuffer`、config editor buffer）与 pandamail
 1. P0：INTEGRATION.md 三模式决策文档（阶段 0）；
 2. P0：`gpui_vim::edit`（VimEdit widget，吸收 pandamail vimtext.rs）；
 3. P1：`gpui_vim::pager`（吸收 pandamail pager.rs）；
-4. P1：Ex 注册表（vim-core）+ 命令行 widget（gpui-vim）；
+4. P1：Ex 注册表（vimcore）+ 命令行 widget（gpui-vim）；
 5. P2：能力位与宏降级协议；
 6. P2：TCK；
 7. P2：crates.io 发布 + gpui 版本策略 + 平台冒烟矩阵。

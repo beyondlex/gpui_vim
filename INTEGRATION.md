@@ -1,3 +1,5 @@
+> **2026-09-28**：纯引擎已剥离为独立仓库 [beyondlex/vimcore](https://github.com/beyondlex/vimcore)（crate 名 `vimcore`，原 `gpui-vimcore`/`vimcore`）。本文其余内容中的旧名以当前名为准阅读。
+
 # Integrating gpui-vim into your gpui editor
 
 This guide walks through wiring the vim engine into an existing gpui text
@@ -77,7 +79,7 @@ mail-body pager.
 ```toml
 [dependencies]
 gpui = "0.2"
-vim-core = { path = "../vim-core" }     # or a git/path dep on this repo
+vimcore = { path = "../vimcore" }     # or a git/path dep on this repo
 gpui-vim = { path = "../gpui-vim" }
 ```
 
@@ -89,7 +91,7 @@ include the terminating `\n`; a trailing newline does not open a phantom
 last line.
 
 ```rust
-use vim_core::buffer::{VimBuffer, VimBufferMut};
+use vimcore::buffer::{VimBuffer, VimBufferMut};
 
 #[derive(Clone)]
 pub struct RopeBuffer(std::rc::Rc<std::cell::RefCell<ropey::Rope>>);
@@ -137,7 +139,7 @@ impl VimHost for HostState {
     // save / request_close / status_message / buffer_name / cycle_buffer /
     // scroll_to_line_anchored / dispatch_host_action_hinted — these power
     // `:w`, `:q`, `:bn`/`:bp`, zz/zt/zb anchors, error messages and the
-    // IdeaVim-style `:action <id>` bridge. See crates/vim-core/src/host.rs.
+    // IdeaVim-style `:action <id>` bridge. See crates/vimcore/src/host.rs.
 }
 ```
 
@@ -282,7 +284,7 @@ vim.search.pattern.clone();
   `:%s`, ranges, `:d`, `:w`/`:q`/`:wq`, `:bn`/`:bp`, `:action`) ARE
   implemented. Folds and external `:!` commands are not; the command table
   is data-driven so adding commands is additive (see
-  `crates/vim-core/src/tables.rs`).
+  `crates/vimcore/src/tables.rs`).
 - The clipboard hook is synchronous but gpui's clipboard needs `&mut App`:
   stage writes in the host and flush them in `vim_did_process_key`, and sync
   the system clipboard into the host on window focus / paste (see demo).
