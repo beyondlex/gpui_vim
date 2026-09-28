@@ -1,4 +1,4 @@
-//! Reading `~/.gpui-vimrc`-style config files into a host's engine.
+//! Reading `~/.vimcorerc`-style config files into a host's engine.
 //!
 //! Multiple apps may share one user rc file; action ids differ per app, so
 //! hosts should load a HOST-SPECIFIC layer on top (it wins) and may opt into
@@ -14,9 +14,9 @@ use crate::VimEditor;
 /// otherwise loop); vim caps `:source` depth similarly.
 const MAX_SOURCE_DEPTH: usize = 4;
 
-/// The default user config path: `$HOME/.gpui-vimrc` (None without `$HOME`).
+/// The default user config path: `$HOME/.vimcorerc` (None without `$HOME`).
 pub fn default_config_path() -> Option<PathBuf> {
-    std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".gpui-vimrc"))
+    std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".vimcorerc"))
 }
 
 /// Expand a leading `~` / `~/` using `$HOME`.
@@ -52,7 +52,7 @@ pub enum ActionPolicy {
 /// per vim's layered-rc convention.
 #[derive(Debug, Default)]
 pub struct Layers {
-    /// User's cross-app config, typically `~/.gpui-vimrc`. Loaded with
+    /// User's cross-app config, typically `~/.vimcorerc`. Loaded with
     /// [`ActionPolicy::Ignore`] — its `:action` mappings may target other
     /// apps, so unknown ids here are expected.
     pub user: Option<PathBuf>,
@@ -63,7 +63,7 @@ pub struct Layers {
 }
 
 impl Layers {
-    /// User layer at `$HOME/.gpui-vimrc`.
+    /// User layer at `$HOME/.vimcorerc`.
     pub fn with_default_user() -> Self {
         Layers {
             user: default_config_path(),
