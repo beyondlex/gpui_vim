@@ -53,7 +53,7 @@ fn main() {
     });
 }
 
-/// Layered rc loading: the shared user layer (`~/.gpui-vimrc`, unknown
+/// Layered rc loading: the shared user layer (`~/.vimcorerc`, unknown
 /// `:action` ids ignored) then the app-specific layer
 /// (`~/.config/gpui-vim-demo/vimrc`, unknown ids reported). Both paths come
 /// from `$HOME` independently — the app layer must load even when no shared
