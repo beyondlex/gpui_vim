@@ -9,7 +9,7 @@
 //! - 视觉参数集中在 [`VimEditStyle`]：宿主从各自主题构造（见宿主侧
 //!   `theme_style()` 一类 helper），[`VimEditStyle::default`] 给一套中性深色
 //!   默认值。
-//! - vimrc 分层：[`VimEdit::new`] 只加载跨应用的用户层 `~/.gpui-vimrc`
+//! - vimrc 分层：[`VimEdit::new`] 只加载跨应用的用户层 `~/.vimcorerc`
 //!   （action 宽松）；宿主专属层由宿主构造后用 [`crate::config::load_layers`]
 //!   追加（后加载、同键覆盖、action 严格）。
 
@@ -390,7 +390,7 @@ impl VimEdit {
             area: std::rc::Rc::new(Cell::new(gpui::Bounds::default())),
             mouse_selecting: false,
         };
-        // vimrc 分层：这里只加载跨应用的用户层 ~/.gpui-vimrc（action 宽松，
+        // vimrc 分层：这里只加载跨应用的用户层 ~/.vimcorerc（action 宽松，
         // 其 :action 映射可能面向其他应用）。宿主专属层由宿主构造后追加：
         // `config::load_layers(&mut edit, &Layers { user: None, host: Some(...) })`
         // （后加载、同键覆盖、action 严格）。
