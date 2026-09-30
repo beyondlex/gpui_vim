@@ -152,21 +152,56 @@ impl VimBuffer for LinesBuf {
     }
     fn char_at(&self, offset: usize) -> Option<char> {
         // 合同：非字符边界必须返回 None（引擎 line_end/line_indent 会探测
-        // range.end-1；多字节行尾时 offset 落在字符中间，不能经 offset_rc 切片）
+        // range.end-1；多字节行尾时 offset 落在字符中间）。按行定位，不做
+        // 整缓冲 join——这是引擎逐字符 motion 的探针路径，O(offset) 无分配
+        // 优于 O(全部文本) 的 join。
+        if offset >= self.len() {
+            return None;
+        }
         let lines = self.0.get();
-        let text = lines.join("\n");
-        text.get(offset..)?.chars().next()
+        let mut rem = offset;
+        for line in lines.iter() {
+            if rem < line.len() {
+                return line.is_char_boundary(rem).then(|| line[rem..].chars().next())?;
+            }
+            if rem == line.len() {
+                // 行尾分隔字节：offset < len 保证后面还有行
+                return Some('\n');
+            }
+            rem -= line.len() + 1;
+        }
+        None
     }
     fn prev_char_offset(&self, offset: usize) -> Option<usize> {
         if offset == 0 || offset > self.len() {
             return None;
         }
         let lines = self.0.get();
-        let text = lines.join("\n");
-        text.get(..offset)?
-            .chars()
-            .next_back()
-            .map(|c| offset - c.len_utf8())
+        let mut rem = offset;
+        for line in lines.iter() {
+            if rem < line.len() {
+                if !line.is_char_boundary(rem) {
+                    return None;
+                }
+                return match line[..rem].chars().next_back() {
+                    Some(c) => Some(offset - c.len_utf8()),
+                    // 行内无前字符 = 行首：前一字节是行间分隔 '\n'（首行
+                    // 行首即 offset 0，已被早退挡住），长度恒 1
+                    None => Some(offset - 1),
+                };
+            }
+            if rem == line.len() {
+                // offset 是行尾：指向本行的分隔 '\n'（有后续行）或缓冲区
+                // 尾字节之前（末行）——两种情况的前一字符都是本行最后一个
+                // 内容字符；空行则退到前一字节（上一行的 '\n'）
+                return match line.chars().next_back() {
+                    Some(c) => Some(offset - c.len_utf8()),
+                    None => Some(offset - 1),
+                };
+            }
+            rem -= line.len() + 1;
+        }
+        None
     }
     fn line_range(&self, line: usize) -> Range<usize> {
         let lines = self.0.get();
@@ -1322,6 +1357,40 @@ mod multiline_tests {
         assert_eq!(offset_rc(&lines, 7), (1, 0), "start of next line");
         assert_eq!(offset_rc(&lines, 9), (1, 2), "end of last line");
         assert_eq!(offset_rc(&lines, 999), (1, 0), "past the end clamps");
+    }
+
+    // ---- offset 语义与 join 版等价(含跨行 '\n' 探针) ----
+
+    fn buf(text: &str) -> LinesBuf {
+        let storage = SharedLines::default();
+        storage.set(Arc::new(text.split('\n').map(String::from).collect()));
+        LinesBuf(storage)
+    }
+
+    #[test]
+    fn char_and_prev_char_probes_match_flat_text_semantics() {
+        // "ab\n中cd":字节 0'a' 1'b' 2'\n' 3..5'中' 6'c' 7'd',len=8
+        let b = buf("ab\n中cd");
+        assert_eq!(b.char_at(0), Some('a'));
+        assert_eq!(b.char_at(2), Some('\n'));
+        assert_eq!(b.char_at(3), Some('中'));
+        assert_eq!(b.char_at(4), None, "mid-char probe is None per contract");
+        assert_eq!(b.char_at(7), Some('d'), "last content byte");
+        assert_eq!(b.char_at(8), None, "at len is None");
+
+        assert_eq!(b.prev_char_offset(3), Some(2), "line start: the \\n before it");
+        assert_eq!(b.prev_char_offset(6), Some(3), "steps back over the wide char");
+        assert_eq!(b.prev_char_offset(0), None);
+        assert_eq!(b.prev_char_offset(2), Some(1));
+        assert_eq!(b.prev_char_offset(8), Some(7), "buffer end steps to last char");
+        // 空行分隔:"a\n\nb" 行首的前一字节是空行自己的 '\n'
+        let b = buf("a\n\nb");
+        assert_eq!(b.prev_char_offset(3), Some(2));
+        assert_eq!(b.char_at(2), Some('\n'));
+        // 末行为空行(文本以 \n 结尾):缓冲尾的前一字节是那个 '\n'
+        let b = buf("a\n");
+        assert_eq!(b.prev_char_offset(2), Some(1));
+        assert_eq!(b.char_at(1), Some('\n'));
     }
 
     /// 回归：多行编辑器初始只有一行内容，insert 态 enter 被压成空格

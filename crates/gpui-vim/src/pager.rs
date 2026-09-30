@@ -395,7 +395,6 @@ pub struct Pager {
     pub buf: PagerBuf,
     pub host: PagerHost,
     pub active: bool,
-    yanked: Option<String>,
 }
 
 impl Pager {
@@ -405,7 +404,6 @@ impl Pager {
             buf: PagerBuf::new(text),
             host: PagerHost::default(),
             active: false,
-            yanked: None,
         }
     }
 
@@ -453,17 +451,17 @@ impl Pager {
 
     /// Yanked text: the host clipboard sink first (the `"+` path), then the
     /// engine's unnamed register (plain `y` after visual mode exits).
+    /// Read-only fallback — repeated calls keep returning the register
+    /// content, so a host can read it for a "copied" toast and again later.
     pub fn take_clip(&mut self) -> Option<String> {
         if let Some(text) = self.host.clip.take() {
             return Some(text);
         }
-        if let Some(reg) = self.vim.registers.get(UNNAMED) {
-            if !reg.text.is_empty() {
-                self.yanked = Some(reg.text.clone());
-                return self.yanked.take();
-            }
-        }
-        None
+        self.vim
+            .registers
+            .get(UNNAMED)
+            .map(|reg| reg.text.clone())
+            .filter(|text| !text.is_empty())
     }
 
     /// Current selection: `(byte range, is linewise)`.
