@@ -110,6 +110,10 @@ pub struct Editor {
     drag_anchor: Cell<usize>,
     /// Caret blink state (library helper; the engine owns no timers).
     caret_blinker: std::rc::Rc<gpui_vim::render::CaretBlinker>,
+    /// Whether the window is active, mirrored from `render`. The blink loop
+    /// reads it to stop repainting an unfocused window every 500ms — a
+    /// hidden caret needs no frames (battery/CPU on background windows).
+    ui_active: Cell<bool>,
     pub status_message: Option<String>,
     /// Keeps the keystroke interceptor alive. `gpui::Subscription` detaches
     /// on drop, so it must outlive the engine's use — storing it in the view
@@ -172,6 +176,7 @@ impl Editor {
             dragging: Cell::new(false),
             drag_anchor: Cell::new(0),
             caret_blinker: gpui_vim::render::CaretBlinker::new(),
+            ui_active: Cell::new(true),
             status_message: None,
             _vim_subscription: None,
         };
@@ -179,9 +184,11 @@ impl Editor {
         editor
     }
 
-    /// Toggle the caret every 500ms; input keeps it solid (see `mark_caret_activity`).
+    /// Toggle the caret every 500ms while the window is active; input keeps
+    /// it solid (see `mark_caret_activity`). An unfocused window gets no
+    /// frames from this loop — the tick still runs, only the notify gates.
     fn spawn_blink_loop(&self, cx: &mut Context<Self>) {
-        self.caret_blinker.spawn_loop(cx);
+        self.caret_blinker.spawn_loop_gated(cx, |editor| editor.ui_active.get());
     }
 
     /// Keep the caret visible and restart the blink phase (on any user input).
@@ -419,7 +426,21 @@ impl Editor {
             return;
         };
         let Some(text) = item.text() else { return };
-        self.with_vim_ctx(|vim, ctx| vim.insert_text_at_cursor(ctx, &text));
+        // keep the host's `"+` mirror in sync so register reads (`"+p`, and
+        // the visual PutReplace) see what the system clipboard has
+        self.tab_mut().host.clipboard = Some(text.clone());
+        if matches!(self.tab().vim.mode(), Mode::Insert | Mode::Replace) {
+            self.with_vim_ctx(|vim, ctx| vim.insert_text_at_cursor(ctx, &text));
+        } else {
+            // normal + visual: paste is an engine command (`"+p` — in visual
+            // the register prefix selects `+` and `p` swaps the selection).
+            // Through the pipeline, undo groups / marks / `.` repeat all
+            // behave exactly like a typed `p`.
+            for k in ['"', '+', 'p'] {
+                let key = vimcore::key::Key::char(k);
+                self.with_vim_ctx(|vim, ctx| vim.handle_key(ctx, key.clone()));
+            }
+        }
         cx.notify();
     }
 }
@@ -495,6 +516,8 @@ impl Render for Editor {
         if window.is_window_active() && !self.focus_handle.contains_focused(window, cx) {
             window.focus(&self.focus_handle, cx);
         }
+        // blink-loop gate: no repaints for an inactive window's caret
+        self.ui_active.set(window.is_window_active());
         let view = cx.entity();
         div()
             .id("editor-root")
@@ -514,7 +537,7 @@ impl Render for Editor {
             .on_mouse_down(gpui::MouseButton::Left, cx.listener(Editor::on_mouse_down))
             .on_mouse_move(cx.listener(Editor::on_mouse_drag))
             .on_mouse_up(gpui::MouseButton::Left, cx.listener(Editor::on_mouse_up))
-            .child(self.render_tab_bar())
+            .child(self.render_tab_bar(cx))
             .child(self.render_text_area(view))
             .child(self.render_status_bar())
     }
@@ -750,7 +773,9 @@ impl Editor {
     }
 
     /// Tab bar above the text: one entry per buffer, active highlighted.
-    fn render_tab_bar(&self) -> impl IntoElement {
+    /// Tabs are clickable (`cx.listener` → activate); `gt`/`gT` do the same
+    /// from the keyboard.
+    fn render_tab_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .flex()
             .flex_row()
@@ -772,6 +797,18 @@ impl Editor {
                     .when(!active, |d| {
                         d.text_color(gpui::Hsla::from(rgba(0x6b7280ff)))
                     })
+                    .hover(|s| s.bg(gpui::Hsla::from(rgba(0xe0d8c8ff))))
+                    // stop_propagation: the root's mouse_down maps clicks to
+                    // buffer offsets — a tab click must not move the cursor
+                    .on_mouse_down(
+                        gpui::MouseButton::Left,
+                        cx.listener(move |editor, _ev, window, cx| {
+                            editor.active = i;
+                            window.focus(&editor.focus_handle, cx);
+                            cx.stop_propagation();
+                            cx.notify();
+                        }),
+                    )
                     .child(format!("{}: {}", i + 1, tab.name))
             }))
     }
