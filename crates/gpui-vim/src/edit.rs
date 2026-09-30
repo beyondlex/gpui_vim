@@ -98,11 +98,19 @@ impl SharedLines {
 }
 
 /// offset（UTF-8 字节）↔（行, grapheme 列）。
+///
+/// `offset` 一般来自引擎（char boundary），但这条路径也接宿主侧输入
+///（IME 恢复、宿主 splice 后的陈旧偏移）：非边界偏移向下取整到边界，
+/// 而不是在 `line[..rem]` 切片上 panic。
 pub fn offset_rc(lines: &[String], offset: usize) -> (usize, usize) {
     let mut rem = offset;
     for (row, line) in lines.iter().enumerate() {
         if rem <= line.len() {
-            let col = line[..rem].chars().count();
+            let mut boundary = rem;
+            while boundary > 0 && !line.is_char_boundary(boundary) {
+                boundary -= 1;
+            }
+            let col = line[..boundary].chars().count();
             return (row, col);
         }
         rem -= line.len() + 1;
@@ -233,6 +241,55 @@ impl LinesBuf {
     }
 }
 
+// ---------- 组件本地文本撤销栈 ----------
+
+/// `VimEdit` 的快照式撤销状态：`(文本快照, (行, 列) 光标)` 两个栈。
+///
+/// 抽成普通结构体是因为 `VimEdit::new` 需要 gpui `App`（focus handle），
+/// 无法无头构造——语义测试直接打在 `TextUndo` 上。规则与 vim 一致：
+/// 新快照使 redo 分支失效。
+#[derive(Default)]
+struct TextUndo {
+    undo: Vec<(Vec<String>, (usize, usize))>,
+    redo: Vec<(Vec<String>, (usize, usize))>,
+}
+
+impl TextUndo {
+    /// 把变更前的状态记为还原点；同时丢弃 redo 分支——undo 之后的新编辑
+    /// 必须作废 redo，否则一次重做会把旧文本盖在新编辑之上。
+    fn record(&mut self, before: Vec<String>, cursor: (usize, usize)) {
+        self.undo.push((before, cursor));
+        self.redo.clear();
+    }
+
+    /// 撤销：把当前状态压入 redo 栈，返回要恢复的状态。
+    fn undo(
+        &mut self,
+        current: Vec<String>,
+        cursor: (usize, usize),
+    ) -> Option<(Vec<String>, (usize, usize))> {
+        let entry = self.undo.pop()?;
+        self.redo.push((current, cursor));
+        Some(entry)
+    }
+
+    /// 重做：`undo` 的镜像。
+    fn redo(
+        &mut self,
+        current: Vec<String>,
+        cursor: (usize, usize),
+    ) -> Option<(Vec<String>, (usize, usize))> {
+        let entry = self.redo.pop()?;
+        self.undo.push((current, cursor));
+        Some(entry)
+    }
+
+    fn clear(&mut self) {
+        self.undo.clear();
+        self.redo.clear();
+    }
+}
+
 // ---------- 宿主副作用容器 ----------
 
 pub struct EditHost {
@@ -344,8 +401,7 @@ pub struct VimEdit {
     pub vim: VimState,
     /// 视觉参数（宿主构造后注入自己的主题；见 [`VimEditStyle`]）。
     pub style: VimEditStyle,
-    text_undo: Vec<(Vec<String>, (usize, usize))>,
-    text_redo: Vec<(Vec<String>, (usize, usize))>,
+    text_undo: TextUndo,
     pub scroll: ScrollHandle,
     pub marked_range: Option<Range<usize>>,
     /// 多行模式可见行数（估算，用于 viewport 汇报）
@@ -379,8 +435,7 @@ impl VimEdit {
             host: EditHost::new(storage),
             vim: VimState::new(),
             style: VimEditStyle::default(),
-            text_undo: Vec::new(),
-            text_redo: Vec::new(),
+            text_undo: TextUndo::default(),
             scroll: ScrollHandle::new(),
             marked_range: None,
             visible_rows: if single_line { 1 } else { 12 },
@@ -425,7 +480,6 @@ impl VimEdit {
         self.vim.cursor.offset = 0;
         self.modified = false;
         self.text_undo.clear();
-        self.text_redo.clear();
     }
 
     pub fn drain_events(&mut self) -> Vec<VimEditEvent> {
@@ -556,16 +610,15 @@ impl VimEdit {
         if before == *self.lines {
             return;
         }
-        self.text_undo.push((before, cursor_before));
-        self.text_redo.clear();
+        self.text_undo.record(before, cursor_before);
     }
 
     fn undo(&mut self) {
-        let Some((before, cursor_before)) = self.text_undo.pop() else {
+        let Some((before, cursor_before)) =
+            self.text_undo.undo(self.lines.as_ref().clone(), self.cursor_rc())
+        else {
             return;
         };
-        self.text_redo
-            .push((self.lines.as_ref().clone(), self.cursor_rc()));
         self.lines = Arc::new(before);
         self.buf.0.set(self.lines.clone());
         self.vim.mode = Mode::Normal;
@@ -573,11 +626,11 @@ impl VimEdit {
     }
 
     fn redo(&mut self) {
-        let Some((after, cursor_after)) = self.text_redo.pop() else {
+        let Some((after, cursor_after)) =
+            self.text_undo.redo(self.lines.as_ref().clone(), self.cursor_rc())
+        else {
             return;
         };
-        self.text_undo
-            .push((self.lines.as_ref().clone(), self.cursor_rc()));
         self.lines = Arc::new(after);
         self.buf.0.set(self.lines.clone());
         self.vim.mode = Mode::Normal;
@@ -621,6 +674,8 @@ impl VimEdit {
     /// 用 `s` 替换扁平字节区间并把光标移到插入内容之后（补全插入用）。
     /// 进入 insert 态；不经引擎命令流水线。
     pub fn splice_range(&mut self, range: Range<usize>, s: &str) {
+        let before = self.lines.as_ref().clone();
+        let cursor_before = self.cursor_rc();
         let mut text = self.lines.join("\n");
         let a = range.start.min(text.len());
         let b = range.end.min(text.len());
@@ -636,6 +691,9 @@ impl VimEdit {
         self.vim.cursor.offset = end.min(self.buf.len());
         self.vim.cursor.desired_col = None;
         self.modified = true;
+        // 宿主旁路编辑与键入同权：记撤销点并作废 redo 分支，否则补全
+        // 插入之后一次重做会回到 splice 前的陈旧快照
+        self.push_undo(before, cursor_before);
         if self.single_line {
             self.collapse_single_line();
         }
@@ -867,6 +925,12 @@ impl VimEdit {
 
     /// 按下：点击定位光标；normal 态进入可视拖选，insert 态仅移动光标。
     pub fn mouse_down(&mut self, pos: gpui::Point<gpui::Pixels>) {
+        // 搜索/命令提示符开着时，点击走 enter_visual_char 会把 'v' 当
+        // 提示符输入拼进 pattern；待决 operator（如已按 `d`）也不该被
+        // 点击重摆光标打断——两者都直接忽略本次按下。
+        if matches!(self.vim.mode, Mode::CommandLine { .. }) || !self.vim.is_idle() {
+            return;
+        }
         let Some(off) = self.offset_at_point(pos) else {
             return;
         };
@@ -875,7 +939,11 @@ impl VimEdit {
             return;
         }
         self.place_cursor(off);
-        self.enter_visual_char();
+        if self.vim.mode == Mode::Normal {
+            // 已在可视模式时再点击：只移动光标延伸既有选区（锚点不动），
+            // 不再喂 'v'（引擎里 visual 内 'v' 会切换/退出可视语义）
+            self.enter_visual_char();
+        }
         self.mouse_selecting = true;
     }
 
@@ -1198,6 +1266,62 @@ mod multiline_tests {
         let buf = LinesBuf(storage.clone());
         let host = EditHost::new(storage.clone());
         (storage, buf, host, VimState::new())
+    }
+
+    // ---- TextUndo（无头语义测试；VimEdit 需要 App 才能构造） ----
+
+    fn rc(row: usize, col: usize) -> (usize, usize) {
+        (row, col)
+    }
+
+    #[test]
+    fn text_undo_roundtrip() {
+        let mut u = TextUndo::default();
+        let a = vec!["a".to_string()];
+        let b = vec!["ab".to_string()];
+        u.record(a.clone(), rc(0, 1));
+        assert_eq!(u.undo(b.clone(), rc(0, 2)), Some((a.clone(), rc(0, 1))));
+        // redo 回到 b，undo 又回到 a，可往复
+        assert_eq!(u.redo(a.clone(), rc(0, 1)), Some((b.clone(), rc(0, 2))));
+        assert_eq!(u.undo(b.clone(), rc(0, 2)), Some((a, rc(0, 1))));
+    }
+
+    #[test]
+    fn text_undo_record_invalidates_redo() {
+        // 回归：undo → 新编辑 → redo 会把旧快照盖在新编辑上
+        let mut u = TextUndo::default();
+        let a = vec!["a".to_string()];
+        let b = vec!["b".to_string()];
+        let c = vec!["c".to_string()];
+        u.record(a, rc(0, 0));
+        assert!(u.undo(b.clone(), rc(0, 1)).is_some());
+        u.record(c, rc(0, 1)); // undo 之后的新编辑
+        assert!(u.redo(b, rc(0, 1)).is_none(), "redo 分支必须已被作废");
+    }
+
+    #[test]
+    fn text_undo_empty_stacks_are_none() {
+        let mut u = TextUndo::default();
+        assert!(u.undo(vec![], rc(0, 0)).is_none());
+        assert!(u.redo(vec![], rc(0, 0)).is_none());
+        u.record(vec!["x".to_string()], rc(0, 0));
+        u.clear();
+        assert!(u.undo(vec![], rc(0, 0)).is_none());
+    }
+
+    // ---- offset_rc 边界鲁棒性 ----
+
+    #[test]
+    fn offset_rc_floors_mid_char_offsets_instead_of_panicking() {
+        // 回归："中文"[1] 不是字符边界，旧实现 line[..1] 直接 panic
+        let lines = vec!["中文".to_string(), "ab".to_string()];
+        assert_eq!(offset_rc(&lines, 1), (0, 0), "mid-char floors to boundary");
+        assert_eq!(offset_rc(&lines, 4), (0, 1), "mid-char within 文 floors to its start");
+        assert_eq!(offset_rc(&lines, 0), (0, 0));
+        assert_eq!(offset_rc(&lines, 6), (0, 2), "line end is a valid boundary");
+        assert_eq!(offset_rc(&lines, 7), (1, 0), "start of next line");
+        assert_eq!(offset_rc(&lines, 9), (1, 2), "end of last line");
+        assert_eq!(offset_rc(&lines, 999), (1, 0), "past the end clamps");
     }
 
     /// 回归：多行编辑器初始只有一行内容，insert 态 enter 被压成空格
