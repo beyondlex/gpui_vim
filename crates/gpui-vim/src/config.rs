@@ -167,10 +167,13 @@ fn load<E: VimEditor>(editor: &mut E, path: &Path, depth: usize) -> std::io::Res
     let mut stats = vim.apply_config(&config);
 
     // `source` directives apply after the sourcing file (documented
-    // divergence from vim's in-place semantics)
+    // divergence from vim's in-place semantics). Targets get the same
+    // tilde expansion as top-level layer paths — the engine hands the raw
+    // text back, and `source ~/more-maps` must not silently fail while the
+    // identical top-level path works.
     if depth < MAX_SOURCE_DEPTH {
         for source in &config.sources {
-            if let Ok(sub) = load(editor, source, depth + 1) {
+            if let Ok(sub) = load(editor, &expand_tilde(source), depth + 1) {
                 stats.options += sub.options;
                 stats.mappings += sub.mappings;
                 stats.ignored += sub.ignored;
@@ -178,4 +181,131 @@ fn load<E: VimEditor>(editor: &mut E, path: &Path, depth: usize) -> std::io::Res
         }
     }
     Ok(stats)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::RefCell;
+    use std::ops::Range;
+    use std::rc::Rc;
+    use vimcore::buffer::{VimBuffer, VimBufferMut};
+    use vimcore::host::VimHost;
+    use vimcore::state::VimState;
+
+    /// Minimal editor stub: config loading only mutates the engine state;
+    /// the buffer/host halves just need to exist behind real references.
+    struct CfgEditor {
+        vim: VimState,
+        buf: crate::tests::TestBuf,
+        host: NoopCfgHost,
+    }
+
+    impl VimEditor for CfgEditor {
+        fn vim_parts(&mut self) -> (&mut VimState, &mut dyn VimBufferMut, &mut dyn VimHost) {
+            (&mut self.vim, &mut self.buf, &mut self.host)
+        }
+        fn vim_accepts_keys(&self, _: &gpui::Window, _: &gpui::App) -> bool {
+            false
+        }
+    }
+
+    struct NoopCfgHost;
+    impl VimHost for NoopCfgHost {
+        fn viewport(&self) -> (usize, usize) {
+            (0, 24)
+        }
+        fn scroll_to_line(&mut self, _: usize) {}
+        fn clipboard_write(&mut self, _: &str) {}
+        fn clipboard_read(&self) -> Option<String> {
+            None
+        }
+        fn set_search_highlights(&mut self, _: &[Range<usize>], _: Option<Range<usize>>) {}
+        fn begin_undo_group(&mut self, _: u64, _: usize) {}
+        fn undo(&mut self) -> Option<usize> {
+            None
+        }
+        fn redo(&mut self) -> Option<usize> {
+            None
+        }
+    }
+
+    fn editor() -> CfgEditor {
+        CfgEditor {
+            vim: VimState::new(),
+            buf: crate::tests::TestBuf(Rc::new(RefCell::new(String::new()))),
+            host: NoopCfgHost,
+        }
+    }
+
+    /// Write `files` under a temp dir laid out as a fake $HOME and run the
+    /// test body with HOME pointing there (config paths are all HOME-derived).
+    /// Serialization: HOME is process-global, so the tests that swap it must
+    /// not run concurrently.
+    fn with_fake_home(files: &[(&str, &str)], f: impl FnOnce(&Path)) {
+        static HOME_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _guard = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = std::env::temp_dir().join(format!("gpui-vim-cfg-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        for (path, content) in files {
+            let full = dir.join(path);
+            std::fs::create_dir_all(full.parent().unwrap()).unwrap();
+            std::fs::write(full, content).unwrap();
+        }
+        std::env::set_var("HOME", &dir);
+        f(&dir);
+        std::env::remove_var("HOME");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn source_directive_expands_tilde_like_top_level_paths() {
+        // The rc chain: main rc → source ~/sourced.rc → :set expandtab.
+        // Regression: only top-level layer paths were tilde-expanded, so the
+        // sourced file silently failed to load.
+        with_fake_home(&[
+            (".vimcorerc", "set number\nsource ~/sourced.rc\n"),
+            ("sourced.rc", "set expandtab\n"),
+        ], |dir| {
+            let mut editor = editor();
+            let layers = Layers {
+                user: Some(dir.join(".vimcorerc")),
+                host: None,
+            };
+            let stats = load_layers(&mut editor, &layers);
+            assert_eq!(stats.files, 1, "files counts top-level layers only");
+            assert!(editor.vim.options.expandtab, "option from the sourced file is live");
+        });
+    }
+
+    #[test]
+    fn missing_files_are_skipped_but_reported_by_checked_variant() {
+        with_fake_home(&[(".vimcorerc", "set number\n")], |dir| {
+            let mut editor = editor();
+            let layers = Layers {
+                user: Some(dir.join(".vimcorerc")),
+                host: Some(dir.join("nope/vimrc")),
+            };
+            let (stats, errors) = load_layers_checked(&mut editor, &layers);
+            assert_eq!((stats.files, stats.options), (1, 1));
+            assert_eq!(errors.len(), 1, "the missing host layer surfaces");
+            assert!(editor.vim.options.number);
+        });
+    }
+
+    #[test]
+    fn host_layer_overrides_user_layer_same_key() {
+        with_fake_home(&[
+            (".vimcorerc", "set relativenumber\n"),
+            (".config/app/vimrc", "set norelativenumber\n"),
+        ], |dir| {
+            let mut editor = editor();
+            let layers = Layers {
+                user: Some(dir.join(".vimcorerc")),
+                host: Some(dir.join(".config/app/vimrc")),
+            };
+            load_layers(&mut editor, &layers);
+            assert!(!editor.vim.options.relativenumber, "host layer wins");
+        });
+    }
 }
