@@ -38,7 +38,7 @@
 ```bash
 cargo run --release -p gpui-vim-demo        # 运行演示编辑器
 GPUI_VIM_SMOKE=1 cargo run -p gpui-vim-demo # 启动 2 秒后自动注入按键序列做自检
-cargo test                                  # 引擎表驱动测试（27 个）
+cargo test                                  # 集成层 + demo 测试（40 个；引擎测试在 vimcore 仓库）
 ```
 
 演示应用是一个完整的多行编辑器（ropey buffer、行号、状态栏、搜索高亮、鼠标点选/拖选、IME），`crates/gpui-vim-demo/src/` 就是新项目的参考实现。
@@ -70,7 +70,7 @@ b.normal(&["Z", "Z"], CmdKind::Normal(NormalCmd::SaveAndQuit));
 crates/
 (纯引擎已剥离为独立仓库：beyondlex/vimcore，含 TCK 契约)
 ├── gpui-vim/       gpui 集成：VimEditor trait、attach 拦截、dispatch_text（IME）、
-│                   render 组件（overlay/行绘制/闪烁）、~/.gpui-vimrc 加载
+│                   render 组件（overlay/行绘制/闪烁）、~/.vimcorerc 加载
 └── gpui-vim-demo/  参考宿主：ropey buffer + 编辑器视图 + IME + 鼠标 + 状态栏
 ```
 
@@ -101,9 +101,12 @@ let subscription = gpui_vim::attach(&editor_entity, cx); // 必须保活（存�
 
 渲染用 `gpui_vim::render`：每行 `compute_line_overlays` → `paint_vim_line`
 （含反色块光标、三种可视选区、搜索高亮、caret 闪烁 `CaretBlinker`），返回的
-`ShapedLine` 供鼠标/IME 反查。配置支持 `~/.gpui-vimrc`（`set`、`:map` 家族含
-`noremap`/`<Leader>`、`source`、`"` 注释），映射 RHS 里的 `:action SomeId<CR>`
+`ShapedLine` 供鼠标/IME 反查。配置分两层加载（`~/.vimcorerc` 用户层 +
+`~/.config/<app>/vimrc` 宿主层；`set`、`:map` 家族含 `noremap`/`<Leader>`、
+`source`、`"` 注释），映射 RHS 里的 `:action SomeId<CR>`
 会调用宿主 action 系统（`VimHost::dispatch_host_action_hinted`）。
+路线 B 的现成组件 `gpui_vim::edit::VimEdit` 额外带 IME、鼠标拖选、单行
+折叠、事件外发与空缓冲占位提示（`set_placeholder`）。
 
 支持的功能：`hjkl w b e f t % gg G 0 ^ $`、算子 `d c y > < gu gU g~`、text
 objects `iw aw i" a( it ...`、`C-v` 块可视（含块 `I/A/c/p`）、`R`、`.`、宏
@@ -111,10 +114,10 @@ objects `iw aw i" a( it ...`、`C-v` 块可视（含块 `I/A/c/p`）、`R`、`.`
 
 ### 配置分层（多应用共享一份 rc）
 
-多个 gpui 应用可共享同一份 `~/.gpui-vimrc`：选项和映射各应用独立生效；唯一
+多个 gpui 应用可共享同一份 `~/.vimcorerc`：选项和映射各应用独立生效；唯一
 的跨应用差异是 `:action <id>` 的目标。加载采用两层：
 
-1. **用户层** `~/.gpui-vimrc`——跨应用的键位习惯。`action` 未命中**静默忽
+1. **用户层** `~/.vimcorerc`——跨应用的键位习惯。`action` 未命中**静默忽
    略**（这里的映射可能写给别的应用）；
 2. **宿主层** `~/.config/<app>/vimrc`——应用专属映射，**后加载、同键覆盖**，
    `action` 未命中**上报**（真错误要暴露）。
