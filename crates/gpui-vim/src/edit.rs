@@ -56,6 +56,8 @@ pub struct VimEditStyle {
     pub gold: u32,
     /// 光标颜色。
     pub cursor: u32,
+    /// 占位提示文本颜色（缓冲为空时的非内容渲染）。
+    pub placeholder: u32,
 }
 
 impl Default for VimEditStyle {
@@ -71,6 +73,7 @@ impl Default for VimEditStyle {
             accent: 0x7aa2f7,
             gold: 0xe0af68,
             cursor: 0xc0caf5,
+            placeholder: 0x565f89,
         }
     }
 }
@@ -449,6 +452,19 @@ pub struct VimEdit {
     pub area: std::rc::Rc<Cell<gpui::Bounds<gpui::Pixels>>>,
     /// 鼠标拖选中（mousedown 置位，mouseup 复位）
     pub mouse_selecting: bool,
+    /// 缓冲为空时渲染的占位提示文本（非缓冲内容，纯显示；见
+    /// [`VimEdit::placeholder_text`]）。
+    pub placeholder: Option<String>,
+}
+
+/// 占位渲染判据：仅当整个缓冲为空（单空行）时显示。抽成自由函数是因为
+/// `VimEdit` 构造需要 gpui `App`，语义测试直接打在这里。
+fn placeholder_text<'a>(lines: &[String], placeholder: &'a Option<String>) -> Option<&'a str> {
+    let empty = lines.len() == 1 && lines[0].is_empty();
+    match (empty, placeholder.as_deref()) {
+        (true, Some(p)) if !p.is_empty() => Some(p),
+        _ => None,
+    }
 }
 
 impl Focusable for VimEdit {
@@ -479,6 +495,7 @@ impl VimEdit {
             pending_events: Vec::new(),
             area: std::rc::Rc::new(Cell::new(gpui::Bounds::default())),
             mouse_selecting: false,
+            placeholder: None,
         };
         // vimrc 分层：这里只加载跨应用的用户层 ~/.vimcorerc（action 宽松，
         // 其 :action 映射可能面向其他应用）。宿主专属层由宿主构造后追加：
@@ -860,13 +877,22 @@ impl VimEdit {
                 };
                 let x_of =
                     |col: usize| -> f32 { display_width_before(line, col) as f32 * char_width_f };
+                // 占位提示：整缓冲为空时首行画一段灰字（非缓冲内容，纯显示）
+                let ph = if ix == 0 { placeholder_text(&self.lines, &self.placeholder) } else { None };
                 let mut row = div()
                     .h(line_h)
                     .w_full()
                     .relative()
                     .whitespace_nowrap()
                     .overflow_hidden()
-                    .when(!display_line.is_empty(), |d| d.child(display_line.clone()));
+                    .when(!display_line.is_empty(), |d| d.child(display_line.clone()))
+                    .when(display_line.is_empty() && ph.is_some(), |d| {
+                        d.child(
+                            div()
+                                .text_color(rgb(self.style.placeholder))
+                                .child(SharedString::from(ph.unwrap_or_default().to_owned())),
+                        )
+                    });
                 // 搜索高亮
                 for (hit_row, c0, c1) in &search_by_row {
                     if *hit_row == ix {
@@ -1068,6 +1094,17 @@ impl VimEdit {
     }
     pub fn set_password(&mut self, on: bool) {
         self.password = on;
+    }
+
+    /// 设置空缓冲时渲染的占位提示文本（`None` 关闭）。纯显示——不进缓冲、
+    /// 不参与光标/搜索/选区的任何换算。
+    pub fn set_placeholder(&mut self, text: Option<String>) {
+        self.placeholder = text;
+    }
+
+    /// 当前应渲染的占位文本：仅整个缓冲为空时有值。
+    pub fn placeholder_text(&self) -> Option<&str> {
+        placeholder_text(&self.lines, &self.placeholder)
     }
 }
 
@@ -1391,6 +1428,38 @@ mod multiline_tests {
         let b = buf("a\n");
         assert_eq!(b.prev_char_offset(2), Some(1));
         assert_eq!(b.char_at(1), Some('\n'));
+    }
+
+    // ---- 占位文本判据 ----
+
+    #[test]
+    fn placeholder_shows_only_on_empty_buffer() {
+        let ph = Some("收件人邮箱".to_string());
+        assert_eq!(
+            placeholder_text(&[String::new()], &ph),
+            Some("收件人邮箱"),
+            "empty buffer shows the placeholder"
+        );
+        assert_eq!(
+            placeholder_text(&["x".to_string()], &ph),
+            None,
+            "any content hides it"
+        );
+        assert_eq!(
+            placeholder_text(&[String::new(), String::new()], &ph),
+            None,
+            "multi-line buffers never show it"
+        );
+        assert_eq!(
+            placeholder_text(&[String::new()], &None),
+            None,
+            "unset placeholder"
+        );
+        assert_eq!(
+            placeholder_text(&[String::new()], &Some(String::new())),
+            None,
+            "an empty placeholder string is treated as unset"
+        );
     }
 
     /// 回归：多行编辑器初始只有一行内容，insert 态 enter 被压成空格
