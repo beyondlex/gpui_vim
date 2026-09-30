@@ -411,13 +411,28 @@ impl CaretBlinker {
     /// Spawn the blink loop on the host entity: toggles every 500ms and
     /// notifies the entity so it repaints. Ends when the entity is dropped.
     pub fn spawn_loop<E: 'static>(self: &Rc<Self>, cx: &mut Context<E>) {
+        self.spawn_loop_gated(cx, |_| true)
+    }
+
+    /// [`CaretBlinker::spawn_loop`] with a repaint gate: `wants` decides
+    /// whether a tick publishes a frame. Hosts pass "window is active /
+    /// editor focused" so a background window doesn't repaint every 500ms
+    /// for an invisible caret. The phase still advances, so refocusing
+    /// picks the blink up mid-cycle.
+    pub fn spawn_loop_gated<E: 'static>(
+        self: &Rc<Self>,
+        cx: &mut Context<E>,
+        wants: impl Fn(&E) -> bool + 'static,
+    ) {
         let blinker = Rc::clone(self);
         cx.spawn(async move |entity, cx| loop {
             cx.background_executor().timer(BLINK_INTERVAL).await;
             let alive = entity
-                .update(cx, |_, cx| {
+                .update(cx, |entity, cx| {
                     blinker.tick();
-                    cx.notify();
+                    if wants(entity) {
+                        cx.notify();
+                    }
                 })
                 .is_ok();
             if !alive {
