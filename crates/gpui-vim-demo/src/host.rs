@@ -106,6 +106,10 @@ impl VimHost for HostState {
         if self.open_group != Some(id) {
             // ropey `Rope` clones in O(1)
             let snapshot = self.rope.borrow().clone();
+            // A fresh group is a NEW edit after an undo: vim discards the
+            // redo branch there, and keeping it lets a later C-r resurrect
+            // the pre-undo text over what was just typed.
+            self.redo_stack.clear();
             self.undo_stack.push((snapshot, cursor));
             if self.undo_stack.len() > MAX_UNDO_STEPS {
                 self.undo_stack.remove(0);
@@ -171,5 +175,52 @@ impl VimHost for HostState {
         if known || strict {
             self.pending_action = Some(id.to_owned());
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::buffer::shared_rope;
+
+    /// The engine's dialog with the host around one edit: open a group,
+    /// mutate the shared rope directly (as `VimBufferMut` would).
+    fn edit(rope: &SharedRope, host: &mut HostState, group: u64, cursor: usize, text: &str) {
+        host.begin_undo_group(group, cursor);
+        rope.borrow_mut().insert(0, text);
+    }
+
+    #[test]
+    fn new_edit_after_undo_discards_the_redo_branch() {
+        // undo → type something new → redo must NOT resurrect the pre-undo
+        // text over the fresh typing (classic stale-redo corruption).
+        let rope = shared_rope("hello");
+        let mut host = HostState::new(rope.clone());
+
+        edit(&rope, &mut host, 1, 0, "x"); // "xhello"
+        assert_eq!(host.undo().unwrap(), 0);
+        assert_eq!(rope.borrow().to_string(), "hello");
+
+        edit(&rope, &mut host, 2, 1, "y"); // "yhello"
+        assert_eq!(rope.borrow().to_string(), "yhello");
+        assert!(host.redo().is_none(), "fresh edit invalidates redo");
+        assert_eq!(rope.borrow().to_string(), "yhello");
+    }
+
+    #[test]
+    fn insert_session_shares_one_group_and_undoes_in_one_step() {
+        // same id across edits = same undo unit (an insert session)
+        let rope = shared_rope("ab");
+        let mut host = HostState::new(rope.clone());
+
+        host.begin_undo_group(7, 2);
+        rope.borrow_mut().insert(2, "c");
+        host.begin_undo_group(7, 2);
+        rope.borrow_mut().insert(3, "d");
+        assert_eq!(host.undo_depth(), 1, "one snapshot per group id");
+        host.undo();
+        assert_eq!(rope.borrow().to_string(), "ab");
+        assert_eq!(host.redo().unwrap(), 2);
+        assert_eq!(rope.borrow().to_string(), "abcd");
     }
 }
