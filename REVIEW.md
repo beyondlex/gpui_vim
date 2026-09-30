@@ -1,5 +1,11 @@
 # 代码审查记录（2026-09）
 
+> **2026-09-28 起本仓库只含集成层与 demo**：纯引擎已剥离为
+> [beyondlex/vimcore](https://github.com/beyondlex/vimcore)。下文第一至
+> 五节审查的引擎部分（`gq`、`C-a`/`C-x`、寄存器轮转等）随代码迁往
+> vimcore 仓库，回归测试在其 `tests/` 下；文中 `crates/vim-core` 路径
+> 以历史名义阅读。
+
 全量通读 `vim-core`、`gpui-vim`、`gpui-vim-demo` 三个 crate（约 1.2 万行），
 对每个可疑行为用系统 vim 9.1（macOS）做了基准验证。本文记录：
 
@@ -259,3 +265,81 @@ plain `Named("space")` 归一为 `Char(' ')`（与既有的大写 shift 剥离�
     转发旧 `request_close`，既有宿主不受影响。
 
 仍维持「设计取舍」的条目见上文第三节，本轮未改动。
+
+---
+
+## 六、第三轮审查（2026-10-01，引擎剥离后的仓库级复审）
+
+引擎离仓后的第一次全量复审，范围：`gpui-vim`（lib/edit/pager/render/
+config）与 `gpui-vim-demo`（buffer/host/editor/main），约 4900 行。本轮
+**已修复**（每项附回归测试）：
+
+1. **rc `source` 指令路径不展开 `~`**（`config.rs`）：顶层层路径经
+   `expand_tilde`，嵌套 `source ~/more-maps` 却直接 `read_to_string`——
+   一律 `NotFound` 静默跳过，而引擎 `config::parse` 明确注释「tilde
+   expansion is the loader's job」。修法：`load` 递归时对 source 目标
+   应用同一 `expand_tilde`。
+   测试：`source_directive_expands_tilde_like_top_level_paths`。
+   （教训：回归断言要选**默认值 false** 的选项——首版用 `expandtab`
+   断言，而它默认就是 true，测试空洞地绿。）
+2. **demo 宿主新 undo 组不清 redo 分支**（`host.rs`）：`undo → 键入新
+   内容 → C-r` 会把 undo 前的快照整个盖回来，新键入凭空消失——
+   `begin_undo_group` 遇到新 id 时必须清 `redo_stack`（vim 语义：新
+   编辑作废 redo 分支）。
+   测试：`new_edit_after_undo_discards_the_redo_branch`。
+3. **`VimEdit::splice_range` 不记撤销点也不清 redo**（`edit.rs`）：补全
+   插入走这条旁路，undo → 补全 → redo 同样被陈旧快照覆盖。现在与键入
+   同权：记撤销点、作废 redo 分支。undo 栈抽成无头可测的 `TextUndo`
+   结构体（`VimEdit::new` 需要 gpui `App`，无法直接构造）。
+   测试：`text_undo_record_invalidates_redo` 等 3 个。
+4. **`offset_rc` 对非字符边界偏移 panic**（`edit.rs`）：`line[..rem]`
+   切片在 rem 落在多字节字符中间时 panic。该入口同时接宿主侧偏移
+   （IME 恢复、splice 后的陈旧值），改为向下取整到最近边界。
+   测试：`offset_rc_floors_mid_char_offsets_instead_of_panicking`。
+5. **提示符/待决状态下鼠标点击误喂引擎**（`edit.rs`）：搜索提示符开着
+   时 `mouse_down` 走 `enter_visual_char` 把 `'v'` 拼进 pattern；
+   operator 待决（已按 `d`）时点击重摆光标打断命令。现在命令行模式与
+   非 idle 态直接忽略点击；可视模式内点击只延伸选区、不再重复喂 `'v'`。
+
+### 本轮顺带修复/优化
+
+6. **demo Cmd-V 在 normal 模式静默无效**：`insert_text_at_cursor` 在非
+   insert 态直接 no-op。现在 insert 态照旧落盘；normal/visual 走引擎
+   `"+p` 命令（undo 组、marks、`.` 重复与手敲 `p` 一致）；宿主 `"+`
+   镜像与系统剪贴板同步。
+7. **demo tab 栏不可点击**：加 `cx.listener` + `stop_propagation`
+  （不拦会把点击映射成正文光标移动），加 hover 反馈。
+8. **`CaretBlinker` 后台窗口常驻重绘**：新增 `spawn_loop_gated`，宿主
+   传「窗口活动」判据；不可见光标不再驱动每 500ms 一帧。
+9. **`LinesBuf` 字符探针整缓冲 join**：`char_at`/`prev_char_offset` 是
+   引擎逐字符 motion 的高频探针，旧实现每次 `join` O(全部文本) 分配，
+   改为按行行走 O(offset) 零分配（TCK 契约全绿）。
+10. **`Pager::take_clip` 的 `yanked` 死字段**：record-then-take 无意义，
+    删除；寄存器回退语义不变（可重复读）。
+
+### 新增
+
+11. **`VimEdit` 占位提示文本**：`set_placeholder` + `VimEditStyle::
+    placeholder` 颜色位；空缓冲渲染灰字提示，纯显示不进缓冲。
+
+### 确认不是 bug / 维持现状
+
+- **`mouse_up`/`undo` 直接写 `vim.mode = Normal`**：引擎
+  `visual_selection` 对非 Visual 模式返回 None（stale anchor 有防护），
+  直接切模式安全。
+- **`process_key` 对 Unknown 键返回 true（已消费）**：`VimEdit` 是
+  自包含字段的路线 B 形态，字段持有期间吞掉未知键符合「字段独占按键」
+  的预期；需要放行的宿主应看 `VimEditEvent`/自行路由。
+- **`VimEdit` 本地 undo 栈无上限**：表单场景的编辑深度有限，条目是
+  COW 行向量（clone 便宜）；demo 宿主的栈有 200 步上限。暂不加配置面。
+- **`PagerBuf` 固有 `line_start`/`line_end` 遮蔽 trait 同名方法**：
+  维持第三节 16 条的「建议改名」，因 pandamail 已消费该 API，改名
+  需跨仓协同，本仓单方面不动。
+
+### 性能备注
+
+- `LinesBuf::slice`/UTF-16 换算仍是整缓冲 join——它们只服务 IME 边界
+  与宿主取文本，频率低，保持简单；逐字符探针路径（`char_at`/
+  `prev_char_offset`）已优化（见上 9）。
+- blink 门控（见上 8）对常驻 gpui 应用是纯收益：后台窗口从 2Hz 重绘
+  降为 0。

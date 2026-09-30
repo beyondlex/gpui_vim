@@ -4,7 +4,8 @@
 [引擎侧成本模型](#引擎侧成本模型)（已实测、有基准可复测）与
 [宿主侧清单](#宿主侧清单)（生产化必须做的事）。
 
-复测基准：`cargo run --release -p vim-core --example bench_probe`
+> 引擎已剥离为独立仓库 [beyondlex/vimcore](https://github.com/beyondlex/vimcore)；
+> 复测基准在其仓库内：`cargo run --release -p vimcore --example bench_probe`。
 
 ## 引擎侧成本模型
 
@@ -136,4 +137,13 @@ if idle_for(150.ms()) {
 - 文件 < 1MB：默认配置下所有路径都无感，上面的清单只有第 1、3 条
   值得做（buffer 用 ropey + shape 缓存）
 - 引擎不启动定时器、不做后台任务、不做 IO；未聚焦的引擎实例零开销
-- 配置文件（`~/.gpui-vimrc`）只在启动时读一次
+- 配置文件（`~/.vimcorerc`）只在启动时读一次
+
+## 组件层备注（2026-10）
+
+- `edit::VimEdit` 的 `LinesBuf` 面向表单/短文本：`char_at`/`prev_char_offset`
+  等逐字符探针已按行行走（O(offset) 零分配），但 `slice` 与 UTF-16 换算仍是
+  整缓冲 `join`——只服务低频的 IME 边界与宿主取文本，别把它当大文本 buffer 用
+  （大文本请学 demo 的 ropey 路线）。
+- demo 编辑器用 `CaretBlinker::spawn_loop_gated` 把「窗口活动」接进闪烁循环：
+  后台窗口不再为不可见光标每 500ms 重绘一帧。常驻应用照抄这两行。

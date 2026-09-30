@@ -1,24 +1,25 @@
 # gpui-vim Roadmap
 
+> **2026-09-28**：纯引擎已剥离为独立仓库 [beyondlex/vimcore](https://github.com/beyondlex/vimcore)（crate 名 `vimcore`）。本文的引擎侧任务（原 `crates/vim-core` 路径、`tests/engine.rs` 等）随代码迁往该仓库；「全局不变量」中属于引擎的部分以 vimcore 为准。本仓库现存任务只覆盖集成层与 demo。
+
 给后续贡献者 / AI agent 的执行计划。每个任务给出：现状（含代码位置）、方案、
 验收标准、陷阱。**动手前先读「全局不变量」一节**——这些是本代码库已经踩过坑
 换来的语义约束，违反它们会直接回归已修复的 bug。
 
-工程布局：
+工程布局（当前）：
 
-- `crates/vim-core` — 纯 Rust 引擎，不依赖 gpui。宿主通过 `VimBuffer(Mut)` +
-  `VimHost` 两个 trait 接入。所有行为改动都要能在 `crates/vim-core/tests/engine.rs`
-  里用 headless 测试表达。
 - `crates/gpui-vim` — 集成层：`attach()`（keystroke interceptor）、
   `to_core_key`（gpui `Keystroke` → 引擎 `Key` 转换）、`dispatch_text`（IME 文本
-  路径）、`VimEditor` trait。
-- `crates/gpui-vim-demo` — 参考宿主（渲染、IME、鼠标、剪贴板）。`editor.rs` 目前
-  是「复制走」的参考实现；任务 11 会把它组件化。
+  路径）、`VimEditor` trait、`edit::VimEdit` 组件（路线 B 打包形态）、
+  `pager`（只读路线 C）、`render` 行渲染组件、`config` rc 分层加载。
+- `crates/gpui-vim-demo` — 参考宿主（多 buffer tab、渲染、IME、鼠标、剪贴板）。
+  `editor.rs` 是「复制走」的 attach 路线参考实现；`edit.rs`/`pager.rs` 的消费
+  形态见 INTEGRATION.md 三条路线。
 
 验证命令：
 
 ```sh
-cargo test                # 全部测试（当前 39 个，必须全绿再交付）
+cargo test                # 全部测试（当前 40 个，必须全绿再交付）
 cargo clippy --workspace  # 当前 0 警告，不要引入新警告
 cargo run -p gpui-vim-demo
 ```
