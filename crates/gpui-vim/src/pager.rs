@@ -285,6 +285,11 @@ impl VimBuffer for PagerBuf {
         if offset == 0 || offset > self.text.len() {
             return None;
         }
+        // TCK 契约（幻影行容忍）：引擎会以多字节字符中间的偏移探针；非
+        // 边界返回 None，`text[..offset]` 切片会直接 panic
+        if !self.text.is_char_boundary(offset) {
+            return None;
+        }
         self.text[..offset]
             .chars()
             .next_back()

@@ -81,7 +81,10 @@ mail-body pager.
 ```toml
 [dependencies]
 gpui = "0.2"
-vimcore = { path = "../vimcore" }     # or a git/path dep on this repo
+# Engine: latest fixes live on git main (crates.io lags behind; the
+# Cargo.lock pins the rev). Local engine iteration: temporarily override
+# with [patch.crates-io] vimcore = { path = "../vimcore" }.
+vimcore = { git = "https://github.com/beyondlex/vimcore", branch = "main" }
 gpui-vim = { path = "../gpui-vim" }
 ```
 

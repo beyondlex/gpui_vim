@@ -8,6 +8,6 @@ authors.workspace = true
 repository.workspace = true
 
 [dependencies]
-vimcore = "0.1"
+vimcore = { workspace = true }
 gpui = "0.2"
 unicode-width = { workspace = true }
