@@ -38,7 +38,7 @@
 ```bash
 cargo run --release -p gpui-vim-demo        # 运行演示编辑器
 GPUI_VIM_SMOKE=1 cargo run -p gpui-vim-demo # 启动 2 秒后自动注入按键序列做自检
-cargo test                                  # 集成层 + demo 测试（40 个；引擎测试在 vimcore 仓库）
+cargo test                                  # 集成层 + demo 测试（46 个；引擎测试在 vimcore 仓库）
 ```
 
 演示应用是一个完整的多行编辑器（ropey buffer、行号、状态栏、搜索高亮、鼠标点选/拖选、IME），`crates/gpui-vim-demo/src/` 就是新项目的参考实现。

@@ -32,12 +32,14 @@ below walk this route end to end.
 
 Your app already owns key dispatch: focus routing across fields, overlays,
 modal sessions. Don't install a window-wide interceptor; instead, at the
-point where your own guard/dispatcher sees a key aimed at a vim text
-surface, convert and feed it:
+point where your own guard/dispatcher sees a keystroke aimed at a vim text
+surface, hand it over (the widget converts and returns whether it consumed):
 
 ```rust
-let key = gpui_vim::to_core_key(&keystroke);   // gpui Keystroke -> engine Key
-editor.update(cx, |edit, cx| { edit.process_key(key, window, cx) });
+editor.update(cx, |edit, cx| {
+    let consumed = edit.process_key(&keystroke, cx); // to_core_key happens inside
+    if !consumed { /* fall through to your own handling */ }
+});
 ```
 
 Two real hosts ship this shape: PandaGit routes keys into its merge-editor
