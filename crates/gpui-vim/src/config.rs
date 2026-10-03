@@ -162,7 +162,11 @@ fn accumulate(total: &mut LoadedStats, stats: ConfigStats, count_file: bool) {
 
 fn load<E: VimEditor>(editor: &mut E, path: &Path, depth: usize) -> std::io::Result<ConfigStats> {
     let text = std::fs::read_to_string(path)?;
-    let config = config::parse(&text);
+    // Windows 记事本一类编辑器会写 UTF-8 BOM；BOM 黏在第一行行首，引擎
+    // parse 认不出 `\u{feff}set` 就把第一条指令静默丢掉。剥掉再交给解析器
+    // （环境适配是加载层的职责，与 tilde 展开同理）。
+    let text = text.strip_prefix('\u{feff}').unwrap_or(&text);
+    let config = config::parse(text);
     let (vim, _, _) = editor.vim_parts();
     let mut stats = vim.apply_config(&config);
 
@@ -312,6 +316,22 @@ mod tests {
             };
             load_layers(&mut editor, &layers);
             assert!(!editor.vim.options.relativenumber, "host layer wins");
+        });
+    }
+
+    #[test]
+    fn utf8_bom_does_not_eat_the_first_directive() {
+        // 回归：Windows 编辑器常写 BOM；BOM 黏在第一行行首时引擎 parse
+        // 认不出 `\u{feff}set`，加载层必须先剥掉。
+        with_fake_home(&[(".vimcorerc", "\u{feff}set number\nset expandtab\n")], |dir| {
+            let mut editor = editor();
+            let layers = Layers {
+                user: Some(dir.join(".vimcorerc")),
+                host: None,
+            };
+            load_layers(&mut editor, &layers);
+            assert!(editor.vim.options.number, "first directive after the BOM is live");
+            assert!(editor.vim.options.expandtab, "later directives were never affected");
         });
     }
 }
