@@ -368,6 +368,12 @@ impl EditHost {
         self.open_group = None;
         self.group_snapshot.take()
     }
+
+    /// 当前命中的搜索序号（1-based）与总数，供状态栏渲染 vim 风格的
+    /// 「3/17」。见 [`search_status`]。
+    pub fn search_status(&self) -> Option<(usize, usize)> {
+        search_status(&self.highlights, self.current_highlight.as_ref())
+    }
 }
 
 impl VimHost for EditHost {
@@ -415,6 +421,19 @@ impl VimHost for EditHost {
         "edit"
     }
     fn dispatch_host_action_hinted(&mut self, _id: &str, _strict: bool) {}
+}
+
+/// 当前命中的搜索序号（1-based）与总数，供状态栏渲染 vim 风格的「3/17」。
+/// 无当前命中（未搜索/incsearch 尚无命中）或当前命中不在已发布列表里时
+/// 返回 None——UI 直接隐藏计数即可。自由函数是因为宿主的 VimHost 实现
+/// 各自持有高亮列表（demo `HostState`、pandamail），都可直接委托。
+pub fn search_status(
+    highlights: &[Range<usize>],
+    current: Option<&Range<usize>>,
+) -> Option<(usize, usize)> {
+    let current = current?;
+    let index = highlights.iter().position(|r| r == current)? + 1;
+    Some((index, highlights.len()))
 }
 
 // ---------- VimEdit ----------
@@ -1508,6 +1527,25 @@ mod multiline_tests {
     }
 
     // ---- 占位文本判据 ----
+
+    /// EditHost::search_status 的「n/total」计数语义。
+    #[test]
+    fn search_status_indexes_current_highlight() {
+        let storage = SharedLines::default();
+        let mut host = EditHost::new(storage);
+        assert_eq!(host.search_status(), None, "无搜索时不显示计数");
+
+        host.highlights = vec![0..3, 8..11, 20..23];
+        host.current_highlight = Some(8..11);
+        assert_eq!(host.search_status(), Some((2, 3)));
+
+        host.current_highlight = None;
+        assert_eq!(host.search_status(), None, "incsearch 尚无当前命中");
+
+        // 当前命中不在已发布列表（引擎发布间隙的陈旧值）：返回 None 而不是错位
+        host.current_highlight = Some(99..102);
+        assert_eq!(host.search_status(), None);
+    }
 
     #[test]
     fn placeholder_shows_only_on_empty_buffer() {
