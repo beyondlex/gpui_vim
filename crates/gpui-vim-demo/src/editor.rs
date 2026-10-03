@@ -882,6 +882,9 @@ impl Editor {
                 bar.child(div().child(format!("pending: {showcmd}")))
             })
             .child(div().flex_1())
+            .when_some(self.search_indicator(), |bar, indicator| {
+                bar.child(div().child(indicator))
+            })
             .when_some(self.tab().vim.macro_recording(), |bar, register| {
                 bar.child(
                     div()
@@ -893,6 +896,14 @@ impl Editor {
                 bar.child(div().text_color(gpui::yellow()).child(message))
             })
             .child(div().child(format!("{line}:{col}")))
+    }
+
+    /// vim 风格的搜索计数（右侧「3/17」）：无当前命中时整体隐藏。
+    fn search_indicator(&self) -> Option<String> {
+        let tab = self.tab();
+        let (index, total) =
+            gpui_vim::edit::search_status(&tab.host.highlights, tab.host.current_highlight.as_ref())?;
+        Some(format!("{index}/{total}"))
     }
 }
 
