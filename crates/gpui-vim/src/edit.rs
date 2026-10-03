@@ -261,9 +261,10 @@ impl LinesBuf {
     pub fn byte_to_utf16(&self, byte: usize) -> usize {
         let lines = self.0.get();
         let text = lines.join("\n");
-        text.get(..byte.min(text.len()))
-            .map(|s| s.chars().map(|c| c.len_utf16()).sum())
-            .unwrap_or(0)
+        // 宿主侧陈旧偏移可能落在多字节字符中间：`get(..mid)` 返回 None，
+        // 旧实现直接归零（IME 高亮框跳到行首）。向下取整到最近边界。
+        let byte = floor_char_boundary(&text, byte.min(text.len()));
+        text[..byte].chars().map(|c| c.len_utf16()).sum()
     }
     pub fn utf16_to_byte(&self, u: usize) -> usize {
         let lines = self.0.get();
@@ -467,6 +468,21 @@ fn placeholder_text<'a>(lines: &[String], placeholder: &'a Option<String>) -> Op
     }
 }
 
+/// 为「换一份新内容」重置引擎瞬态（模式/光标/可视锚/待决命令/搜索态/宏…），
+/// 但保留配置面 `options` 与 `keymaps`。
+///
+/// 抽成自由函数的原因同上：`VimEngine` 的宿主测试无法构造 gpui `App`，语义
+/// 测试直接打在这里。引擎没有轻量 reset API，`VimState::new()` 会连同
+/// rc 分层加载进来的 options/keymaps 一起清零——`set_text` 场景下那是
+/// 配置丢失，不是重置。
+fn reset_engine_for_new_text(vim: &mut VimState) {
+    let keymaps = std::mem::take(&mut vim.keymaps);
+    let options = vim.options.clone();
+    *vim = VimState::new();
+    vim.keymaps = keymaps;
+    vim.options = options;
+}
+
 impl Focusable for VimEdit {
     fn focus_handle(&self, _cx: &gpui::App) -> FocusHandle {
         self.focus.clone()
@@ -517,6 +533,10 @@ impl VimEdit {
     }
 
     /// 替换全部内容（光标回 0、normal 模式、清撤销）。
+    ///
+    /// 配置面（options/keymaps）保留：本方法换的是「内容」，不是「配置」——
+    /// 旧实现整体重建 `VimState`，宿主每次 `set_text` 都会把 rc 分层加载的
+    /// 用户映射与选项静默清空。见 [`reset_engine_for_new_text`]。
     pub fn set_text(&mut self, text: &str) {
         let mut lines: Vec<String> = if self.single_line {
             vec![text.replace(['\n', '\r'], " ")]
@@ -528,8 +548,7 @@ impl VimEdit {
         }
         self.lines = Arc::new(lines);
         self.buf.0.set(self.lines.clone());
-        self.vim = VimState::new();
-        self.vim.cursor.offset = 0;
+        reset_engine_for_new_text(&mut self.vim);
         self.modified = false;
         self.text_undo.clear();
     }
@@ -1331,6 +1350,44 @@ mod multiline_tests {
     use vimcore::key::Key;
     use vimcore::state::Ctx;
 
+    // ---- set_text 的引擎重置语义（配置存活） ----
+
+    /// 回归：旧实现整体重建 `VimState`，宿主 `set_text` 换内容后，rc 分层
+    /// 加载的选项与用户映射被静默清空（jk→Esc 变成逐字输入）。
+    #[test]
+    fn engine_reset_for_new_text_keeps_options_and_mappings() {
+        let (_, mut buf, mut host, mut vim) = setup();
+        vim.keymaps_mut().map_str_noremap(
+            vimcore::keymap::ModeClass::Insert,
+            "jk",
+            "<Esc>",
+            true,
+        );
+        vim.options.number = true; // 默认 false，断言不会空洞地绿
+        vim.mode = Mode::Insert;
+        vim.cursor.offset = 3;
+
+        reset_engine_for_new_text(&mut vim);
+        assert_eq!(vim.mode, Mode::Normal, "瞬态模式随新内容归零");
+        assert_eq!(vim.cursor.offset, 0, "光标随新内容归零");
+        assert!(vim.options.number, "用户选项必须存活");
+
+        // 映射存活：insert 态 jk 仍替换为 Esc，而不是把 k 打进缓冲
+        vim.mode = Mode::Insert;
+        let mut ctx = Ctx {
+            buf: &mut buf,
+            host: &mut host,
+        };
+        vim.handle_key(&mut ctx, Key::char('j'));
+        vim.handle_key(&mut ctx, Key::char('k'));
+        assert_eq!(vim.mode, Mode::Normal, "jk 映射必须仍然生效");
+        assert_eq!(
+            buf.0.get().as_ref(),
+            &vec!["".to_string()],
+            "映射右侧不得落进缓冲"
+        );
+    }
+
     /// 组装引擎 + 单行初始内容的 buffer（正文编辑器打开时的状态）。
     fn setup() -> (SharedLines, LinesBuf, EditHost, VimState) {
         let storage = SharedLines::default();
@@ -1428,6 +1485,20 @@ mod multiline_tests {
         let b = buf("a\n");
         assert_eq!(b.prev_char_offset(2), Some(1));
         assert_eq!(b.char_at(1), Some('\n'));
+    }
+
+    /// 回归：非边界字节偏移（宿主侧陈旧值）在 UTF-16 换算里曾直接归零，
+    /// IME 定位框跳到缓冲开头；应向下取整到所在字符起点再换算。
+    #[test]
+    fn byte_to_utf16_floors_mid_char_offsets() {
+        let b = buf("中文x"); // 边界 0,3,6,7
+        assert_eq!(b.byte_to_utf16(0), 0);
+        assert_eq!(b.byte_to_utf16(3), 1, "one char before 文");
+        assert_eq!(b.byte_to_utf16(4), 1, "mid-文 floors to its start (was 0)");
+        assert_eq!(b.byte_to_utf16(6), 2);
+        assert_eq!(b.byte_to_utf16(7), 3);
+        assert_eq!(b.byte_to_utf16(99), 3, "past end clamps");
+        assert_eq!(b.utf16_to_byte(2), 6, "roundtrip back to a boundary");
     }
 
     // ---- 占位文本判据 ----
