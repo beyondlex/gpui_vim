@@ -408,7 +408,11 @@ impl Pager {
     }
 
     pub fn set_cursor(&mut self, offset: usize) {
-        self.vim.cursor.offset = offset.min(self.buf.len());
+        // 宿主命中测试给的偏移可能落在多字节字符中间（与引擎
+        // set_cursor_offset 同理）：先压进缓冲再向下取整，否则 cursor 带着
+        // 非边界偏移进引擎，offset_to_line 一类探针会 panic
+        let offset = floor_boundary(&self.buf.text, offset.min(self.buf.len()));
+        self.vim.cursor.offset = offset;
         self.vim.cursor.desired_col = None;
     }
 
@@ -482,7 +486,6 @@ impl Pager {
                 .next()
                 .map(|ch| ch.len_utf8())
                 .unwrap_or(0);
-        let _ = kind;
         if kind == VisualKind::Line {
             let lo = self.buf.line_start(lo);
             let hi = self.buf.line_end(hi);
@@ -783,6 +786,22 @@ mod tests {
         // `/` search works from normal mode even on an empty buffer.
         assert_eq!(pager.feed(Key::char('/')), KeyResult::Consumed);
         assert_eq!(pager.cmdline_prompt().as_deref(), Some("/"));
+    }
+
+    #[test]
+    fn set_cursor_floors_mid_char_offsets() {
+        // 回归：宿主命中测试可能给出多字节字符内部的偏移；未取整的偏移进
+        // 引擎后 offset_to_line 一类探针会 panic。应落在所在字符起点。
+        let mut pager = Pager::new("中文x".into()); // 边界 0,3,6,7
+        pager.set_cursor(4);
+        assert_eq!(pager.cursor_offset(), 3, "mid-文 floors to its start");
+        pager.set_cursor(1);
+        assert_eq!(pager.cursor_offset(), 0);
+        pager.set_cursor(99);
+        assert_eq!(pager.cursor_offset(), 7, "past end clamps to a boundary");
+        // 取整后的光标可安全驱动态引擎探针
+        pager.set_cursor(4);
+        assert_eq!(pager.buf.offset_to_line(pager.cursor_offset()), 0);
     }
 }
 
