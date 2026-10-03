@@ -189,7 +189,7 @@ mod tests {
     use std::cell::RefCell;
     use std::ops::Range;
     use std::rc::Rc;
-    use vimcore::buffer::{VimBuffer, VimBufferMut};
+    use vimcore::buffer::VimBufferMut;
     use vimcore::host::VimHost;
     use vimcore::state::VimState;
 
@@ -252,9 +252,15 @@ mod tests {
             std::fs::create_dir_all(full.parent().unwrap()).unwrap();
             std::fs::write(full, content).unwrap();
         }
+        // 换环境必须还原：remove 会让同进程后续测试读到「无 HOME」的世界
+        // （default_config_path 静默返回 None），并行测试也可能读到假 HOME
+        let saved_home = std::env::var_os("HOME");
         std::env::set_var("HOME", &dir);
         f(&dir);
-        std::env::remove_var("HOME");
+        match saved_home {
+            Some(home) => std::env::set_var("HOME", home),
+            None => std::env::remove_var("HOME"),
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -307,6 +307,12 @@ impl Editor {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // 搜索/命令提示符开着时，点击会重摆光标并弄脏 incsearch 高亮；待决
+        // operator（如已按 `d`）也不该被点击打断命令（与 VimEdit::mouse_down
+        // 的守卫同规则）。
+        if matches!(self.tab().vim.mode(), Mode::CommandLine { .. }) || !self.tab().vim.is_idle() {
+            return;
+        }
         window.focus(&self.focus_handle, cx);
         let offset = self.byte_at_point(event.position);
         {
@@ -345,6 +351,16 @@ impl Editor {
         cx: &mut Context<Self>,
     ) {
         self.dragging.set(false);
+        // 原地点击（无拖动位移）不得留下退化的空可视选区：拖动途中松手保留
+        // 可视模式（vim 语义，可直接 d/y），没动过的点击则退出可视。
+        let cursor = self.tab().vim.cursor_offset();
+        if cursor == self.drag_anchor.get()
+            && matches!(self.tab().vim.mode(), Mode::Visual { .. })
+        {
+            // engine visual_selection 对非 Visual 模式返回 None（陈旧 anchor
+            // 有防护），直接切模式安全——VimEdit::mouse_up 同此结论。
+            self.tab_mut().vim.mode = Mode::Normal;
+        }
         cx.notify();
     }
 
@@ -417,6 +433,9 @@ impl Editor {
             let len = text.len();
             cx.write_to_clipboard(ClipboardItem::new_string(text));
             self.status_message = Some(format!("copied {len} bytes"));
+        } else {
+            // 静默无反馈让人分不清「复制失败」还是「已复制」
+            self.status_message = Some("nothing to copy".to_owned());
         }
         cx.notify();
     }
@@ -429,6 +448,17 @@ impl Editor {
         // keep the host's `"+` mirror in sync so register reads (`"+p`, and
         // the visual PutReplace) see what the system clipboard has
         self.tab_mut().host.clipboard = Some(text.clone());
+        if matches!(self.tab().vim.mode(), Mode::CommandLine { .. }) {
+            // 提示符开着（搜索/命令）：走按键流水线把文本拼进 pattern，
+            // 直发 `"`,`+`,`p` 会被当成提示符输入污染搜索词
+            for c in text.chars() {
+                let key = vimcore::key::Key::char(c);
+                self.with_vim_ctx(|vim, ctx| vim.handle_key(ctx, key.clone()));
+            }
+            self.mark_caret_activity();
+            cx.notify();
+            return;
+        }
         if matches!(self.tab().vim.mode(), Mode::Insert | Mode::Replace) {
             self.with_vim_ctx(|vim, ctx| vim.insert_text_at_cursor(ctx, &text));
         } else {
@@ -441,6 +471,14 @@ impl Editor {
                 self.with_vim_ctx(|vim, ctx| vim.handle_key(ctx, key.clone()));
             }
         }
+        // cursor moved (or the selection was replaced): keep it visible
+        let cursor_line = self
+            .tab()
+            .buffer
+            .offset_to_line(self.tab().vim.cursor_offset());
+        self.tab_mut().host.scrolled_to = Some(cursor_line);
+        self.flush_scroll();
+        self.mark_caret_activity();
         cx.notify();
     }
 }
@@ -460,6 +498,12 @@ impl Editor {
     }
     /// Switch to the next/previous buffer tab.
     pub fn cycle_tab(&mut self, forward: bool) {
+        // 离开的 tab 若停在搜索/命令提示符上，回来时是一个陈旧的悬空
+        // 提示符（光标已不在原位）；vim 切换缓冲同样会关掉命令行。
+        if matches!(self.tab().vim.mode(), Mode::CommandLine { .. }) {
+            self.tab_mut().vim.mode = Mode::Normal;
+            self.tab_mut().vim.cmdline.buffer.clear();
+        }
         let n = self.tabs.len();
         self.active = if forward {
             (self.active + 1) % n
@@ -608,11 +652,9 @@ impl Editor {
     fn sync_visible_state(&mut self, visible: Range<usize>) {
         let buf = &self.tab().buffer;
         let line_count = buf.line_count();
-        if visible.start >= line_count {
-            *self.visible_highlights.borrow_mut() = std::rc::Rc::new(Vec::new());
-            return;
-        }
-        let first = visible.start;
+        // 空缓冲/越界视口：清空缓存后仍要走到 viewport 汇报——早退会让引擎
+        // 的滚动 motion（C-d/H/M/L）读到一个陈旧的视口
+        let first = visible.start.min(line_count - 1);
         let last = (visible.end.saturating_sub(1)).min(line_count - 1);
         let lo = buf.line_start(first);
         let hi = buf.line_range(last).end;
