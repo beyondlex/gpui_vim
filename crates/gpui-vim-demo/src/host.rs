@@ -137,9 +137,17 @@ impl VimHost for HostState {
     }
 
     fn save(&mut self) {
+        // 行数语义与 RopeBuffer::line_count_real 一致：无尾换行的末行也算
+        // 一行（`len_lines()-1` 会把 "abc" 报成 0L）
         let (lines, bytes) = {
             let rope = self.rope.borrow();
-            (rope.len_lines().saturating_sub(1), rope.len_bytes())
+            let lines = rope.len_lines();
+            let lines = if lines > 1 && rope.get_char(rope.len_chars() - 1) == Some('\n') {
+                lines - 1
+            } else {
+                lines
+            };
+            (lines, rope.len_bytes())
         };
         self.pending_status = Some(format!(
             "\"{}\" {lines}L, {bytes}B written (demo: not persisted)",
@@ -222,5 +230,18 @@ mod tests {
         assert_eq!(rope.borrow().to_string(), "ab");
         assert_eq!(host.redo().unwrap(), 2);
         assert_eq!(rope.borrow().to_string(), "abcd");
+    }
+
+    #[test]
+    fn save_counts_last_line_without_trailing_newline() {
+        // 回归：len_lines()-1 把无尾换行的单行缓冲报成 0L
+        let mut host = HostState::new(shared_rope("abc"));
+        host.save();
+        assert!(host.pending_status.as_deref().unwrap().contains("1L"));
+
+        let mut host = HostState::new(shared_rope("abc\ndef\n"));
+        host.save();
+        assert!(host.pending_status.as_deref().unwrap().contains("2L"),
+            "trailing newline must not open a phantom line");
     }
 }
