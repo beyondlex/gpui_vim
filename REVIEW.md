@@ -415,3 +415,21 @@ config）与 `gpui-vim-demo`（buffer/host/editor/main），约 4900 行。本�
 - **`to_core_key` 的 `key_char` 多字符时只取首字符**：macOS 正常路径
   `key_char` 恒单字符；未见多字符来源，防御性取首即可。
 - **`process_key` 对空 `dispatch_text("")`**：零字符循环，无副作用。
+
+---
+
+## 八、引擎跟随 git main（2026-10-04）
+
+`vimcore = "0.1"` → `git = "https://github.com/beyondlex/vimcore", branch =
+"main"`（workspace.dependencies 单一来源，两 crate 继承）：crates.io 自
+0.1.4（2026-09-29）起未再发版，parity/fuzz 修复（0.1.5–0.1.19，591 测试 +
+二十一轮 fuzz）都只在 git main 上。Cargo.lock 锁 rev（`067240cf`）保证
+可复现；本地迭代引擎用 `[patch.crates-io]` 临时换 path。
+
+切到 0.1.19 后新版 TCK 立刻抓到一个本仓违反：
+
+1. **`PagerBuf::prev_char_offset` 非边界偏移 panic**：新 TCK 的「幻影行
+   容忍」探针会以多字节字符中间的偏移调用；契约允许返回 None 或边界
+   偏移，但 `text[..offset]` 切片直接 panic。补 `is_char_boundary` 守卫
+   （`LinesBuf`/`RopeBuffer` 本就合规，`PagerBuf` 是唯一的漏网）。
+   测试：`pager_buf_read_contract`（引擎 TCK，自带多种子数据）。
