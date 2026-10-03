@@ -1281,9 +1281,13 @@ impl EntityInputHandler for VimEdit {
         let (row, col) = offset_rc(&self.lines, byte);
         let line = self.lines.get(row)?;
         let x = display_width_before(line, col) as f32 * self.style.char_width;
+        // IME canvas 叠在视口上（offset_at_point 同一假设）：内容坐标减去
+        // 已滚动距离才是屏幕位置，否则多行滚动后候选框飞出可视区
+        let scroll_y = -f32::from(self.scroll.offset().y);
         let origin = Point::new(
             element_bounds.origin.x + gpui::px(x + 6.0),
-            element_bounds.origin.y + gpui::px(row as f32 * self.style.line_height),
+            element_bounds.origin.y
+                + gpui::px(row as f32 * self.style.line_height - scroll_y),
         );
         Some(gpui::Bounds::new(
             origin,
@@ -1301,7 +1305,9 @@ impl EntityInputHandler for VimEdit {
         _cx: &mut Context<Self>,
     ) -> Option<usize> {
         let area = self.area.get();
-        let dy = point.y - area.origin.y;
+        // 与 offset_at_point 同一换算：视口 y 加回滚动距离得到内容行
+        let scroll_y = -f32::from(self.scroll.offset().y);
+        let dy = point.y - area.origin.y + gpui::px(scroll_y);
         let dx = point.x - area.origin.x - gpui::px(6.0);
         let row = (f32::from(dy) / self.style.line_height).max(0.0) as usize;
         let line = self.lines.get(row)?;
