@@ -19,7 +19,7 @@
 验证命令：
 
 ```sh
-cargo test                # 全部测试（当前 40 个，必须全绿再交付）
+cargo test                # 全部测试（当前 46 个，必须全绿再交付）
 cargo clippy --workspace  # 当前 0 警告，不要引入新警告
 cargo run -p gpui-vim-demo
 ```

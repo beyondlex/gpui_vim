@@ -343,3 +343,75 @@ config）与 `gpui-vim-demo`（buffer/host/editor/main），约 4900 行。本�
   `prev_char_offset`）已优化（见上 9）。
 - blink 门控（见上 8）对常驻 gpui 应用是纯收益：后台窗口从 2Hz 重绘
   降为 0。
+
+---
+
+## 七、第四轮审查（2026-10-03，仓库级复审）
+
+范围同第六轮（引擎离仓后的集成层 + demo，约 5000 行），本专项打「意料外
+操作 / 不寻常数据」。本轮**已修复**（每项附回归测试，除纯 demo 交互路径）：
+
+1. **`VimEdit::set_text` 整体重建 `VimState`，宿主配置静默丢失**（严重）：
+   `VimState::new()` 会把 rc 分层加载进来的 `options`/`keymaps` 一并清零——
+   宿主每次换内容（表单重置、单 widget 换缓冲）后，用户的 `jk`→Esc 映射
+   与全部选项悄然失效。修法：抽出可无头测试的
+   `reset_engine_for_new_text`——瞬态（模式/光标/可视锚/待决命令/搜索态）
+   归零，配置面保留。
+   测试：`engine_reset_for_new_text_keeps_options_and_mappings`。
+2. **`LinesBuf::byte_to_utf16` 对非边界偏移归零**：宿主侧陈旧偏移落在多
+   字节字符中间时 `get(..mid)` 返回 None 被当成 0，IME 定位框跳到缓冲
+   开头。修法：向下取整到所在字符起点。
+   测试：`byte_to_utf16_floors_mid_char_offsets`。
+3. **rc 文件带 UTF-8 BOM 时首条指令被静默吞掉**：引擎 `config::parse`
+   认不出 `\u{feff}set`，第一行丢弃、后续行正常——症状极具迷惑性（只有
+   第一条设置/映射失效）。环境适配归加载层（与 tilde 展开同理），加载前
+   剥 BOM。
+   测试：`utf8_bom_does_not_eat_the_first_directive`。
+4. **demo `on_mouse_down` 缺 CommandLine/待决守卫**（六.5 的 demo 侧漏网）：
+   搜索提示符开着时点击重摆光标并弄脏 incsearch；operator 待决时点击打断
+   命令。守卫与 `VimEdit::mouse_down` 同规则。
+5. **demo 可视态原地点击残留空选区**：拖动松手保留可视（vim 语义，正确），
+   但没动过的点击也把 `set_cursor_offset` 的重锚留在原地，停在可视模式且
+   无法用鼠标退出。`on_mouse_up` 对「光标 == 拖动锚点」的点击退出可视
+   （`VimEdit::mouse_up` 同语义）。
+6. **demo `paste` 在提示符开着时污染搜索词**：`cmd-v` 直发 `"`,`+`,`p`
+   三个键被 cmdline 当普通输入拼进 pattern。现在提示符开着时把文本逐字符
+   走按键流水线拼进 cmdline；普通路径补粘贴后滚动跟随。
+7. **demo `HostState::save` 无尾换行缓冲报 0L**：`len_lines()-1` 对 "abc"
+   这类缓冲少算一行；与 `line_count_real` 同规则修正。
+   测试：`save_counts_last_line_without_trailing_newline`。
+8. **demo `sync_visible_state` 越界视口早退**：空缓冲等边界下早退不写
+   `host.viewport`，引擎滚动 motion（`C-d`/`H`/`M`/`L`）读到陈旧视口按错
+   距离滚。改为 clamp 后继续走。
+9. **`Pager::set_cursor` 不取整非边界偏移**：宿主命中测试给 mid-char 偏移
+   直接进引擎，`offset_to_line` 一类探针 panic。向下取整（与引擎
+   `set_cursor_offset` 同规则）。
+   测试：`set_cursor_floors_mid_char_offsets`。
+10. **`VimEdit` IME 几何两处缺滚动补偿**：`bounds_for_range`（IME 候选框）
+    用内容绝对行号、`character_index_for_point`（点击定位）不补滚动距离，
+    多行滚动后分别飞出可视区/映射错行。与 `offset_at_point` 统一为
+    「IME canvas 叠在视口上」假设：前者减滚动距离、后者加回。
+
+### 本轮顺带
+
+11. `cycle_tab` 关掉被离开 tab 的悬空提示符；`copy` 空选区给状态提示。
+12. config 测试 `with_fake_home` 恢复（而非删除）`$HOME`，避免污染同进程
+    后续测试；清理一处未用 import。
+13. **新增 `search_status`**：`EditHost::search_status()` + 同语义 pub 自由
+    函数（宿主 `VimHost` 实现各自持有高亮列表，均可直接委托），返回当前
+    命中的 1-based 序号与总数；demo 状态栏显示 vim 风格「3/17」，无当前
+    命中整体隐藏。
+    测试：`search_status_indexes_current_highlight`。
+
+### 怀疑过、核实后不改的点（记录在案）
+
+- **`set_text` 多行路径保留 `\r`**：与 vim 的 `^M`（fileformat=dos）一致，
+  `text()` round-trip 正确；`insert_text` 剥 `\r` 只针对平台输入路径，
+  两者不冲突。
+- **`Pager` 的块可视 `selection()` 按字符选区折叠**：pager 公开面只承诺
+  char/line 选区映射；块语义仅在宿主自行 `feed(C-v)` 时可达，届时返回
+  包裹矩形——记录为已知边界，不加块感知（宿主要块语义时会连带要渲染，
+  属 pager 组件的后续设计题）。
+- **`to_core_key` 的 `key_char` 多字符时只取首字符**：macOS 正常路径
+  `key_char` 恒单字符；未见多字符来源，防御性取首即可。
+- **`process_key` 对空 `dispatch_text("")`**：零字符循环，无副作用。
