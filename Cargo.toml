@@ -12,15 +12,13 @@ repository = "https://github.com/beyondlex/gpui_vim"
 [workspace.dependencies]
 ropey = "1"
 unicode-width = "0.2"
-# 引擎跟随上游 git main：0.1.4（2026-09-29）之后 crates.io 长期未发版，
-# parity/fuzz 修复都只在 git 上；Cargo.lock 锁 rev 保证可复现。
+# 引擎单一来源：crates.io registry（0.1.24 起与 git main 同步发版）。
 # 本地迭代引擎时临时换 path 覆盖（cargo 不会自动偏好本地目录）：
 #   [patch.crates-io] vimcore = { path = "../vimcore" }
-vimcore = { git = "https://github.com/beyondlex/vimcore", branch = "main" }
+vimcore = "0.1"
 
 [profile.dev]
 opt-level = 1
 
-# 使用优化后的 gpui：独立发行版 gpui-x（不再依赖整个 zed monorepo）。
-[patch.crates-io]
-gpui = { git = "https://github.com/beyondlex/gpui-x", branch = "main" }
+# gpui 线单一来源：registry 的 gpui-x 发行版（原 fork-gpui-x 分支线已转为
+# gpui-vim-x + gpui-x 家族发布，git/patch 依赖全部退役）。
