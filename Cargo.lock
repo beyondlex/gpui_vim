@@ -5642,8 +5642,8 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "vimcore"
-version = "0.1.19"
-source = "git+https://github.com/beyondlex/vimcore?branch=main#067240cfc39310c5b04bbadf98a31784064fb7c1"
+version = "0.1.24"
+source = "git+https://github.com/beyondlex/vimcore?branch=main#0cfaee71632678089c9e8c2094a9932152fa5880"
 dependencies = [
  "regex",
  "unicode-width",
