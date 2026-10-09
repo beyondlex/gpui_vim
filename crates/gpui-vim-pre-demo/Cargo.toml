@@ -1,5 +1,5 @@
 [package]
-name = "gpui-vim-demo"
+name = "gpui-vim-pre-demo"
 description = "Reference host for vimcore: a minimal multi-line editor with full vim mode."
 version.workspace = true
 edition.workspace = true
@@ -9,16 +9,16 @@ authors.workspace = true
 publish = false
 
 [[bin]]
-name = "gpui-vim-demo"
+name = "gpui-vim-pre-demo"
 path = "src/main.rs"
 
 [dependencies]
 vimcore = { workspace = true }
-gpui-vim = { path = "../gpui-vim", package = "gpui-vim-x" }
-gpui = { version = "0.2", package = "gpui-x" }
-# 应用启动入口 helper（未发布 crates.io，取自 gpui-x 同源）。
+gpui-vim = { path = "../gpui-vim-pre", package = "gpui-vim-pre" }
+gpui = { version = "0.3.8", package = "gpui-pre" }
+# 应用启动入口 helper（gpui-pre 家族发布为 gpui-pre-platform，lib 名仍是 gpui_platform）。
 # font-kit 必须显式开启，否则 gpui_macos 退到 NoopTextSystem（无文字）
-gpui_platform = { version = "0.1", package = "gpui-x-platform", features = [
+gpui_platform = { version = "0.3.8", package = "gpui-pre-platform", features = [
     "font-kit",
 ] }
 ropey = { workspace = true }

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/gpui-vim", "crates/gpui-vim-demo"]
+members = ["crates/gpui-vim-pre", "crates/gpui-vim-pre-demo"]
 
 [workspace.package]
 version = "0.1.0"
@@ -20,5 +20,7 @@ vimcore = "0.1"
 [profile.dev]
 opt-level = 1
 
-# gpui 线单一来源：registry 的 gpui-x 发行版（原 fork-gpui-x 分支线已转为
-# gpui-vim-x + gpui-x 家族发布，git/patch 依赖全部退役）。
+# gpui 线单一来源：本分支（fork-gpui-pre）走 gpui-pre 0.3.8（gpui-kit 同源快照
+# zed@279fe07）。上一条线是 registry 的 gpui-x 发行版（gpui-vim-x，服务 pandagit），
+# 两条线并存：宿主不同、crate 名不同（gpui-vim-pre / gpui-vim-x），可各自发布。
+# 实测（2026-10-09）：gpui-vim 用到的 ~22 个 gpui API 在两个快照间零漂移，切换纯改依赖。

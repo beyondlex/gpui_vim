@@ -1,5 +1,5 @@
 [package]
-name = "gpui-vim-x"
+name = "gpui-vim-pre"
 version = "0.1.1"
 description = "gpui integration for the vimcore engine: keystroke interception and mode UI state."
 edition.workspace = true
@@ -9,5 +9,5 @@ repository.workspace = true
 
 [dependencies]
 vimcore = { workspace = true }
-gpui = { version = "0.2", package = "gpui-x" }
+gpui = { version = "0.3.8", package = "gpui-pre" }
 unicode-width = { workspace = true }
