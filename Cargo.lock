@@ -5691,9 +5691,9 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "vimcore"
-version = "0.1.24"
+version = "0.1.30"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3d2a85a5d33dfa27476dfcd1f2c24a91a8f9b84065db8156659a68d79209cb14"
+checksum = "bbb827d4d24f640d5431b0d9bac8eb21b4b23504096ca9e70b617c57514f67f2"
 dependencies = [
  "regex",
  "unicode-width",

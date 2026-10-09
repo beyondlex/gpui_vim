@@ -1,0 +1,5 @@
+[toolchain]
+# gpui-vim-pre 编在 gpui-pre 0.3.8 上，而它用了 std::hint::cold_path
+# （rustc 1.96 之前为未稳定特性）：默认 stable 1.94.1 连 cargo build 都过不去。
+# 同一条要求过去只写在开发机的 rustup 目录覆盖里，故显式固定。
+channel = "1.96.1"

@@ -12,9 +12,11 @@ repository = "https://github.com/beyondlex/gpui_vim"
 [workspace.dependencies]
 ropey = "1"
 unicode-width = "0.2"
-# 引擎单一来源：crates.io registry（0.1.24 起与 git main 同步发版）。
+# 引擎单一来源：crates.io registry（最新 0.1.30，2026-10-09）。
 # 本地迭代引擎时临时换 path 覆盖（cargo 不会自动偏好本地目录）：
 #   [patch.crates-io] vimcore = { path = "../vimcore" }
+# ⚠️ "0.1" 只是要求范围，生效的是 Cargo.lock：本仓库曾把 lock 钉在 0.1.24，
+# 期间引擎的行为变化全被挡住。动引擎语义相关的东西前先 cargo update -p vimcore。
 vimcore = "0.1"
 
 [profile.dev]
@@ -23,4 +25,8 @@ opt-level = 1
 # gpui 线单一来源：本分支（fork-gpui-pre）走 gpui-pre 0.3.8（gpui-kit 同源快照
 # zed@279fe07）。上一条线是 registry 的 gpui-x 发行版（gpui-vim-x，服务 pandagit），
 # 两条线并存：宿主不同、crate 名不同（gpui-vim-pre / gpui-vim-x），可各自发布。
+# gpui-vim-pre 0.1.1 已于 2026-10-09 上架 crates.io（tk 的 Bench 就消费这个包）。
+# ⚠️ 本分支必须 rustc ≥ 1.96：gpui-pre 0.3.8 用了 std::hint::cold_path，
+# 在 1.96 之前是未稳定特性，默认 stable 1.94 连 cargo build 都过不去。
+# 已由根目录 rust-toolchain.toml 钉住（这条要求过去只在开发机的 rustup override 里）。
 # 实测（2026-10-09）：gpui-vim 用到的 ~22 个 gpui API 在两个快照间零漂移，切换纯改依赖。
