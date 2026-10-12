@@ -265,11 +265,13 @@ mod tests {
     }
 
     impl VimBufferMut for TestBuf {
-        fn insert_text(&mut self, offset: usize, text: &str) {
+        fn insert_text(&mut self, offset: usize, text: &str) -> bool {
             self.0.borrow_mut().insert_str(offset, text);
+            true
         }
-        fn delete_range(&mut self, range: Range<usize>) {
+        fn delete_range(&mut self, range: Range<usize>) -> bool {
             self.0.borrow_mut().replace_range(range, "");
+            true
         }
     }
 

@@ -232,7 +232,7 @@ impl VimBufferMut for LinesBuf {
     // 换行按真实内容插入/删除，不做压平：单行语义由 VimEdit.single_line
     // 在 flush 时 collapse（按内容行数判断会把多行编辑器初始的单行状态
     // 误判为单行模式，enter/o 的 '\n' 全被替换成空格）
-    fn insert_text(&mut self, offset: usize, text: &str) {
+    fn insert_text(&mut self, offset: usize, text: &str) -> bool {
         let lines = self.0.get();
         let text = text.replace('\r', "");
         let mut vec = lines.as_ref().clone();
@@ -243,8 +243,9 @@ impl VimBufferMut for LinesBuf {
         joined.insert_str(at, &text);
         vec = joined.split('\n').map(String::from).collect();
         self.0.set(Arc::new(vec));
+        true
     }
-    fn delete_range(&mut self, range: Range<usize>) {
+    fn delete_range(&mut self, range: Range<usize>) -> bool {
         let lines = self.0.get();
         let mut joined = lines.join("\n");
         let a = range.start.min(joined.len());
@@ -254,6 +255,7 @@ impl VimBufferMut for LinesBuf {
         }
         let vec: Vec<String> = joined.split('\n').map(String::from).collect();
         self.0.set(Arc::new(vec));
+        true
     }
 }
 

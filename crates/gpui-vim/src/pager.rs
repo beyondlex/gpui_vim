@@ -11,8 +11,9 @@
 //!    (and `open_group`/`push_piece`/`close_group` for pieces joined by raw
 //!    separators). The canonical text and the byte-offset bookkeeping are
 //!    produced by the same walk, so they can never drift apart.
-//! 2. Hand the doc's text to a [`PagerBuf`] (a read-only [`VimBuffer`]; every
-//!    engine edit is a no-op) and a [`Pager`] — the visual-mode state machine.
+//! 2. Hand the doc's text to a [`PagerBuf`] (a read-only [`VimBuffer`]; engine
+//!    edits are refused with vim's E21, never applied) and a [`Pager`] — the
+//!    visual-mode state machine.
 //! 3. Map the engine's byte selection back onto your render units with
 //!    [`Pager::group_sel_spans`] / [`selection_spans`].
 //!
@@ -25,12 +26,12 @@
 
 use std::ops::Range;
 
-use vimcore::buffer::{VimBuffer, VimBufferMut};
-use vimcore::host::VimHost;
+use vimcore::buffer::VimBuffer;
+use vimcore::host::{VimHost, VimHostRo};
 use vimcore::key::Key;
 use vimcore::mode::{Mode, VisualKind};
 use vimcore::registers::UNNAMED;
-use vimcore::state::{Ctx, KeyResult, VimState};
+use vimcore::state::{CtxRo, KeyResult, VimState};
 
 // ---------- flattened document ----------
 
@@ -321,10 +322,9 @@ impl VimBuffer for PagerBuf {
     }
 }
 
-impl VimBufferMut for PagerBuf {
-    fn insert_text(&mut self, _offset: usize, _text: &str) {}
-    fn delete_range(&mut self, _range: Range<usize>) {}
-}
+// PagerBuf 不实现写原语：VimBufferMut 的默认实现即拒绝（vimcore 0.2.0
+// 起），配合 Pager::new 里的 set_modifiable(false)，编辑类按键按 vim 的
+// E21 语义响铃+报错，而不是静默 no-op。0.1 时代的"刻意空实现"已不需要。
 
 // ---------- selection read-back ----------
 
@@ -368,6 +368,17 @@ pub struct PagerHost {
     pub clip: Option<String>,
 }
 
+impl VimHostRo for PagerHost {
+    fn viewport(&self) -> (usize, usize) {
+        (0, 1_000_000)
+    }
+    fn scroll_to_line(&mut self, _: usize) {}
+    fn clipboard_write(&mut self, text: &str) {
+        self.clip = Some(text.to_string());
+    }
+    fn set_search_highlights(&mut self, _: &[Range<usize>], _: Option<Range<usize>>) {}
+}
+
 impl VimHost for PagerHost {
     fn viewport(&self) -> (usize, usize) {
         (0, 1_000_000)
@@ -404,8 +415,12 @@ pub struct Pager {
 
 impl Pager {
     pub fn new(text: String) -> Self {
+        let mut vim = VimState::new();
+        // 只读消费方的正宗形态（vimcore 0.2.0）：'modifiable' 关闭，
+        // 编辑类按键走 E21 拒绝而不是静默 no-op
+        vim.set_modifiable(false);
         Self {
-            vim: VimState::new(),
+            vim,
             buf: PagerBuf::new(text),
             host: PagerHost::default(),
             active: false,
@@ -437,21 +452,21 @@ impl Pager {
         } else {
             Key::char('v')
         };
-        let mut ctx = Ctx {
-            buf: &mut self.buf,
+        let mut ctx = CtxRo {
+            buf: &self.buf,
             host: &mut self.host,
         };
-        self.vim.handle_key(&mut ctx, key);
+        self.vim.handle_key_ro(&mut ctx, key);
         self.active = matches!(self.vim.mode, Mode::Visual { .. });
     }
 
     /// All keys while the pager is active.
     pub fn feed(&mut self, key: Key) -> KeyResult {
-        let mut ctx = Ctx {
-            buf: &mut self.buf,
+        let mut ctx = CtxRo {
+            buf: &self.buf,
             host: &mut self.host,
         };
-        let r = self.vim.handle_key(&mut ctx, key);
+        let r = self.vim.handle_key_ro(&mut ctx, key);
         if !matches!(self.vim.mode, Mode::Visual { .. }) {
             self.active = false;
         }
@@ -816,9 +831,15 @@ mod tck_tests {
     use super::*;
     use vimcore::tck;
 
-    /// 只读契约（编辑/冒烟契约不适用——VimBufferMut 为刻意的空实现）。
+    /// 只读契约（引擎级，B 步管线形态）：PagerBuf 只实现 `VimBuffer`、
+    /// 不实现 `VimBufferMut`，经 `handle_key_ro` 驱动——编辑类按键全部按
+    /// E21 拒绝、缓冲逐字节不变、拒绝后 motion 照常，且改动在构造上不可能
+    /// （vimcore 0.2.0 的 `tck::readonly_pipeline_contract` 自带探针文本）。
     #[test]
     fn pager_buf_read_contract() {
+        let buf = PagerBuf::new(vimcore::tck::READONLY_PROBE_TEXT.to_owned());
+        vimcore::tck::readonly_pipeline_contract(&buf).unwrap();
+        // 读侧契约对含多字节字符/空行的文本同样成立
         let buf = PagerBuf::new("alpha\nbeta 中文\n\n尾行\n".into());
         tck::buffer_read_contract(&buf).unwrap();
         let buf = PagerBuf::new("中文 mix 👨‍👩‍👧".into());

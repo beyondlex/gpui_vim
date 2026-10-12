@@ -1903,7 +1903,7 @@ dependencies = [
 
 [[package]]
 name = "gpui-vim-x"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "gpui-x",
  "unicode-width",
@@ -5692,9 +5692,9 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "vimcore"
-version = "0.1.24"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3d2a85a5d33dfa27476dfcd1f2c24a91a8f9b84065db8156659a68d79209cb14"
+checksum = "2486cc0b07d1611d3a81b8208636454759d703e4250748fe19565651585af1dd"
 dependencies = [
  "regex",
  "unicode-width",

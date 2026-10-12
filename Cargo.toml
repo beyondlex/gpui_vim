@@ -15,7 +15,7 @@ unicode-width = "0.2"
 # 引擎单一来源：crates.io registry（0.1.24 起与 git main 同步发版）。
 # 本地迭代引擎时临时换 path 覆盖（cargo 不会自动偏好本地目录）：
 #   [patch.crates-io] vimcore = { path = "../vimcore" }
-vimcore = "0.1"
+vimcore = "0.2"
 
 [profile.dev]
 opt-level = 1

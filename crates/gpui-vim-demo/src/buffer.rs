@@ -140,7 +140,7 @@ impl VimBuffer for RopeBuffer {
 }
 
 impl VimBufferMut for RopeBuffer {
-    fn insert_text(&mut self, offset: usize, text: &str) {
+    fn insert_text(&mut self, offset: usize, text: &str) -> bool {
         // A mid-char offset (shouldn't happen from the engine, but an
         // upstream bug must not teleport text to the end of the buffer —
         // that turned one wrong cursor into data landing on another line)
@@ -149,14 +149,16 @@ impl VimBufferMut for RopeBuffer {
         let mut rope = self.0.borrow_mut();
         let char_idx = rope.byte_to_char(offset);
         rope.insert(char_idx, text);
+        true
     }
 
-    fn delete_range(&mut self, range: Range<usize>) {
+    fn delete_range(&mut self, range: Range<usize>) -> bool {
         let end = self.clamp(range.end);
         let start = self.clamp(range.start.min(end));
         let mut rope = self.0.borrow_mut();
         let (start_char, end_char) = (rope.byte_to_char(start), rope.byte_to_char(end));
         rope.remove(start_char..end_char);
+        true
     }
 }
 
