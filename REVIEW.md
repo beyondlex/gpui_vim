@@ -1,435 +1,544 @@
-# 代码审查记录（2026-09）
+# Code review log (2026-09)
 
-> **2026-09-28 起本仓库只含集成层与 demo**：纯引擎已剥离为
-> [beyondlex/vimcore](https://github.com/beyondlex/vimcore)。下文第一至
-> 五节审查的引擎部分（`gq`、`C-a`/`C-x`、寄存器轮转等）随代码迁往
-> vimcore 仓库，回归测试在其 `tests/` 下；文中 `crates/vim-core` 路径
-> 以历史名义阅读。
+> **Since 2026-09-28 this repo contains only the integration layer and the
+> demo**: the pure engine was extracted into
+> [beyondlex/vimcore](https://github.com/beyondlex/vimcore). The engine parts
+> reviewed in sections I–V below (`gq`, `C-a`/`C-x`, register rotation, etc.)
+> moved with the code to the vimcore repo, with their regression tests under
+> its `tests/`; the `crates/vim-core` paths mentioned below should be read as
+> historical names.
 
-全量通读 `vim-core`、`gpui-vim`、`gpui-vim-demo` 三个 crate（约 1.2 万行），
-对每个可疑行为用系统 vim 9.1（macOS）做了基准验证。本文记录：
+Full read-through of the three crates `vim-core`, `gpui-vim`,
+`gpui-vim-demo` (~12k lines); every suspicious behavior was benchmarked against
+system vim 9.1 (macOS). This document records:
 
-- 已确认并修复的 bug（每项附回归测试）；
-- 审查中怀疑、经核实**不是** bug 的点；
-- 确认与 vim 有分歧但**未修复**的点（按建议处理级别分级）。
+- bugs confirmed and fixed (each with a regression test);
+- points suspected during the review that were verified **not** to be bugs;
+- points confirmed as divergences from vim but **not fixed** (graded by
+  recommended handling level).
 
-修复的回归测试集中在
-`crates/vim-core/tests/review_regressions.rs`。
-
----
-
-## 一、已修复的 bug
-
-### 1. `gq` 作用于第 1 行之后会整段误删（严重）
-
-`ops::format_lines` 的签名是 `(start: 字节偏移, last_line: 行号)`，但
-内部循环 `for line in start..=last_line` 把字节偏移当行号用。span 起点在
-第 0 行时两者恰好都是 0，所以既有测试全绿；从第 1 行起，循环区间为空、
-`out` 为空串，随后 `edit_replace(start..span_end, "")` 把整段文字删掉。
-
-修复：循环前 `let first_line = ctx.buf.offset_to_line(start)`。
-测试：`gq_on_later_line_does_not_delete_text`。
-
-### 2. linewise `p`/`P` 完全忽略 `after` 参数（功能缺失）
-
-`ops::put` 的 linewise 分支无条件把文本插到「当前行之后」，`P`
-（上方粘贴）实际贴到了下方。既有测试用「yank 当前行再 P」，粘贴内容与
-当前行相同，文本结果恰好一样，因此从未暴露。
-
-修复：`after == false` 时插到 `line_start(line)`。
-测试：`linewise_put_cursor_on_first_pasted_line`（P 半区）。
-
-### 3. linewise 粘贴后光标落在最后一行
-
-vim 9.1 实测（`p`/`P`、1–4 行粘贴逐一验证）：光标落在粘贴文本**第一行**
-的第一个非空白字符上。旧代码落在最后一行。
-
-修复：`cursor_line = offset_to_line(insert_at)`（插入后即第一粘贴行）。
-
-### 4. `C-a`/`C-x` 的数字边界两处错误
-
-- 光标落在多位数字的**最后一位**上（如 `129` 的 `9`）时，只从光标位向后
-  扫描，把 `129` 当成 `9` 来加（`129+1` 变出 `1210`）。vim 是整个数字
-  129 → 130。
-- 光标之后没有任何数字时，旧代码会**反向回扫**并加光标前方的数字
-  （`123 abc` 光标在 `a` 上也能加出 124）；vim 报 E18、无操作。
-
-修复：光标压在数字上（或停在行尾字节、视觉上压着行尾数字）时先回扫到
-数字串起点；否则只向前找，找不到返回 false。
-测试：`c_a_on_last_digit_increments_whole_number`、
-`c_a_ignores_numbers_before_cursor`、`c_a_at_line_end_uses_trailing_number`。
-
-### 5. `J` 绕过 `edit_replace`，marks 与搜索缓存失同步
-
-`ops::join_lines` 的非 literal 分支直接调 `ctx.buf.replace_range(...)`，
-绕过了所有引擎编辑都必须经过的 `edit_*` 包装：marks 不平移、
-`edit_generation` 不增长（`n`/`N` 的缓存匹配列表因此读到过期偏移）、
-`last_visual` 不跟随。`gJ` 分支用的是 `edit_delete`，不受影响。
-
-修复：改走 `vim.edit_replace(...)`。
-测试：`join_updates_marks_through_edit_replace`。
-
-### 6. `dw` 在行尾空白处吞掉换行
-
-exclusive 运动的「列一规则」第二分支（起点不在行首非空白）应把终点移到
-**前一行的最后一个字符**并转为 inclusive——即 span 终点是 `line_end`，
-换行符存活。旧代码 `line_end + 1` 把 `\n` 一并删掉，两行被合并。vim 9.1
-实测 `dw` 保留换行。
-
-修复：去掉 `+ 1`（第一分支的 linewise 规则不变）。
-测试：`dw_on_trailing_blanks_keeps_newline`。
-
-### 7. `?` + 空回车沿旧方向重复搜索
-
-vim：空模式重复**上一次搜索**，但方向随**当前提示符**（`?` + 回车向后，
-`/` + 回车向前）。引擎在空模式下沿用 `self.search.forward`（旧方向），
-`?` + 回车实际向前跳。
-
-修复：使用 `execute_search` 传入的 `forward`（即本次提示符方向）。
-测试：`question_enter_repeats_search_backward`。
-
-### 8. 大小写算子截断多字符大小写映射
-
-`gu`/`gU`/`g~` 逐字符用 `to_uppercase().next()` 只取第一个字符：`ß`
-应映射为 `SS`，只得到 `S`。更严重的是 `toggle_chars` 用替换文本长度
-反推被替换区间（`start + mapped.len()`），当映射改变字节长度时会切错
-区间——`ẞ`（3 字节）→`ß`（2 字节）时区间终点落在多字节字符中间，
-`BufferView` 的边界保护会直接 panic。
-
-修复：映射改为 `collect::<String>()`；替换区间用实际消耗的
-`start..o`。
-测试：`toggle_char_expands_and_shrinks_multi_char_case_mapping`。
-
-### 9. `gpui_vim::edit` 本地撤销拦截吞掉 `gu` 系列命令
-
-`VimEdit::process_key` 只要 `mode == Normal` 且按键是 `u`/`C-r` 就拦截
-走本地 undo 栈，但引擎此时可能正等着这个键：`gu` 之后的 `u`（操作符等
-motion）、`guu` 的尾键（行级加倍）都被吞成本地 undo，
-`gu`/`guw`/`guu`/`gugu` 全部失效；且 `3u` 的 count 泄漏给下一条命令。
-
-修复：`VimState` 新增 `is_idle()`（无 pending count/register/operator/
-char-arg/cmd_seq/队列键），仅引擎空闲时拦截。
-测试：`is_idle_reflects_pending_command_input`（拦截门本身在
-`process_key` 内，需要 gpui Context，无法 headless 直测）。
-
-### 10. `let mapleader = "<Space>"` 被拆成五个键
-
-rc 解析用「把 `leader.notation()` 字符串替换回原文再重新解析」的方式
-展开 `<Leader>`：`<Space>` 的 notation 是 `Space`（无尖括号），重新解析
-时碎成 `S`,`p`,`a`,`c`,`e` 五个键，映射永远匹配不上。
-
-修复：`<Leader>` 先按原样解析成 `Named("leader")` 标记键，再在**解析后
-的键序列**上替换成 leader 键。
-
-### 11. 空格键双形态归一（连带修复）
-
-排查 9/10 时确认：空格在不同路径下以 `Named("space")`（gpui 按键路径、
-`<Space>` 记法）和 `Char(' ')`（文本输入路径、裸空格）两种 Key 出现，
-映射表按精确相等查找，两套写法互不命中。
-
-修复：`Key::parse("<Space>")` 规范化为 `Char(' ')`；`handle_key` 入口把
-plain `Named("space")` 归一为 `Char(' ')`（与既有的大写 shift 剥离同一
-位置）。`let mapleader = " "` 与 `"<Space>"` 两种写法自此等价。
-测试：`space_leader_from_vimrc_space_notation`、
-`space_key_matches_char_space_mappings`（另更新 `key.rs` 单测）。
-
-### 12. 顺手修复
-
-- **demo `char_width` 测量回写缺失**：注释声称首帧绘制后用 shaped 值
-  回写单字符宽度，但全仓没有任何 `char_width.set` 调用，gutter 宽度与
-  鼠标 fallback 永远用 8.4 预估值。已在 paint 回调中回写实测 advance。
-- **`registers.rs` 错误注释**：`store_yank` 的注释称 `"_yy` 写无名寄存器
-  「vim 不会这样做」。实测 vim 9.1 的 `"_yy` 之后 `@"` 返回刚 yank 的
-  内容（无名寄存器是「最后写入寄存器」的别名，yank 总是重指向，包括指向
-  黑洞寄存器）。引擎行为与 vim 一致，仅注释错误，已改正（删除路径
-  `"_dd` 不碰无名寄存器，与 vim 一致，由 `store` 的早退保证）。
+The regression tests for the fixes are collected in
+`crates/vim-core/tests/review_regressions.rs`.
 
 ---
 
-## 二、怀疑过、核实后不是 bug 的点
+## I. Fixed bugs
 
-- **`"_yy` 改写无名寄存器**（见上，引擎 = vim）。
-- **`w` 运动在空行停在 `line_start`**：对空行该值即 `\n` 字节，与 vim
-  「光标落空行 col 0」语义一致，渲染层已按行尾处理。
-- **`gp`/可视模式 `:` 种子 `'<,'>`、`gv` 的 `hi-1`**：`last_visual` 存的
-  是 exclusive 终点，`hi-1` 恰是最后一个字符起点，不会下溢。
-- **`mapping_step` 在 insert 模式 mapping 前缀上 Wait**：等价 vim
-  `set notimeout`（见下「设计取舍」）。
+### 1. `gq` applied after line 1 deletes the whole paragraph (severe)
 
----
+The signature of `ops::format_lines` is `(start: byte offset, last_line: line
+number)`, but the inner loop `for line in start..=last_line` used the byte
+offset as a line number. When the span starts on line 0 the two happen to both
+be 0, so the existing tests all stayed green; starting from line 1 the loop
+range is empty, `out` is an empty string, and the following
+`edit_replace(start..span_end, "")` deletes the entire text.
 
-## 三、确认与 vim 有分歧、未修复的点
+Fix: `let first_line = ctx.buf.offset_to_line(start)` before the loop.
+Test: `gq_on_later_line_does_not_delete_text`.
 
-### 建议后续处理
+### 2. Linewise `p`/`P` completely ignored the `after` argument (missing feature)
 
-1. **`gq` 折行宽度按字符数而非显示宽度**（`ops::flush_paragraph`）：
-   CJK 记 1 列（vim 记 2），中文段落的行会明显超视觉宽度。修复需把
-   `chars().count()` 换成 `char_display_width` 累加，注意 `col + w >
-   width` 的判断也要按宽度。
-2. **Replace 模式 Backspace 不恢复原字符**：vim 的 R 模式 BS 会恢复被
-   覆盖字符并左移；引擎当普通删除。需在替换时保存被覆盖文本。
-3. **`:{n}` 单独输入不跳转**：vim 的 `:5` 跳到第 5 行；引擎解析完 range
-   后命令为空直接返回。低成本补齐。
-4. **`:s` 的 flags 只认 `g`**：`c`/`i`/`I` 等静默忽略；空匹配语义与 vim
-   不同（vim 在空匹配后前进一个字符，引擎直接过滤空匹配），`:s/x*/Y`
-   行为不可比。若补 `i` 需同步 `case_insensitive_for`。
-5. **`VimEdit` 的 undo 架构限制**：`u`/`C-r` 走 widget 本地栈（绕过引擎），
-   (a) `3u` 只响铃不撤销 3 次（`EditHost::undo` 返回 None）；
-   (b) 宏与 `.` 重复永远录不到 undo。若要完整语义，应把 undo 栈下沉到
-   `EditHost` 并实现 `VimHost::undo/redo`，删除 `process_key` 拦截。
+The linewise branch of `ops::put` unconditionally inserted the text "after the
+current line", so `P` (put above) actually pasted below. The existing test used
+"yank the current line then P", whose pasted content is identical to the
+current line, so the text result coincidentally matched and the bug was never
+exposed.
 
-### 设计取舍（已知、可接受）
+Fix: when `after == false`, insert at `line_start(line)`.
+Test: `linewise_put_cursor_on_first_pasted_line` (the P half).
 
-6. **无 `timeout`/`timeoutlen`**：insert 模式 mapping 前缀（`jk` 的
-   `j`）会一直吞键等下一个键，等价 vim `set notimeout`。
-7. **`gq` 把首行缩进应用到整段**：vim 对段落后续行有自己的缩进规则；
-   引擎是简化版（文档已注明）。
-8. **句子运动只认 `.!?` 单字符**（代码已注明），无 `...`、行首规则。
-9. **`:s` 替换用 Rust regex 展开（`$1`）**，非 vim 的 `\1`（文档已注明）。
-10. **搜索模式为 Rust regex 语法**，`\b`、lookaround 遵循 RE2（文档已注明）。
-11. **`jump_to_match` 的 count 取模环绕**：vim 超界报错；引擎环绕
-    （代码已注明 u64 防溢出是有意的）。
-12. **`:d` 忽略 register/count 后缀**（代码已注明 named registers not
-    supported）；`:{range}d 3` 的「从 range 起删 3 行」未实现。
-13. **块可视 `I`/`A`/`c` 中输入含换行文本**：退出会话复制到其他行时，
-    row 偏移假设单行文本，多行粘贴的落点未定义。未对照 vim。
-14. **charwise `p` 按「一个字符」后移**：emoji ZWJ 家族会被从中间拆开；
-    `h`/`l`/`x` 已按 grapheme 处理，put 未做。
-15. **`marks.adjust_replace` 等长替换时内部 mark 保持绝对偏移**：多字节
-    字符内可能失准；近似 vim 的列保持行为。
-16. **`PagerBuf` 固有 `line_start`/`line_end` 遮蔽 trait 同名方法且参数
-    语义不同**（字节偏移 vs 行号）：类型文档已注明，仍是易错点，建议
-    后续改名为 `line_start_at`/`line_end_at`。
-17. **`VimState::replace_range`（IME 提交路径）不关闭 undo group、不
-    `bump`**：设计上由 insert 会话收口；宿主若在非 insert 模式调用会
-    留下悬挂的 open group（demo 的 `unmark_text` 无模式保护，理论上
-    可达）。建议后续在该函数内加模式断言或收口。
+### 3. After a linewise put the cursor landed on the last line
 
----
+vim 9.1 measured (`p`/`P`, pastes of 1–4 lines verified one by one): the cursor
+lands on the **first line** of the pasted text, at its first non-blank
+character. The old code landed on the last line.
 
-## 四、vim 基准验证方法备忘
+Fix: `cursor_line = offset_to_line(insert_at)` (right after insertion this is
+the first pasted line).
 
-用 keystroke 脚本（`vim -u NONE -N -s keys.vim file`）驱动真实 vim 9.1，
-`:redir` 捕获 `line(".")`/`col(".")`/`getline(...)`。两个坑：
+### 4. Two numeric-boundary errors in `C-a`/`C-x`
 
-- **`-es`（silent Ex）模式下 `normal!` 里的 `yy` 等不生效**（E353
-  Nothing in register），要用 `-s` keystroke 脚本；
-- **keystroke 脚本里 Ex 行必须有行首 `:`**，且 normal 命令后若跟裸换行
-  会被解析成 `+`（下移一行），污染光标位置断言——本次 `p` 光标规则的
-  「第二行」假阳性即由此产生。
+- When the cursor sits on the **last digit** of a multi-digit number (e.g. the
+  `9` of `129`), only the text from the cursor onward was scanned, so `129` was
+  treated as `9` and incremented (`129+1` produced `1210`). vim takes the whole
+  number 129 → 130.
+- When there is no number after the cursor, the old code **scanned backwards**
+  and incremented a number before the cursor (`123 abc` with the cursor on `a`
+  still incremented to 124); vim reports E18 and does nothing.
 
----
+Fix: when the cursor is on a digit (or parked on the line-end byte, visually
+pressing the trailing digit), first scan back to the start of the digit run;
+otherwise search forward only, and return false if nothing is found.
+Tests: `c_a_on_last_digit_increments_whole_number`,
+`c_a_ignores_numbers_before_cursor`, `c_a_at_line_end_uses_trailing_number`.
 
-## 五、第二轮审查（2026-09-21，crossterm_vim 集成驱动）
+### 5. `J` bypassed `edit_replace`, desyncing marks and the search cache
 
-为 crossterm-vim 集成做全量对齐审查时又确认了一批点，本轮**已修复**
-（回归测试在 `crates/vim-core/tests/parity_round2.rs`）：
+The non-literal branch of `ops::join_lines` called `ctx.buf.replace_range(...)`
+directly, bypassing the `edit_*` wrappers every engine edit must go through:
+marks did not shift, `edit_generation` did not grow (so the cached match list
+of `n`/`N` read stale offsets), `last_visual` did not follow. The `gJ` branch
+uses `edit_delete` and was unaffected.
 
-1. **`n`/`N` 无视搜索方向**：`?foo` 之后的 `n` 应继续向后找，旧实现写死
-   向前。`SearchNext` 的 `forward` 标志重新解释为「重复极性」。
-2. **`*` 的词边界**：光标在空白上时旧的 `word_bounds_at` 会把前导空白卷进
-   模式（搜索 `" bar"`），在缓冲末字符上给出空区间；且与 vim 不同——
-   不在单词上时应取行内前方最近的词。两处都已修正。
-3. **`t`/`T` 越行**：目标字符在行首/行末时，till 停点经 `prev/next_char_
-   offset` 会落到上一行的 `\n` 上或越出行尾；现在停点必须在本行内，否则
-   该次运动失败（vim 响铃）。
-4. **大写寄存器追加**：`"Ayy` 应追加进寄存器 a，旧实现把它当成独立寄存器
-   `A`；`get`/`store`/`store_yank` 补齐大小写映射与合并语义（任一侧
-   linewise 结果即 linewise），无名寄存器指向合并后的整体。
-5. **空文本对象**：`ci"`/`ci(` on `""`/`()` 旧实现响铃，vim 允许在空串/
-   空括号间插入（零宽内区间）；顺带补上「光标压在 `(` 上」的块选择。
-6. **`C-e`/`C-y` 缺失**：命令表没有这两键（集成层的 `scroll_lines` 钩子
-   无人触发）；补 `ScrollLines` 命令——滚动视图，光标仅在会被滚出视口时
-   跟随。
-7. **`<Tab>` 缺失**：终端里 Tab 与 `C-i` 同码，vim 两者都是跳转列表前进；
-   补 normal 表行。
-8. **视觉模式 `Y` 缺失**：补为 yank 选区。
-9. **`%`/`$` 的 count**：`5%` 按文件百分比跳行；`2$`/`d2$` 到下几行行尾。
-10. **`:N` 跳行**：解析完 range 后命令为空直接 return（REVIEW 第三节
-    第 3 条），现按 vim 跳到该行首个非空白。
-11. **`:s` 的 `i`/`I` 标志**（第三节第 4 条的部分）：强制本次替换忽略/
-    区分大小写。
-12. **Ex 范围的 `'a` mark**：范围扫描器接受 `'x` 但 `base_line` 只认
-    `'<`/`'>`，`:'a,'b d` 一律 E16；现经 `marks.resolve` 解析。
-13. **`@:` 重复上次 Ex 命令**：`Cmdline` 记录 `last_command`，
-    `@:` 走 `execute_ex` 重放。
-14. **Replace 模式 Backspace**（第三节第 2 条）：`R` 键入时暂存被覆盖的
-    原字符，BS 按栈恢复；行尾之外追加的部分无原文可恢复，BS 普通删除。
-15. **`gq` 显示宽度折行**（第三节第 1 条）：`flush_paragraph` 改用
-    `char_display_width` 计宽，CJK 词不再按 1 列估算。
-16. **`/` 与 `?` 搜索历史**：注释声称共享、实现按提示符分桶；现统一键。
-17. **`ensure_normal_mode` 不处理 Replace**：宿主隐式退出时 Replace 会话
-    会悬挂。
-18. **`VimHost::request_close_forced`**：`:q`（非强制）与 `:q!`/`:wq`/
-    `ZZ`/`ZQ`（强制）区分开，宿主可按 E37 拒绝关闭未保存缓冲；默认实现
-    转发旧 `request_close`，既有宿主不受影响。
+Fix: route through `vim.edit_replace(...)`.
+Test: `join_updates_marks_through_edit_replace`.
 
-仍维持「设计取舍」的条目见上文第三节，本轮未改动。
+### 6. `dw` on trailing blanks swallowed the newline
 
----
+The second branch of the exclusive-motion "column-one rule" (start not on the
+line's first non-blank) should move the end point to **the last character of
+the previous line** and turn inclusive — i.e. the span end is `line_end` and
+the newline survives. The old code's `line_end + 1` deleted the `\n` as well,
+joining two lines. vim 9.1 measured: `dw` keeps the newline.
 
-## 六、第三轮审查（2026-10-01，引擎剥离后的仓库级复审）
+Fix: drop the `+ 1` (the first branch's linewise rule is unchanged).
+Test: `dw_on_trailing_blanks_keeps_newline`.
 
-引擎离仓后的第一次全量复审，范围：`gpui-vim`（lib/edit/pager/render/
-config）与 `gpui-vim-demo`（buffer/host/editor/main），约 4900 行。本轮
-**已修复**（每项附回归测试）：
+### 7. `?` + empty Enter repeated the search in the old direction
 
-1. **rc `source` 指令路径不展开 `~`**（`config.rs`）：顶层层路径经
-   `expand_tilde`，嵌套 `source ~/more-maps` 却直接 `read_to_string`——
-   一律 `NotFound` 静默跳过，而引擎 `config::parse` 明确注释「tilde
-   expansion is the loader's job」。修法：`load` 递归时对 source 目标
-   应用同一 `expand_tilde`。
-   测试：`source_directive_expands_tilde_like_top_level_paths`。
-   （教训：回归断言要选**默认值 false** 的选项——首版用 `expandtab`
-   断言，而它默认就是 true，测试空洞地绿。）
-2. **demo 宿主新 undo 组不清 redo 分支**（`host.rs`）：`undo → 键入新
-   内容 → C-r` 会把 undo 前的快照整个盖回来，新键入凭空消失——
-   `begin_undo_group` 遇到新 id 时必须清 `redo_stack`（vim 语义：新
-   编辑作废 redo 分支）。
-   测试：`new_edit_after_undo_discards_the_redo_branch`。
-3. **`VimEdit::splice_range` 不记撤销点也不清 redo**（`edit.rs`）：补全
-   插入走这条旁路，undo → 补全 → redo 同样被陈旧快照覆盖。现在与键入
-   同权：记撤销点、作废 redo 分支。undo 栈抽成无头可测的 `TextUndo`
-   结构体（`VimEdit::new` 需要 gpui `App`，无法直接构造）。
-   测试：`text_undo_record_invalidates_redo` 等 3 个。
-4. **`offset_rc` 对非字符边界偏移 panic**（`edit.rs`）：`line[..rem]`
-   切片在 rem 落在多字节字符中间时 panic。该入口同时接宿主侧偏移
-   （IME 恢复、splice 后的陈旧值），改为向下取整到最近边界。
-   测试：`offset_rc_floors_mid_char_offsets_instead_of_panicking`。
-5. **提示符/待决状态下鼠标点击误喂引擎**（`edit.rs`）：搜索提示符开着
-   时 `mouse_down` 走 `enter_visual_char` 把 `'v'` 拼进 pattern；
-   operator 待决（已按 `d`）时点击重摆光标打断命令。现在命令行模式与
-   非 idle 态直接忽略点击；可视模式内点击只延伸选区、不再重复喂 `'v'`。
+vim: an empty pattern repeats **the previous search**, but the direction
+follows **the current prompt** (`?` + Enter goes backward, `/` + Enter
+forward). The engine, on an empty pattern, kept using `self.search.forward`
+(the old direction), so `?` + Enter actually jumped forward.
 
-### 本轮顺带修复/优化
+Fix: use the `forward` passed into `execute_search` (i.e. this prompt's
+direction).
+Test: `question_enter_repeats_search_backward`.
 
-6. **demo Cmd-V 在 normal 模式静默无效**：`insert_text_at_cursor` 在非
-   insert 态直接 no-op。现在 insert 态照旧落盘；normal/visual 走引擎
-   `"+p` 命令（undo 组、marks、`.` 重复与手敲 `p` 一致）；宿主 `"+`
-   镜像与系统剪贴板同步。
-7. **demo tab 栏不可点击**：加 `cx.listener` + `stop_propagation`
-  （不拦会把点击映射成正文光标移动），加 hover 反馈。
-8. **`CaretBlinker` 后台窗口常驻重绘**：新增 `spawn_loop_gated`，宿主
-   传「窗口活动」判据；不可见光标不再驱动每 500ms 一帧。
-9. **`LinesBuf` 字符探针整缓冲 join**：`char_at`/`prev_char_offset` 是
-   引擎逐字符 motion 的高频探针，旧实现每次 `join` O(全部文本) 分配，
-   改为按行行走 O(offset) 零分配（TCK 契约全绿）。
-10. **`Pager::take_clip` 的 `yanked` 死字段**：record-then-take 无意义，
-    删除；寄存器回退语义不变（可重复读）。
+### 8. Case operators truncated multi-character case mappings
 
-### 新增
+`gu`/`gU`/`g~` per character used `to_uppercase().next()`, taking only the
+first character: `ß` should map to `SS` but produced only `S`. Worse,
+`toggle_chars` inferred the replaced range from the replacement text's length
+(`start + mapped.len()`); when the mapping changes the byte length it slices
+the range wrong — for `ẞ` (3 bytes) → `ß` (2 bytes) the range end falls inside
+a multi-byte character, and `BufferView`'s boundary guard panics outright.
 
-11. **`VimEdit` 占位提示文本**：`set_placeholder` + `VimEditStyle::
-    placeholder` 颜色位；空缓冲渲染灰字提示，纯显示不进缓冲。
+Fix: mapping uses `collect::<String>()`; the replacement range uses the
+actually consumed `start..o`.
+Test: `toggle_char_expands_and_shrinks_multi_char_case_mapping`.
 
-### 确认不是 bug / 维持现状
+### 9. `gpui_vim::edit`'s local-undo interception swallowed `gu`-family commands
 
-- **`mouse_up`/`undo` 直接写 `vim.mode = Normal`**：引擎
-  `visual_selection` 对非 Visual 模式返回 None（stale anchor 有防护），
-  直接切模式安全。
-- **`process_key` 对 Unknown 键返回 true（已消费）**：`VimEdit` 是
-  自包含字段的路线 B 形态，字段持有期间吞掉未知键符合「字段独占按键」
-  的预期；需要放行的宿主应看 `VimEditEvent`/自行路由。
-- **`VimEdit` 本地 undo 栈无上限**：表单场景的编辑深度有限，条目是
-  COW 行向量（clone 便宜）；demo 宿主的栈有 200 步上限。暂不加配置面。
-- **`PagerBuf` 固有 `line_start`/`line_end` 遮蔽 trait 同名方法**：
-  维持第三节 16 条的「建议改名」，因 pandamail 已消费该 API，改名
-  需跨仓协同，本仓单方面不动。
+`VimEdit::process_key` intercepted `u`/`C-r` to the local undo stack whenever
+`mode == Normal`, but the engine may be waiting for exactly that key: the `u`
+after `gu` (operator pending on a motion) and the trailing key of `guu`
+(linewise doubling) were all eaten as local undo, so
+`gu`/`guw`/`guu`/`gugu` all failed; moreover `3u`'s count leaked into the next
+command.
 
-### 性能备注
+Fix: new `is_idle()` on `VimState` (no pending count/register/operator/
+char-arg/cmd_seq/queued keys); intercept only while the engine is idle.
+Test: `is_idle_reflects_pending_command_input` (the interception gate itself is
+inside `process_key`, which needs a gpui Context and cannot be tested headlessly).
 
-- `LinesBuf::slice`/UTF-16 换算仍是整缓冲 join——它们只服务 IME 边界
-  与宿主取文本，频率低，保持简单；逐字符探针路径（`char_at`/
-  `prev_char_offset`）已优化（见上 9）。
-- blink 门控（见上 8）对常驻 gpui 应用是纯收益：后台窗口从 2Hz 重绘
-  降为 0。
+### 10. `let mapleader = "<Space>"` was split into five keys
+
+rc parsing expanded `<Leader>` by "substituting the `leader.notation()` string
+back into the raw text and re-parsing it": `<Space>`'s notation is `Space`
+(without angle brackets), and re-parsing shattered it into the five keys
+`S`,`p`,`a`,`c`,`e`, so the mapping could never match.
+
+Fix: parse `<Leader>` verbatim into a marker key `Named("leader")` first, then
+replace it with the leader key **on the parsed key sequence**.
+
+### 11. Normalizing the space key's two forms (knock-on fix)
+
+While investigating 9/10 it was confirmed: the space arrives as two Key shapes
+depending on the path — `Named("space")` (gpui keystroke path, `<Space>`
+notation) and `Char(' ')` (text-input path, bare space); the keymap table
+looks up by exact equality, so the two spellings never matched each other.
+
+Fix: `Key::parse("<Space>")` normalizes to `Char(' ')`; the `handle_key` entry
+normalizes a plain `Named("space")` to `Char(' ')` (same location as the
+existing uppercase shift-stripping). From then on `let mapleader = " "` and
+`"<Space>"` are equivalent.
+Tests: `space_leader_from_vimrc_space_notation`,
+`space_key_matches_char_space_mappings` (plus an updated unit test in `key.rs`).
+
+### 12. Along-the-way fixes
+
+- **demo `char_width` measurement never written back**: the comment claimed the
+  single-char width is written back from shaped values after the first paint,
+  but the repo had no `char_width.set` call anywhere, so the gutter width and
+  the mouse fallback always used the 8.4 estimate. The measured advance is now
+  written back in the paint callback.
+- **Wrong comment in `registers.rs`**: `store_yank`'s comment said `"_yy`
+  writes the unnamed register and "vim does not do this". Measured on vim 9.1:
+  after `"_yy`, `@"` returns the just-yanked content (the unnamed register is an
+  alias of the "last written register"; a yank always re-points it, including
+  pointing at the blackhole register). The engine's behavior matches vim and
+  only the comment was wrong; corrected (the delete path `"_dd` does not touch
+  the unnamed register, matching vim, guaranteed by `store`'s early return).
 
 ---
 
-## 七、第四轮审查（2026-10-03，仓库级复审）
+## II. Suspected, verified not bugs
 
-范围同第六轮（引擎离仓后的集成层 + demo，约 5000 行），本专项打「意料外
-操作 / 不寻常数据」。本轮**已修复**（每项附回归测试，除纯 demo 交互路径）：
-
-1. **`VimEdit::set_text` 整体重建 `VimState`，宿主配置静默丢失**（严重）：
-   `VimState::new()` 会把 rc 分层加载进来的 `options`/`keymaps` 一并清零——
-   宿主每次换内容（表单重置、单 widget 换缓冲）后，用户的 `jk`→Esc 映射
-   与全部选项悄然失效。修法：抽出可无头测试的
-   `reset_engine_for_new_text`——瞬态（模式/光标/可视锚/待决命令/搜索态）
-   归零，配置面保留。
-   测试：`engine_reset_for_new_text_keeps_options_and_mappings`。
-2. **`LinesBuf::byte_to_utf16` 对非边界偏移归零**：宿主侧陈旧偏移落在多
-   字节字符中间时 `get(..mid)` 返回 None 被当成 0，IME 定位框跳到缓冲
-   开头。修法：向下取整到所在字符起点。
-   测试：`byte_to_utf16_floors_mid_char_offsets`。
-3. **rc 文件带 UTF-8 BOM 时首条指令被静默吞掉**：引擎 `config::parse`
-   认不出 `\u{feff}set`，第一行丢弃、后续行正常——症状极具迷惑性（只有
-   第一条设置/映射失效）。环境适配归加载层（与 tilde 展开同理），加载前
-   剥 BOM。
-   测试：`utf8_bom_does_not_eat_the_first_directive`。
-4. **demo `on_mouse_down` 缺 CommandLine/待决守卫**（六.5 的 demo 侧漏网）：
-   搜索提示符开着时点击重摆光标并弄脏 incsearch；operator 待决时点击打断
-   命令。守卫与 `VimEdit::mouse_down` 同规则。
-5. **demo 可视态原地点击残留空选区**：拖动松手保留可视（vim 语义，正确），
-   但没动过的点击也把 `set_cursor_offset` 的重锚留在原地，停在可视模式且
-   无法用鼠标退出。`on_mouse_up` 对「光标 == 拖动锚点」的点击退出可视
-   （`VimEdit::mouse_up` 同语义）。
-6. **demo `paste` 在提示符开着时污染搜索词**：`cmd-v` 直发 `"`,`+`,`p`
-   三个键被 cmdline 当普通输入拼进 pattern。现在提示符开着时把文本逐字符
-   走按键流水线拼进 cmdline；普通路径补粘贴后滚动跟随。
-7. **demo `HostState::save` 无尾换行缓冲报 0L**：`len_lines()-1` 对 "abc"
-   这类缓冲少算一行；与 `line_count_real` 同规则修正。
-   测试：`save_counts_last_line_without_trailing_newline`。
-8. **demo `sync_visible_state` 越界视口早退**：空缓冲等边界下早退不写
-   `host.viewport`，引擎滚动 motion（`C-d`/`H`/`M`/`L`）读到陈旧视口按错
-   距离滚。改为 clamp 后继续走。
-9. **`Pager::set_cursor` 不取整非边界偏移**：宿主命中测试给 mid-char 偏移
-   直接进引擎，`offset_to_line` 一类探针 panic。向下取整（与引擎
-   `set_cursor_offset` 同规则）。
-   测试：`set_cursor_floors_mid_char_offsets`。
-10. **`VimEdit` IME 几何两处缺滚动补偿**：`bounds_for_range`（IME 候选框）
-    用内容绝对行号、`character_index_for_point`（点击定位）不补滚动距离，
-    多行滚动后分别飞出可视区/映射错行。与 `offset_at_point` 统一为
-    「IME canvas 叠在视口上」假设：前者减滚动距离、后者加回。
-
-### 本轮顺带
-
-11. `cycle_tab` 关掉被离开 tab 的悬空提示符；`copy` 空选区给状态提示。
-12. config 测试 `with_fake_home` 恢复（而非删除）`$HOME`，避免污染同进程
-    后续测试；清理一处未用 import。
-13. **新增 `search_status`**：`EditHost::search_status()` + 同语义 pub 自由
-    函数（宿主 `VimHost` 实现各自持有高亮列表，均可直接委托），返回当前
-    命中的 1-based 序号与总数；demo 状态栏显示 vim 风格「3/17」，无当前
-    命中整体隐藏。
-    测试：`search_status_indexes_current_highlight`。
-
-### 怀疑过、核实后不改的点（记录在案）
-
-- **`set_text` 多行路径保留 `\r`**：与 vim 的 `^M`（fileformat=dos）一致，
-  `text()` round-trip 正确；`insert_text` 剥 `\r` 只针对平台输入路径，
-  两者不冲突。
-- **`Pager` 的块可视 `selection()` 按字符选区折叠**：pager 公开面只承诺
-  char/line 选区映射；块语义仅在宿主自行 `feed(C-v)` 时可达，届时返回
-  包裹矩形——记录为已知边界，不加块感知（宿主要块语义时会连带要渲染，
-  属 pager 组件的后续设计题）。
-- **`to_core_key` 的 `key_char` 多字符时只取首字符**：macOS 正常路径
-  `key_char` 恒单字符；未见多字符来源，防御性取首即可。
-- **`process_key` 对空 `dispatch_text("")`**：零字符循环，无副作用。
+- **`"_yy` writing the unnamed register** (see above, engine = vim).
+- **The `w` motion stopping at `line_start` on an empty line**: for an empty
+  line that value is the `\n` byte, consistent with vim's "cursor on an empty
+  line at col 0" semantics; the rendering layer already treats it as the line end.
+- **`gp`/visual-mode `:` seeding `'<,'>`, and `gv`'s `hi-1`**: `last_visual`
+  stores the exclusive end, so `hi-1` is exactly the start of the last
+  character; no underflow.
+- **`mapping_step` returning Wait on an insert-mode mapping prefix**: equivalent
+  to vim `set notimeout` (see "design trade-offs" below).
 
 ---
 
-## 八、引擎跟随 git main（2026-10-04）
+## III. Confirmed divergences from vim, not fixed
+
+### Recommended follow-up
+
+1. **`gq` wrapping width counts characters, not display width**
+   (`ops::flush_paragraph`): CJK counts as 1 column (vim counts 2), so lines of
+   Chinese text visibly exceed the visual width. The fix needs replacing
+   `chars().count()` with accumulated `char_display_width`; the `col + w >
+   width` test must also be width-based.
+2. **Replace-mode Backspace does not restore the overwritten character**: vim's
+   R-mode BS restores the covered character and moves left; the engine treats it
+   as a plain delete. Requires saving the overwritten text at replace time.
+3. **`:{n}` typed alone does not jump**: vim's `:5` jumps to line 5; the engine
+   parses the range, sees an empty command and returns. Cheap to add.
+4. **`:s` flags recognize only `g`**: `c`/`i`/`I` etc. are silently ignored; the
+   empty-match semantics differ from vim (vim advances one character after an
+   empty match, the engine filters empty matches outright), so `:s/x*/Y`
+   behavior is not comparable. If `i` is added, `case_insensitive_for` must be
+   updated in sync.
+5. **`VimEdit`'s undo architecture limitation**: `u`/`C-r` go through the
+   widget-local stack (bypassing the engine), so (a) `3u` only rings the bell
+   instead of undoing 3 times (`EditHost::undo` returns None); (b) macros and
+   `.` repeats can never record an undo. For full semantics, sink the undo
+   stack into `EditHost` and implement `VimHost::undo/redo`, deleting the
+   `process_key` interception.
+
+### Design trade-offs (known, acceptable)
+
+6. **No `timeout`/`timeoutlen`**: an insert-mode mapping prefix (the `j` of
+   `jk`) keeps swallowing the key waiting for the next one, equivalent to vim
+   `set notimeout`.
+7. **`gq` applies the first line's indent to the whole paragraph**: vim has its
+   own indent rules for a paragraph's following lines; the engine is a simplified
+   version (documented).
+8. **Sentence motions recognize only `.!?` single characters** (noted in code);
+   no `...`, no line-start rules.
+9. **`:s` replacements use Rust regex expansion (`$1`)**, not vim's `\1`
+   (documented).
+10. **Search patterns use Rust regex syntax**; `\b`, lookaround follow RE2
+    (documented).
+11. **`jump_to_match`'s count wraps modulo**: vim errors past the end; the
+    engine wraps (the code notes the u64 wrap-around is deliberate).
+12. **`:d` ignores register/count suffixes** (the code notes named registers
+    not supported); `:{range}d 3`'s "delete 3 lines from the range" is not
+    implemented.
+13. **Text containing newlines typed inside blockwise visual `I`/`A`/`c`**: when
+    the session exits and copies to the other rows, the row-offset logic assumes
+    single-line text, so the landing point of a multi-line paste is undefined.
+    Not benchmarked against vim.
+14. **Charwise `p` steps right by "one character"**: an emoji ZWJ family gets
+    split mid-cluster; `h`/`l`/`x` already step by grapheme, put does not.
+15. **`marks.adjust_replace` keeps interior marks at absolute offsets on
+    equal-length replacement**: may be off inside multi-byte characters;
+    approximates vim's column-keeping behavior.
+16. **`PagerBuf`'s inherent `line_start`/`line_end` shadow the trait methods of
+    the same name with different parameter semantics** (byte offset vs line
+    number): noted in the type docs, still an error-prone spot; recommend
+    renaming to `line_start_at`/`line_end_at` later.
+17. **`VimState::replace_range` (the IME commit path) neither closes the undo
+    group nor `bump`s**: by design the insert session wraps it up; a host
+    calling it outside insert mode leaves a dangling open group (the demo's
+    `unmark_text` has no mode protection, so it is theoretically reachable).
+    Recommend adding a mode assertion or wrap-up inside that function later.
+
+---
+
+## IV. Notes on the vim benchmarking method
+
+Drive real vim 9.1 with a keystroke script (`vim -u NONE -N -s keys.vim file`)
+and capture `line(".")`/`col(".")`/`getline(...)` via `:redir`. Two traps:
+
+- **In `-es` (silent Ex) mode, `yy` etc. inside `normal!` do not take effect**
+  (E353 Nothing in register); use the `-s` keystroke script;
+- **Ex lines in a keystroke script must have a leading `:`**, and if a normal
+  command is followed by a bare newline it parses as `+` (move down one line),
+  polluting cursor-position assertions — this round's "second line" false
+  positive for the `p` cursor rule came from exactly this.
+
+---
+
+## V. Second review round (2026-09-21, driven by the crossterm_vim integration)
+
+While doing the full alignment review for the crossterm-vim integration,
+another batch of points was confirmed; they are **fixed** in this round
+(regression tests in `crates/vim-core/tests/parity_round2.rs`):
+
+1. **`n`/`N` ignored the search direction**: after `?foo`, `n` should keep
+   searching backward; the old implementation hardcoded forward. `SearchNext`'s
+   `forward` flag is reinterpreted as "repeat polarity".
+2. **`*`'s word boundary**: when the cursor is on whitespace, the old
+   `word_bounds_at` rolled the leading whitespace into the pattern (searching
+   `" bar"`), and on the buffer's last character it produced an empty range; and
+   unlike vim — when not on a word it should take the nearest preceding word in
+   the line. Both fixed.
+3. **`t`/`T` crossed lines**: when the target character is at the line start or
+   end, the till stop point, via `prev/next_char_offset`, could land on the
+   previous line's `\n` or past the line end; the stop point must now lie within
+   this line, otherwise the motion fails (vim rings the bell).
+4. **Uppercase-register append**: `"Ayy` should append into register a; the old
+   implementation treated it as a separate register `A`; `get`/`store`/
+   `store_yank` gained the case mapping and merge semantics (if either side is
+   linewise the result is linewise), and the unnamed register points at the
+   merged whole.
+5. **Empty text objects**: `ci"`/`ci(` on `""`/`()` rang the bell in the old
+   implementation; vim allows inserting between an empty string / empty parens
+   (zero-width inner range); the "cursor pressing the `(`" block selection was
+   added along the way.
+6. **`C-e`/`C-y` missing**: the command tables lacked these two keys (the
+   integration layer's `scroll_lines` hook had no trigger); added the
+   `ScrollLines` command — scrolls the view, cursor follows only when it would
+   be scrolled out of the viewport.
+7. **`<Tab>` missing**: in terminals Tab and `C-i` share the same code, and vim
+   uses both for jumplist-forward; added the normal-table row.
+8. **Visual-mode `Y` missing**: added as yank-selection.
+9. **Counts on `%`/`$`**: `5%` jumps by file percentage; `2$`/`d2$` go to the
+   end of a following line.
+10. **`:N` line jump**: after parsing the range the command was empty and it
+    returned directly (section III item 3); now, per vim, jumps to that line's
+    first non-blank.
+11. **`:s`'s `i`/`I` flags** (part of section III item 4): force this replacement
+    to ignore / respect case.
+12. **`'a` marks in Ex ranges**: the range scanner accepted `'x` but
+    `base_line` only knew `'<`/`'>`, so `:'a,'b d` always errored E16; now
+    resolved through `marks.resolve`.
+13. **`@:` repeats the last Ex command**: `Cmdline` records `last_command`, and
+    `@:` replays it via `execute_ex`.
+14. **Replace-mode Backspace** (section III item 2): typing under `R` stashes
+    the overwritten original character and BS restores it off a stack; past the
+    line end the appended part has no original to restore, so BS deletes plainly.
+15. **`gq` wraps by display width** (section III item 1): `flush_paragraph`
+    switched to `char_display_width`, so CJK words are no longer estimated at
+    1 column.
+16. **`/` and `?` search history**: the comment claimed sharing while the
+    implementation bucketed by prompt; now one unified key.
+17. **`ensure_normal_mode` did not handle Replace**: on implicit host exit a
+    Replace session was left dangling.
+18. **`VimHost::request_close_forced`**: separates `:q` (non-forced) from
+    `:q!`/`:wq`/`ZZ`/`ZQ` (forced); the host may refuse to close an unsaved
+    buffer per E37; the default implementation forwards to the old
+    `request_close`, so existing hosts are unaffected.
+
+The entries that remain "design trade-offs" are the ones in section III above;
+untouched in this round.
+
+---
+
+## VI. Third review round (2026-10-01, repo-level re-review after the engine extraction)
+
+The first full re-review after the engine left the repo. Scope: `gpui-vim`
+(lib/edit/pager/render/config) and `gpui-vim-demo` (buffer/host/editor/main),
+~4900 lines. **Fixed** in this round (each with a regression test):
+
+1. **The rc `source` directive did not expand `~` in paths** (`config.rs`):
+   top-level layer paths went through `expand_tilde`, but a nested
+   `source ~/more-maps` called `read_to_string` directly — always `NotFound`,
+   silently skipped, while the engine's `config::parse` explicitly comments
+   "tilde expansion is the loader's job". Fix: apply the same `expand_tilde` to
+   source targets in the `load` recursion.
+   Test: `source_directive_expands_tilde_like_top_level_paths`.
+   (Lesson: regression assertions should pick an option whose **default is
+   false** — the first version asserted on `expandtab`, which defaults to true,
+   so the test was vacuously green.)
+2. **The demo host's new undo group did not clear the redo branch**
+   (`host.rs`): `undo → type new content → C-r` stamped the pre-undo snapshot
+   back over everything, and the newly typed content vanished out of thin air —
+   `begin_undo_group` must clear `redo_stack` when it sees a new id (vim
+   semantics: a new edit invalidates the redo branch).
+   Test: `new_edit_after_undo_discards_the_redo_branch`.
+3. **`VimEdit::splice_range` recorded no undo point and cleared no redo**
+   (`edit.rs`): completion insertion goes through this side path, so
+   undo → completion → redo was likewise overwritten by a stale snapshot. It now
+   has the same standing as typing: records an undo point, invalidates the redo
+   branch. The undo stack was extracted into a headlessly testable `TextUndo`
+   struct (`VimEdit::new` needs a gpui `App` and cannot be constructed directly).
+   Tests: 3 in total, e.g. `text_undo_record_invalidates_redo`.
+4. **`offset_rc` panicked on non-char-boundary offsets** (`edit.rs`): the
+   `line[..rem]` slice panics when rem falls inside a multi-byte character. This
+   entry also receives host-side offsets (IME restoration, stale values after a
+   splice); changed to floor down to the nearest boundary.
+   Test: `offset_rc_floors_mid_char_offsets_instead_of_panicking`.
+5. **Mouse clicks mis-fed the engine while a prompt/pending state was active**
+   (`edit.rs`): with the search prompt open, `mouse_down` went through
+   `enter_visual_char` and spliced a `'v'` into the pattern; with an operator
+   pending (`d` already pressed) a click repositioned the cursor and broke the
+   command. Now clicks are ignored outright in cmdline mode and in non-idle
+   states; inside visual mode a click only extends the selection and no longer
+   re-feeds `'v'`.
+
+### Along-the-way fixes/optimizations in this round
+
+6. **Demo Cmd-V did nothing in normal mode, silently**:
+   `insert_text_at_cursor` is a direct no-op outside insert state. Now the
+   insert path lands text as before; normal/visual route through the engine's
+   `"+p` command (undo group, marks, `.` repeat identical to hand-typed `p`);
+   the host `"+` mirror stays in sync with the system clipboard.
+7. **The demo tab bar was not clickable**: added `cx.listener` +
+   `stop_propagation` (without it a click maps into a body cursor move), plus
+   hover feedback.
+8. **`CaretBlinker` kept repainting background windows**: added
+   `spawn_loop_gated`, with the host supplying a "window active" predicate;
+   invisible carets no longer drive one frame every 500ms.
+9. **`LinesBuf` character probes joined the whole buffer**: `char_at`/
+   `prev_char_offset` are the engine's per-character motion hot probes, and the
+   old implementation allocated a full `join` O(all text) every call; changed to
+   line-by-line walking, O(offset), zero allocation (the TCK contract fully green).
+10. **`Pager::take_clip`'s dead `yanked` field**: record-then-take was
+    pointless; deleted; the register fallback semantics are unchanged
+    (repeatable reads).
+
+### New
+
+11. **`VimEdit` placeholder text**: `set_placeholder` + a
+    `VimEditStyle::placeholder` color slot; an empty buffer renders the gray
+    hint — display-only, never enters the buffer.
+
+### Verified not bugs / kept as is
+
+- **`mouse_up`/`undo` writing `vim.mode = Normal` directly**: the engine's
+  `visual_selection` returns None for non-Visual modes (the stale anchor is
+  guarded), so switching the mode directly is safe.
+- **`process_key` returning true (consumed) for Unknown keys**: `VimEdit` is the
+  route-B form with self-contained fields; swallowing unknown keys while the
+  fields own the input matches the "field-exclusive keystrokes" expectation; a
+  host that needs pass-through should watch `VimEditEvent`/route itself.
+- **`VimEdit`'s local undo stack has no cap**: editing depth in form scenarios
+  is limited and entries are COW line vectors (cheap to clone); the demo host's
+  stack has a 200-step cap. No configuration surface for now.
+- **`PagerBuf`'s inherent `line_start`/`line_end` shadowing the trait methods of
+  the same name**: keeping section III item 16's "rename recommended" — since
+  pandamail already consumes this API, renaming requires cross-repo
+  coordination, so this repo will not move unilaterally.
+
+### Performance notes
+
+- `LinesBuf::slice`/UTF-16 conversion still joins the whole buffer — they only
+  serve IME boundaries and host text extraction, at low frequency; kept simple.
+  The per-character probe path (`char_at`/`prev_char_offset`) is optimized (see
+  item 9 above).
+- Blink gating (see item 8 above) is pure gain for resident gpui applications:
+  background windows drop from 2Hz repaints to 0.
+
+---
+
+## VII. Fourth review round (2026-10-03, repo-level re-review)
+
+Scope same as round VI (integration layer + demo after the engine left the
+repo, ~5000 lines); this pass targeted "unexpected operations / unusual data".
+**Fixed** in this round (each with a regression test, except pure demo
+interaction paths):
+
+1. **`VimEdit::set_text` rebuilt the whole `VimState`; host configuration was
+   lost silently** (severe): `VimState::new()` zeroed the `options`/`keymaps`
+   that layered rc loading had brought in — every time the host swapped content
+   (form reset, one widget switching buffers), the user's `jk`→Esc mapping and
+   all options silently died. Fix: extracted the headlessly testable
+   `reset_engine_for_new_text` — transient state (mode/cursor/visual anchor/
+   pending commands/search state) reset to zero, configuration preserved.
+   Test: `engine_reset_for_new_text_keeps_options_and_mappings`.
+2. **`LinesBuf::byte_to_utf16` zeroed non-boundary offsets**: when a stale
+   host-side offset fell inside a multi-byte character, `get(..mid)` returned
+   None and was treated as 0, and the IME candidate box jumped to the buffer
+   start. Fix: floor down to the start of the containing character.
+   Test: `byte_to_utf16_floors_mid_char_offsets`.
+3. **With a UTF-8 BOM, the first directive of an rc file was silently eaten**:
+   the engine's `config::parse` could not recognize `\u{feff}set`, so line 1 was
+   discarded and the rest parsed normally — a deeply misleading symptom (only
+   the first setting/mapping fails). Environment adaptation belongs to the
+   loader (same rationale as tilde expansion); strip the BOM before loading.
+   Test: `utf8_bom_does_not_eat_the_first_directive`.
+4. **Demo `on_mouse_down` lacked the CommandLine/pending guard** (the demo-side
+   escape of VI.5): with the search prompt open, a click repositioned the cursor
+   and dirtied incsearch; with an operator pending, a click broke the command.
+   The guard now follows the same rule as `VimEdit::mouse_down`.
+5. **Demo clicks in visual state left an empty selection behind**: releasing a
+   drag keeps visual (vim semantics, correct), but a click that never moved also
+   left `set_cursor_offset`'s re-anchor in place, stopping in visual mode with no
+   way to exit by mouse. `on_mouse_up` now exits visual for clicks where
+   "cursor == drag anchor" (`VimEdit::mouse_up`, same semantics).
+6. **Demo `paste` polluted the search term while a prompt was open**: `cmd-v`
+   sent the three keys `"`,`+`,`p` directly, and the cmdline appended them to
+   the pattern as ordinary input. Now, while a prompt is open, the text is
+   appended character by character through the keystroke pipeline; the normal
+   path gained follow-scroll after paste.
+7. **Demo `HostState::save` reported 0L for buffers without a trailing
+   newline**: `len_lines()-1` undercounts buffers like "abc" by one line; fixed
+   with the same rule as `line_count_real`.
+   Test: `save_counts_last_line_without_trailing_newline`.
+8. **Demo `sync_visible_state` early-returned on an out-of-range viewport**: in
+   edge cases like an empty buffer, the early return skipped writing
+   `host.viewport`, so the engine's scroll motions (`C-d`/`H`/`M`/`L`) read a
+   stale viewport and scrolled by the wrong distance. Now it clamps and continues.
+9. **`Pager::set_cursor` did not floor non-boundary offsets**: a host hit-test
+   handing the engine a mid-char offset made probes like `offset_to_line` panic.
+   Floor down (same rule as the engine's `set_cursor_offset`).
+   Test: `set_cursor_floors_mid_char_offsets`.
+10. **`VimEdit` IME geometry lacked scroll compensation in two places**:
+    `bounds_for_range` (the IME candidate box) used absolute content line
+    numbers, and `character_index_for_point` (click positioning) added no scroll
+    distance; after multi-line scrolling they flew outside the visible area /
+    mapped to the wrong line. Unified with `offset_at_point` on the assumption
+    "the IME canvas overlays the viewport": the former subtracts the scroll
+    distance, the latter adds it back.
+
+### Along the way in this round
+
+11. `cycle_tab` closes the dangling prompt of the tab being left; `copy` on an
+    empty selection gives a status message.
+12. The config test `with_fake_home` now restores `$HOME` (rather than deleting
+    it), avoiding pollution of later tests in the same process; removed one
+    unused import.
+13. **Added `search_status`**: `EditHost::search_status()` + a public free
+    function of the same semantics (hosts' own `VimHost` implementations each
+    hold their highlight list, so both can delegate directly); returns the
+    1-based index of the current match and the total count; the demo status bar
+    shows the vim-style `3/17`, hidden entirely when there is no current match.
+    Test: `search_status_indexes_current_highlight`.
+
+### Suspected, verified — leaving unchanged (recorded)
+
+- **`set_text`'s multi-line path keeps `\r`**: consistent with vim's `^M`
+  (fileformat=dos), and the `text()` round-trip is correct; `insert_text` strips
+  `\r` only for the platform input path, so the two do not conflict.
+- **`Pager`'s blockwise-visual `selection()` collapses to a charwise range**:
+  the pager's public surface only promises char/line selection mapping; block
+  semantics are reachable only when the host itself `feed(C-v)`s, in which case
+  it returns the bounding rectangle — recorded as a known boundary, no block
+  awareness added (a host wanting block semantics will also want rendering,
+  which is a future design topic for the pager component).
+- **`to_core_key` taking only the first character when `key_char` has several**:
+  on the normal macOS path `key_char` is always single-char; no multi-char
+  source observed, so defensive first-char-taking is fine.
+- **`process_key` with empty `dispatch_text("")`**: zero-char loop, no side
+  effects.
+
+---
+
+## VIII. Engine now follows git main (2026-10-04)
 
 `vimcore = "0.1"` → `git = "https://github.com/beyondlex/vimcore", branch =
-"main"`（workspace.dependencies 单一来源，两 crate 继承）：crates.io 自
-0.1.4（2026-09-29）起未再发版，parity/fuzz 修复（0.1.5–0.1.19，591 测试 +
-二十一轮 fuzz）都只在 git main 上。Cargo.lock 锁 rev（`067240cf`）保证
-可复现；本地迭代引擎用 `[patch.crates-io]` 临时换 path。
+"main"` (single source in workspace.dependencies, inherited by both crates):
+crates.io has released nothing since 0.1.4 (2026-09-29), and the parity/fuzz
+fixes (0.1.5–0.1.19, 591 tests + 21 fuzz rounds) live only on git main.
+Cargo.lock pins the rev (`067240cf`) for reproducibility; for iterating on the
+engine locally, use `[patch.crates-io]` to temporarily swap in a path.
 
-切到 0.1.19 后新版 TCK 立刻抓到一个本仓违反：
+After switching to 0.1.19, the new TCK immediately caught one violation by this
+repo:
 
-1. **`PagerBuf::prev_char_offset` 非边界偏移 panic**：新 TCK 的「幻影行
-   容忍」探针会以多字节字符中间的偏移调用；契约允许返回 None 或边界
-   偏移，但 `text[..offset]` 切片直接 panic。补 `is_char_boundary` 守卫
-   （`LinesBuf`/`RopeBuffer` 本就合规，`PagerBuf` 是唯一的漏网）。
-   测试：`pager_buf_read_contract`（引擎 TCK，自带多种子数据）。
+1. **`PagerBuf::prev_char_offset` panicked on non-boundary offsets**: the new
+   TCK's "phantom-line tolerance" probe calls it with offsets inside multi-byte
+   characters; the contract allows returning None or a boundary offset, but the
+   `text[..offset]` slice panicked outright. Added an `is_char_boundary` guard
+   (`LinesBuf`/`RopeBuffer` were already compliant; `PagerBuf` was the only
+   escapee).
+   Test: `pager_buf_read_contract` (the engine's own TCK, with multi-seed data).

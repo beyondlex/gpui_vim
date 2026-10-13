@@ -1,113 +1,118 @@
-# 宿主性能指南（gpui-vim）
+# Host performance guide (gpui-vim)
 
-给嵌入 gpui-vim 引擎的应用（如 pandagit）的性能参考。分两部分：
-[引擎侧成本模型](#引擎侧成本模型)（已实测、有基准可复测）与
-[宿主侧清单](#宿主侧清单)（生产化必须做的事）。
+Performance reference for apps embedding the gpui-vim engine (e.g. pandagit). Two parts:
+[engine-side cost model](#engine-side-cost-model) (measured, with benchmarks you can re-run) and
+[host-side checklist](#host-side-checklist) (what must be done for production).
 
-> 引擎已剥离为独立仓库 [beyondlex/vimcore](https://github.com/beyondlex/vimcore)；
-> 复测基准在其仓库内：`cargo run --release -p vimcore --example bench_probe`。
+> The engine has been split into its own repository [beyondlex/vimcore](https://github.com/beyondlex/vimcore);
+> re-run the benchmarks inside that repo: `cargo run --release -p vimcore --example bench_probe`.
 
-## 引擎侧成本模型
+## Engine-side cost model
 
-引擎每次按键的典型成本是**微秒级**，全部路径都远低于帧预算（16ms）：
+The engine's typical per-keystroke cost is **microsecond-scale**; every path is far below the frame budget (16ms):
 
-| 操作 | 实测（release） | 备注 |
+| Operation | Measured (release) | Notes |
 |---|---|---|
-| 普通 motion（`w`，11KB buffer） | 3.9 μs/键 | 典型路径 |
-| `w` 移动（1MB 单行的病态情况） | 69 μs/键 | 词移动逐字符走查 |
-| `x` 删除（1 万行） | ~5 μs/键 | 含 marks 平移、undo 组 |
-| `:%s/foo/bar/g`（600KB，5 万行） | 2.5ms | 一次性 |
-| `gqG` 重排 200 行 | 2.5ms | 一次性 |
-| **hlsearch 高亮重扫**（900KB，1 万匹配） | **0.3 ms/次编辑** | 见下文 |
-| `n` 连跳（900KB，1 万匹配，ropey buffer） | **3.4 μs/键**（缓存未命中时 ~308 μs） | 匹配列表按编辑代次缓存 |
+| plain motion (`w`, 11KB buffer) | 3.9 μs/key | typical path |
+| `w` motion (pathological 1MB single line) | 69 μs/key | word motion walks character by character |
+| `x` delete (10k lines) | ~5 μs/key | incl. marks shifting, undo group |
+| `:%s/foo/bar/g` (600KB, 50k lines) | 2.5ms | one-shot |
+| `gqG` reformat 200 lines | 2.5ms | one-shot |
+| **hlsearch highlight rescan** (900KB, 10k matches) | **0.3 ms/edit** | see below |
+| `n` repeated jumps (900KB, 10k matches, ropey buffer) | **3.4 μs/key** (~308 μs on a cache miss) | match list cached per edit generation |
 
-**唯一随文件大小线性增长的按键路径**是 hlsearch 高亮重扫：开启
-`hlsearch` 且有搜索词时，每次编辑（insert 打字的每个字符）都会全文件
-正则重扫。900KB 时 0.3ms/键无感；10MB 约 3ms/键开始可感；更大文件需要
-节流（见宿主清单第 5 条）。
+The **only keystroke path that grows linearly with file size** is the hlsearch highlight rescan: with
+`hlsearch` on and a search pattern active, every edit (each character typed in insert) triggers a
+full-file regex rescan. At 900KB, 0.3ms/key is imperceptible; at 10MB, ~3ms/key starts becoming
+perceptible; larger files need throttling (see item 5 of the host checklist).
 
-`n`/`N` 不在其中：匹配列表带编辑代次缓存，任何编辑（`edit_*` 三个
-入口）或引擎驱动的 undo/redo、`:set` 都会失效它。缓存命中时连续
-`n` 只走列表，不重扫——优化前每次 `n` 全文件重扫约 308 μs，命中后
-3.4 μs（约 90 倍）。空列表永不信任（`:noh` 清空后 `n` 仍要能跳转并
-重新点亮高亮），所以空结果场景每次 `n` 仍会重扫。
+`n`/`N` is not among them: the match list is cached per edit generation, and any edit (the three
+`edit_*` entry points) or engine-driven undo/redo, or `:set`, invalidates it. On a cache hit, consecutive
+`n` only walks the list without rescanning — before the optimization each `n` rescanned the whole file
+at about 308 μs; after a hit it is 3.4 μs (~90x). An empty list is never trusted (after `:noh` clears
+it, `n` must still jump and re-light the highlights), so empty-result scenarios rescan on every `n`.
 
-引擎语义保证（宿主可以依赖）：
+Engine semantic guarantees (hosts may rely on these):
 
-- 每个逻辑命令 = 一个 undo 组；`VimHost::begin_undo_group` 时快照。
-  ropey 的 `Rope` clone 是 O(log n) 树克隆——**用 ropey 做 undo 快照是便宜的**
-- 引擎把所有 buffer 变更收敛到 `edit_insert/edit_delete/edit_replace`
-  三个入口（`VimState` 内部），marks、可视选区、搜索高亮随之平移
-- 搜索匹配上限 10,000 条（防病态正则拖垮渲染）
-- `n`/`N` 的匹配列表按编辑代次缓存（`SearchState::matches_generation`），
-  宿主只需保证 buffer 变更全部经由引擎（undo/redo 由引擎发起，已覆盖）
+- each logical command = one undo group; snapshot at `VimHost::begin_undo_group`.
+  ropey's `Rope` clone is an O(log n) tree clone — **undo snapshots with ropey are cheap**
+- the engine funnels all buffer changes into the three entry points
+  `edit_insert/edit_delete/edit_replace` (inside `VimState`); marks, visual selections, and search
+  highlights shift accordingly
+- search match cap of 10,000 (protecting rendering against pathological regexes)
+- the `n`/`N` match list is cached per edit generation (`SearchState::matches_generation`);
+  the host only needs to guarantee that all buffer changes go through the engine (undo/redo initiated by
+  the engine is already covered)
 
-一个实测教训（写进代码注释了）：通过 `VimBuffer` trait **逐行**扫描
-替代整缓冲 `slice` + 扫描，实测慢约 20,000 倍（2 万次 trait 调用 +
-小分配远贵于一次连续 memcpy）。不要做这种"优化"——整缓冲读是
-`VimBuffer::slice` 的预期用法。
+A measured lesson (it is written into a code comment): replacing a whole-buffer `slice` + scan with a
+**line-by-line** scan through the `VimBuffer` trait measured about 20,000x slower (20,000 trait calls +
+small allocations are far more expensive than one contiguous memcpy). Don't do this kind of
+"optimization" — whole-buffer reads are the intended usage of `VimBuffer::slice`.
 
-## 宿主侧清单
+## Host-side checklist
 
-### 1. buffer 实现：用 rope，行操作必须 O(log n)
+### 1. Buffer implementation: use a rope; line operations must be O(log n)
 
-`VimBuffer` 的 `offset_to_line` / `line_range` / `char_at` 会被引擎高频
-调用。ropey（demo 用的）提供 O(log n) 的 `byte_to_line` / `line_to_byte`。
-**不要**用 `String` + `split('\n')` 实现 `offset_to_line`——那是
-O(offset) 每次调用，在大文件上一次按键就是毫秒级（基准里的朴素实现
-实测 219μs/键，ropey 下是 ~5μs）。
+`VimBuffer`'s `offset_to_line` / `line_range` / `char_at` are called at high frequency by the engine.
+ropey (used by the demo) provides O(log n) `byte_to_line` / `line_to_byte`.
+**Do not** implement `offset_to_line` with `String` + `split('\n')` — that is
+O(offset) per call; on a large file a single keystroke reaches milliseconds (the naive implementation
+in the benchmark measured 219μs/key; under ropey it is ~5μs).
 
-`slice` 返回 String 的实现允许分配（引擎的整缓冲扫描依赖它），但
-行级小 slice 的调用频率更高，ropey 的 byte→char 转换路径已经很高效。
+`slice` implementations returning String are allowed to allocate (the engine's whole-buffer scans
+rely on it), but small line-level slices are called even more frequently, and ropey's byte→char
+conversion path is already efficient.
 
-### 2. undo 快照
+### 2. Undo snapshots
 
-`begin_undo_group` 里拍快照。ropey clone 便宜，直接存 `Rope`。
-如果宿主用 `String`/`Vec<u8>` 存文本，每次快照是 O(文件) 的拷贝——
-insert 模式下每个 undo 组只快照一次（引擎保证），尚可接受；但更大的
-问题是 redo 栈同样翻倍。建议直接用 ropey。
+Take the snapshot inside `begin_undo_group`. ropey clone is cheap; store the `Rope` directly.
+If the host stores text as `String`/`Vec<u8>`, each snapshot is an O(file) copy — in insert mode the
+engine guarantees only one snapshot per undo group, which is still acceptable; but the bigger
+problem is that the redo stack doubles too. Recommend using ropey directly.
 
-### 3. 文本渲染：shape 有 gpui 内部缓存，剩余成本在每帧的小额分配
+### 3. Text rendering: shaping has a gpui-internal cache; the residual cost is small per-frame allocations
 
-文本整形（font shaping）是渲染最贵的步骤。gpui（0.2 起）的
-`LineLayoutCache` 已经跨帧缓存 layout，键是（text、font_size、run 切分），
-所以同一行在内容与样式不变时不会重复整形；光标移动/闪烁只影响光标
-所在那一行的 run 切分，成本可忽略。宿主层再缓存 `ShapedLine` 的收益
-主要在绕开每次调用的键哈希与 `ShapedLine` 构造，属可选优化。
+Font shaping is the most expensive rendering step. gpui's (since 0.2)
+`LineLayoutCache` already caches layouts across frames keyed by (text, font_size, run split),
+so a line is not reshaped while its content and style are unchanged; cursor movement/blink only affects
+the run split of the cursor's line, a negligible cost. Host-layer caching of `ShapedLine` mainly
+pays off by bypassing the per-call key hashing and `ShapedLine` construction — an optional optimization.
 
-真正值得做的是把**每行每帧**的固定开销压住（demo 已照此实现，可照抄）：
+What is really worth doing is pressing down the fixed **per-line-per-frame** overhead (the demo
+already implements this and can be copied):
 
-- `paint_vim_line` 把文本按所有权移交 `shape_line`（gpui 的
-  `SharedString` clone 是堆拷贝，一行一帧一次已经足够）
-- paint 回调里 `shaped` 直接 move 进命中测试缓存，不再 clone
-- 搜索高亮按可见行区间**每帧预过滤一次**（`sync_visible_state`），
-  不要把 1 万条高亮交给 `compute_line_overlays` 对每条可见行做 clamp
-- 行几何缓存（`shaped_lines`）按可见范围每帧淘汰（见第 7 条）
+- `paint_vim_line` hands the text over by ownership to `shape_line` (gpui's
+  `SharedString` clone is a heap copy; once per line per frame is already enough)
+- in the paint callback, `shaped` moves directly into the hit-test cache without cloning
+- pre-filter search highlights **once per frame over the visible line range** (`sync_visible_state`);
+  don't hand 10k highlights to `compute_line_overlays` to clamp for every visible line
+- evict the line-geometry cache (`shaped_lines`) to the visible range each frame (see item 7)
 
-### 4. 重绘粒度与 viewport 同步
+### 4. Repaint granularity and viewport sync
 
-编辑后调用一次 `cx.notify()` 即可让 gpui 重绘可见区（uniform_list
-只渲染可见行，天然按视口裁剪）。避免在高频事件（鼠标移动、滚动）里
-做全量状态重算。IME 合成期间的 `replace_and_mark_text_in_range` 每个
-音节都会触发 notify——这是预期行为，不要在路径上加额外工作。
+After an edit, a single `cx.notify()` lets gpui repaint the visible area (uniform_list
+only renders visible lines, naturally viewport-clipped). Avoid full state recomputation in
+high-frequency events (mouse moves, scrolling). During IME composition,
+`replace_and_mark_text_in_range` triggers a notify for every syllable — this is expected behavior;
+don't add extra work on that path.
 
-**滚动 motion 依赖宿主回报 viewport**：`C-d`/`C-f`/`C-b`/`H`/`M`/`L`
-的步长与定位读 `VimHost::viewport()`。宿主必须在滚动/尺寸变化时把
-实际可见行区间同步进去（demo 在 uniform_list 回调里随 `visible_lines`
-一起写 `host.viewport`），否则这些键按默认值 (0, 24) 滚动，窗口越高
-错得越多。
+**Scrolling motions depend on the host reporting the viewport**: the step and placement of
+`C-d`/`C-f`/`C-b`/`H`/`M`/`L` read `VimHost::viewport()`. The host must sync the actual visible line
+range on scroll/resize (the demo writes `host.viewport` alongside `visible_lines` in the uniform_list
+callback); otherwise these keys scroll with the default (0, 24), and the taller the window,
+the worse the error.
 
-### 5. hlsearch 重扫节流（大文件必须）
+### 5. hlsearch rescan throttling (mandatory for large files)
 
-文件超过 ~2MB 或搜索高亮匹配数很大时，开启 hlsearch 的默认"每次编辑
-全文件重扫"会成为按键延迟的主要来源。引擎提供开关：
+Beyond ~2MB files or with very many search highlight matches, hlsearch's default "rescan the whole
+file on every edit" becomes the main source of keystroke latency. The engine provides a switch:
 
 ```rust
-// 启动时（或 :edit 大文件时）：
+// At startup (or when :editing a large file):
 vim.set_hlsearch_live_update(false);
 
-// 宿主侧节流：编辑后 150ms 无新编辑时刷新一次
-// （用你自己的 debounce/timer；引擎没有时钟）
+// Host-side throttle: refresh once 150ms after the last edit
+// (use your own debounce/timer; the engine has no clock)
 if idle_for(150.ms()) {
     let (vim, buf, host) = editor.vim_parts();
     let mut ctx = Ctx { buf, host };
@@ -115,35 +120,37 @@ if idle_for(150.ms()) {
 }
 ```
 
-`refresh_highlights` 内部就是 `republish_search`：全文件扫描 +
-`set_search_highlights` 发布。节流期间高亮短暂滞后是可接受的
-（vim 对大文件的表现类似）。
+`refresh_highlights` is internally just `republish_search`: full-file scan +
+`set_search_highlights` publish. Briefly stale highlights during throttling is acceptable
+(vim behaves similarly on large files).
 
-### 6. 多 buffer
+### 6. Multi-buffer
 
-每个 buffer 一个独立 `VimState` + `VimBuffer` + 宿主状态（见 demo 的
-`BufferTab`）。注意：**宿主级映射（如 gt/gT）必须装到每个 tab 的引擎上**，
-只装 active tab 的话切换后失效。未聚焦 tab 的引擎零开销（无定时器、
-无后台任务）。
+One independent `VimState` + `VimBuffer` + host state per buffer (see the demo's
+`BufferTab`). Note: **host-level mappings (e.g. gt/gT) must be installed on every tab's engine**;
+installing only on the active tab leaves them broken after switching. Unfocused tabs' engines cost
+zero (no timers, no background tasks).
 
-### 7. 缓存卫生
+### 7. Cache hygiene
 
-凡是"按行缓存渲染产物"的结构都要有淘汰策略。demo 的 `shaped_lines`
-在每帧的 uniform_list 回调里 retain 到可见区间——滚动大文件时缓存
-大小恒定在"一屏 + 漂移"，不会随行数增长。
+Any structure that "caches render products per line" needs an eviction policy. The demo's `shaped_lines`
+retains to the visible range in each frame's uniform_list callback — when scrolling a large file the
+cache size stays constant at "one screen + drift" and does not grow with line count.
 
-## 什么时候不需要担心
+## When you don't need to worry
 
-- 文件 < 1MB：默认配置下所有路径都无感，上面的清单只有第 1、3 条
-  值得做（buffer 用 ropey + shape 缓存）
-- 引擎不启动定时器、不做后台任务、不做 IO；未聚焦的引擎实例零开销
-- 配置文件（`~/.vimcorerc`）只在启动时读一次
+- Files < 1MB: with default configuration every path is imperceptible; of the checklist above only items
+  1 and 3 are worth doing (buffer via ropey + shape caching)
+- The engine starts no timers, runs no background tasks, does no IO; unfocused engine instances cost zero
+- Config files (`~/.vimcorerc`) are read once at startup
 
-## 组件层备注（2026-10）
+## Component-layer notes (2026-10)
 
-- `edit::VimEdit` 的 `LinesBuf` 面向表单/短文本：`char_at`/`prev_char_offset`
-  等逐字符探针已按行行走（O(offset) 零分配），但 `slice` 与 UTF-16 换算仍是
-  整缓冲 `join`——只服务低频的 IME 边界与宿主取文本，别把它当大文本 buffer 用
-  （大文本请学 demo 的 ropey 路线）。
-- demo 编辑器用 `CaretBlinker::spawn_loop_gated` 把「窗口活动」接进闪烁循环：
-  后台窗口不再为不可见光标每 500ms 重绘一帧。常驻应用照抄这两行。
+- `edit::VimEdit`'s `LinesBuf` targets forms/short text: per-character probes such as
+  `char_at`/`prev_char_offset` now walk per line (O(offset), zero allocation), but `slice` and UTF-16
+  conversion still `join` the whole buffer — they only serve the low-frequency IME boundaries and host
+  text fetching; don't use it as a large-text buffer
+  (for large text follow the demo's ropey route).
+- The demo editor uses `CaretBlinker::spawn_loop_gated` to wire "window active" into the blink loop:
+  background windows no longer repaint a frame every 500ms for an invisible caret. Resident applications
+  should copy these two lines.

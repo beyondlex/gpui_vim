@@ -286,8 +286,9 @@ impl VimBuffer for PagerBuf {
         if offset == 0 || offset > self.text.len() {
             return None;
         }
-        // TCK 契约（幻影行容忍）：引擎会以多字节字符中间的偏移探针；非
-        // 边界返回 None，`text[..offset]` 切片会直接 panic
+        // TCK contract (phantom-line tolerance): the engine probes with
+        // offsets landing mid multi-byte char; a non-boundary must return
+        // None — the `text[..offset]` slice would panic outright
         if !self.text.is_char_boundary(offset) {
             return None;
         }
@@ -299,9 +300,12 @@ impl VimBuffer for PagerBuf {
     fn line_range(&self, line: usize) -> Range<usize> {
         match self.lines.get(line) {
             Some(l) => {
-                // 合同要求非末行 range 含终止 \n（引擎的 linewise 语义依赖
-                // 它）；行表存的是内容端点，这里按需补上。经默认 line_end
-                // 推导出的「行内容尾」不变，引擎可见语义不受影响。
+                // The contract requires non-last-line ranges to include the
+                // terminating \n (the engine's linewise semantics depend on
+                // it); the line table stores content endpoints, so add it on
+                // demand here. The "line content end" derived via the default
+                // line_end is unchanged, so engine-visible semantics are
+                // unaffected.
                 if l.1 < self.text.len() && self.text.as_bytes()[l.1] == b'\n' {
                     l.0..l.1 + 1
                 } else {
@@ -322,9 +326,11 @@ impl VimBuffer for PagerBuf {
     }
 }
 
-// PagerBuf 不实现写原语：VimBufferMut 的默认实现即拒绝（vimcore 0.2.0
-// 起），配合 Pager::new 里的 set_modifiable(false)，编辑类按键按 vim 的
-// E21 语义响铃+报错，而不是静默 no-op。0.1 时代的"刻意空实现"已不需要。
+// PagerBuf deliberately implements no write primitives: VimBufferMut's
+// default implementations refuse (since vimcore 0.2.0), and together with
+// set_modifiable(false) in Pager::new, editing keys behave per vim's E21 —
+// bell + error rather than a silent no-op. The 0.1-era "intentional empty
+// impl" is no longer needed.
 
 // ---------- selection read-back ----------
 
@@ -416,8 +422,8 @@ pub struct Pager {
 impl Pager {
     pub fn new(text: String) -> Self {
         let mut vim = VimState::new();
-        // 只读消费方的正宗形态（vimcore 0.2.0）：'modifiable' 关闭，
-        // 编辑类按键走 E21 拒绝而不是静默 no-op
+        // The canonical read-only consumer shape (vimcore 0.2.0): 'modifiable'
+        // off, so editing keys are refused per E21 instead of silently no-op
         vim.set_modifiable(false);
         Self {
             vim,
@@ -428,9 +434,11 @@ impl Pager {
     }
 
     pub fn set_cursor(&mut self, offset: usize) {
-        // 宿主命中测试给的偏移可能落在多字节字符中间（与引擎
-        // set_cursor_offset 同理）：先压进缓冲再向下取整，否则 cursor 带着
-        // 非边界偏移进引擎，offset_to_line 一类探针会 panic
+        // The offset from the host's hit test may land mid multi-byte char
+        // (same reason as the engine's set_cursor_offset): clamp into the
+        // buffer first, then floor to a boundary — otherwise a cursor with a
+        // non-boundary offset enters the engine and probes like
+        // offset_to_line would panic
         let offset = floor_boundary(&self.buf.text, offset.min(self.buf.len()));
         self.vim.cursor.offset = offset;
         self.vim.cursor.desired_col = None;
@@ -657,7 +665,8 @@ mod tests {
             3,
             "trailing newline opens an empty last line"
         );
-        // 非末行 range 含终止 \n（引擎 buffer 合同；行内容端点见行表）。
+        // Non-last-line ranges include the terminating \n (engine buffer
+        // contract; content endpoints live in the line table).
         assert_eq!(buf.line_range(0), 0..3);
         assert_eq!(buf.line_range(1), 3..6);
         assert_eq!(buf.line_range(2), 6..6);
@@ -810,16 +819,18 @@ mod tests {
 
     #[test]
     fn set_cursor_floors_mid_char_offsets() {
-        // 回归：宿主命中测试可能给出多字节字符内部的偏移；未取整的偏移进
-        // 引擎后 offset_to_line 一类探针会 panic。应落在所在字符起点。
-        let mut pager = Pager::new("中文x".into()); // 边界 0,3,6,7
+        // Regression: the host's hit test can hand out offsets inside a
+        // multi-byte char; an unfloored offset entering the engine makes
+        // probes like offset_to_line panic. Must land on the containing
+        // char's start.
+        let mut pager = Pager::new("中文x".into()); // boundaries 0,3,6,7
         pager.set_cursor(4);
         assert_eq!(pager.cursor_offset(), 3, "mid-文 floors to its start");
         pager.set_cursor(1);
         assert_eq!(pager.cursor_offset(), 0);
         pager.set_cursor(99);
         assert_eq!(pager.cursor_offset(), 7, "past end clamps to a boundary");
-        // 取整后的光标可安全驱动态引擎探针
+        // the floored cursor can safely drive the engine's probes
         pager.set_cursor(4);
         assert_eq!(pager.buf.offset_to_line(pager.cursor_offset()), 0);
     }
@@ -827,19 +838,21 @@ mod tests {
 
 #[cfg(test)]
 mod tck_tests {
-    //! 引擎 TCK（vimcore::tck）对 PagerBuf 的验收。
+    //! Engine TCK (vimcore::tck) acceptance for PagerBuf.
     use super::*;
     use vimcore::tck;
 
-    /// 只读契约（引擎级，B 步管线形态）：PagerBuf 只实现 `VimBuffer`、
-    /// 不实现 `VimBufferMut`，经 `handle_key_ro` 驱动——编辑类按键全部按
-    /// E21 拒绝、缓冲逐字节不变、拒绝后 motion 照常，且改动在构造上不可能
-    /// （vimcore 0.2.0 的 `tck::readonly_pipeline_contract` 自带探针文本）。
+    /// The read-only contract (engine level, route B pipeline shape): PagerBuf
+    /// implements only `VimBuffer`, not `VimBufferMut`, and is driven through
+    /// `handle_key_ro` — every editing key is refused per E21, the buffer is
+    /// byte-for-byte unchanged, motions still work after refusals, and
+    /// mutation is impossible by construction (vimcore 0.2.0's
+    /// `tck::readonly_pipeline_contract` ships its own probe text).
     #[test]
     fn pager_buf_read_contract() {
         let buf = PagerBuf::new(vimcore::tck::READONLY_PROBE_TEXT.to_owned());
         vimcore::tck::readonly_pipeline_contract(&buf).unwrap();
-        // 读侧契约对含多字节字符/空行的文本同样成立
+        // the read-side contract also holds for text with multi-byte chars and empty lines
         let buf = PagerBuf::new("alpha\nbeta 中文\n\n尾行\n".into());
         tck::buffer_read_contract(&buf).unwrap();
         let buf = PagerBuf::new("中文 mix 👨‍👩‍👧".into());

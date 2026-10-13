@@ -1,4 +1,4 @@
-> **2026-09-28**：纯引擎已剥离为独立仓库 [beyondlex/vimcore](https://github.com/beyondlex/vimcore)（crate 名 `vimcore`，原 `gpui-vimcore`/`vimcore`）。本文其余内容中的旧名以当前名为准阅读。
+> **2026-09-28**: the pure engine was split out into its own repository, [beyondlex/vimcore](https://github.com/beyondlex/vimcore) (crate name `vimcore`, formerly `gpui-vimcore`/`vimcore`). Read the old names in the rest of this document as their current equivalents.
 
 # Integrating gpui-vim into your gpui editor
 

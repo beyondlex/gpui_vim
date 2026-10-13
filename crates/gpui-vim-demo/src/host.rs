@@ -137,8 +137,9 @@ impl VimHost for HostState {
     }
 
     fn save(&mut self) {
-        // 行数语义与 RopeBuffer::line_count_real 一致：无尾换行的末行也算
-        // 一行（`len_lines()-1` 会把 "abc" 报成 0L）
+        // Line-count semantics match RopeBuffer::line_count_real: a last line
+        // without a trailing newline still counts (`len_lines()-1` would
+        // report "abc" as 0L)
         let (lines, bytes) = {
             let rope = self.rope.borrow();
             let lines = rope.len_lines();
@@ -234,7 +235,8 @@ mod tests {
 
     #[test]
     fn save_counts_last_line_without_trailing_newline() {
-        // 回归：len_lines()-1 把无尾换行的单行缓冲报成 0L
+        // Regression: len_lines()-1 reports a single line without trailing
+        // newline as 0L
         let mut host = HostState::new(shared_rope("abc"));
         host.save();
         assert!(host.pending_status.as_deref().unwrap().contains("1L"));

@@ -1,306 +1,313 @@
-> **2026-09-28**：纯引擎已剥离为独立仓库 [beyondlex/vimcore](https://github.com/beyondlex/vimcore)（crate 名 `vimcore`，原 `gpui-vimcore`/`vimcore`）。本文其余内容中的旧名以当前名为准阅读。
+> **2026-09-28**: the pure engine has been split into its own repository [beyondlex/vimcore](https://github.com/beyondlex/vimcore) (crate name `vimcore`, formerly `gpui-vimcore`/`vimcore`). Where the rest of this document uses old names, read them as the current ones.
 
-# 三仓协作设计：gpui_vim × PandaGit × PandaMail
+# Three-repo collaboration design: gpui_vim × PandaGit × PandaMail
 
-> 依据：doc-poste `gpui-vim/assessment.mdx` 的实用性评估（2026-09），加两轮对
-> pandagit / pandamail 仓库的现状盘点。本文回答一个问题：**接下来三个仓库各
-> 自做什么、按什么顺序、怎么验收**。引擎内部的语义约束见 ROADMAP「全局不变
-> 量」，本文不重复；本文的任务全部属于「组件层」，动手前同样先读不变量。
+> Basis: the practicality assessment in doc-poste `gpui-vim/assessment.mdx` (2026-09), plus two rounds of
+> status inventory of the pandagit / pandamail repos. This document answers one question: **what does each of
+> the three repos do next, in what order, and how is each step accepted**. The engine's internal semantic
+> constraints are in ROADMAP "Global invariants" and not repeated here; every task in this document belongs to
+> the "component layer", and the invariants must likewise be read first before starting.
 >
-> **进展（2026-09-17）**：阶段 0（INTEGRATION.md 三模式决策文档）、阶段 1
-> （`gpui_vim::edit`，pandamail 已迁薄门面）、阶段 2a（`gpui_vim::pager`，
-> pandamail 已委托）、P2 的 TCK（`vimcore::tck`，gpui-vim 与 pandagit 已接
-> 入；TCK 首战即抓到 PagerBuf line_range 缺终止 `\n` 的契约违反）均已落地。
-> 待做：阶段 2b（Ex 注册表 + 命令行 widget）、pandagit config_editor/cmd.rs
-> 迁移、能力位、发布策略。
+> **Progress (2026-09-17)**: stage 0 (INTEGRATION.md three-mode decision document), stage 1
+> (`gpui_vim::edit`, pandamail migrated to a thin facade), stage 2a (`gpui_vim::pager`,
+> pandamail delegating), and P2's TCK (`vimcore::tck`, wired into both gpui-vim and pandagit; the TCK's first
+> run caught PagerBuf's line_range missing the terminating `\n`, a contract violation) have all landed.
+> Remaining: stage 2b (Ex registry + command-line widget), pandagit config_editor/cmd.rs
+> migration, capability flags, release strategy.
 
-## 1. 评估结论 → 规划原则
+## 1. Assessment conclusions → planning principles
 
-assessment 的核心判断（证据是两个独立集成的真实行为）：
+The core judgments of the assessment (the evidence is the real behavior of two independent integrations):
 
-1. **语义层已经过关**：trait 边界、`Unknown` 三态契约、rc 分层、undo 组协议、
-   无头可测性、IME 处理——六个宿主深度复用的点全部在语义与协议层，没有任何
-   宿主需要改引擎语义。
-2. **组件层完全未达标**：渲染组件无人用、内置 Ex 面只有 demo 消费、`attach`
-   被两个真实宿主绕开；每个宿主各自维护 1000+ 行互相平行的胶水。
-3. **两个宿主已经用脚投完票**：副作用 defer/flush、按焦点路由、自建命令行、
-   富文本扁平化——四个独立收敛的动作恰好就是待建组件的图纸。
+1. **The semantic layer already passes**: the trait boundaries, the `Unknown` tri-state contract, rc layering,
+   the undo-group protocol, headless testability, IME handling — all six points deeply reused by hosts sit at
+   the semantic and protocol layers, and no host needed engine semantics changed.
+2. **The component layer falls entirely short**: no one uses the rendering components, the built-in Ex
+   surface is consumed only by the demo, `attach` was bypassed by both real hosts; each host maintains its
+   own 1000+ lines of mutually parallel glue.
+3. **The two hosts have already voted with their feet**: side-effect defer/flush, routing by focus,
+   self-built command lines, rich-text flattening — four independently converging actions are exactly the
+   blueprints for the components to build.
 
-因此本规划的**所有新增投入都流向组件层**；vim 功能广度（fold、`:g`、
-vimscript、多光标）继续列为非目标（ROADMAP「已知非目标」）。
+Therefore **all new investment in this plan goes to the component layer**; vim feature breadth (fold, `:g`,
+vimscript, multi-cursor) remains listed as a non-goal (ROADMAP "Known non-goals").
 
-## 2. 现状盘点（2026-09）
+## 2. Status inventory (2026-09)
 
-### 2.1 三仓快照
+### 2.1 Three-repo snapshot
 
-| 仓库 | 角色 | 状态 | 关键数字 |
+| Repo | Role | Status | Key numbers |
 |---|---|---|---|
-| gpui_vim | 引擎 + 集成层 + demo | main 干净，与 origin 同步 | vimcore ~10k 行 / 116 个无头测试；gpui-vim（attach、to_core_key、dispatch_text、render）；ROADMAP 任务 1-14 基本收官 |
-| pandagit | 宿主（最重） | 有 diff_view 方向未提交改动（勿混入） | `merge_view/vim.rs` 1479 行宿主适配；`cmd.rs` 1197 行自建命令行；`config_editor.rs` 734 行配置编辑窗口；`keymap.rs` 533 行 TOML 键位 + 内置 vimrc；**全仓无 IME** |
-| pandamail | 宿主（轻） | 有 webview 方向未提交改动（勿混入） | `vimtext.rs` 1186 行 VimEdit（含 IME、单行折叠、鼠标）；`pager.rs` 866 行只读 pager；`lineedit.rs` 398 行自建输入框；`app.rs` 手写 ex 分发（send/sync/expunge/…） |
+| gpui_vim | engine + integration layer + demo | main clean, in sync with origin | vimcore ~10k lines / 116 headless tests; gpui-vim (attach, to_core_key, dispatch_text, render); ROADMAP tasks 1-14 essentially wrapped up |
+| pandagit | host (heaviest) | has uncommitted diff_view-direction work (do not mix in) | `merge_view/vim.rs` 1479-line host adapter; `cmd.rs` 1197-line self-built command line; `config_editor.rs` 734-line config editor window; `keymap.rs` 533-line TOML keymap + built-in vimrc; **no IME repo-wide** |
+| pandamail | host (light) | has uncommitted webview-direction work (do not mix in) | `vimtext.rs` 1186-line VimEdit (incl. IME, single-line collapse, mouse); `pager.rs` 866-line read-only pager; `lineedit.rs` 398-line self-built input field; `app.rs` hand-written ex dispatch (send/sync/expunge/…) |
 
-### 2.2 胶水平行度（组件化的直接动因）
+### 2.2 Glue parallelism (the direct motivation for componentization)
 
-- pandamail `vimtext.rs` 文件头自述：「可复用的 vim 文本编辑实体（pandagit
-  `config_editor` 模式的泛化）」——同一份胶水的第二份拷贝已经存在，
-  `config_editor.rs`（734 行）与 `vimtext.rs`（1186 行）共享
-  SharedLines/offset 换算/undo 暂存/渲染的同构逻辑。
-- 命令行：pandagit `cmd.rs`（渲染 + 解析 + 历史 + wildmenu，1197 行）与
-  pandamail `lineedit.rs` + `ex_candidates` + `ex_line_key` 互为平行实现；
-  pandagit 的 `:s` 字面量搜索（`vim/search.rs`，D6 决策）与引擎 regex 搜索是
-  全项目唯一的语义重复。
-- 只读 pager：pandamail `pager.rs` 独家发明，无第二消费者，但其
-  「扁平化 + 字节区间映射 + 选区读回」协议是可抽通用 API 的完整样本。
+- The file header of pandamail `vimtext.rs` self-describes it as "a reusable vim text-editing entity (a
+  generalization of the pandagit `config_editor` pattern)" — a second copy of the same glue already exists;
+  `config_editor.rs` (734 lines) and `vimtext.rs` (1186 lines) share
+  isomorphic logic for SharedLines/offset conversion/undo staging/rendering.
+- Command line: pandagit `cmd.rs` (rendering + parsing + history + wildmenu, 1197 lines) and
+  pandamail `lineedit.rs` + `ex_candidates` + `ex_line_key` are parallel implementations of each other;
+  pandagit's `:s` literal search (`vim/search.rs`, decision D6) versus the engine regex search is
+  the project's only semantic duplication.
+- Read-only pager: invented solely by pandamail `pager.rs` with no second consumer, but its
+  "flatten + byte-range mapping + selection read-back" protocol is a complete sample of a generalizable API.
 
-### 2.3 依赖形态
+### 2.3 Dependency shape
 
-三仓目前是**兄弟目录路径依赖**（`vimcore = { path = "../gpui_vim/crates/vimcore" }`），
-gpui 本体均取 crates.io `0.2`。引擎任何 trait 变更会同时打断两仓编译——
-这决定了下文的「三仓联动验证」流程与 P2 的发布策略。
+The three repos currently use **sibling-directory path dependencies** (`vimcore = { path = "../gpui_vim/crates/vimcore" }`),
+while gpui itself is taken from crates.io `0.2`. Any trait change in the engine breaks both hosts' builds
+simultaneously — this dictates the "three-repo linked validation" flow below and the P2 release strategy.
 
-## 3. 路线图总览
+## 3. Roadmap overview
 
-按 assessment 的优先级落成四个阶段；阶段 0 纯文档零风险，阶段 1 定组件层
-的规矩，阶段 2 两条线并行，阶段 3 收协议与发布。
+Following the assessment's priorities this lands in four stages; stage 0 is pure documentation with zero
+risk, stage 1 sets the component layer's conventions, stage 2 runs two tracks in parallel, stage 3
+closes the protocols and ships the releases.
 
-| 阶段 | 内容 | 优先级 | 主要落点 |
+| Stage | Content | Priority | Main landing spot |
 |---|---|---|---|
-| 0 | 嵌入模式决策文档 | P0 | gpui_vim `INTEGRATION.md` |
-| 1 | VimEdit 组件化（可复用编辑实体） | P0 | gpui_vim `gpui-vim::edit` ← pandamail `vimtext.rs` |
-| 2a | 只读 pager 组件 | P1 | gpui_vim `gpui-vim::pager` ← pandamail `pager.rs` |
-| 2b | Ex 命令注册表 + 命令行组件 | P1 | gpui_vim（vimcore 注册表 + gpui-vim UI）← pandagit `cmd.rs` / pandamail `lineedit.rs` |
-| 3 | 能力位、TCK、发布与平台矩阵 | P2 | 三仓 |
+| 0 | Embedding-mode decision document | P0 | gpui_vim `INTEGRATION.md` |
+| 1 | VimEdit componentization (reusable editing entity) | P0 | gpui_vim `gpui-vim::edit` ← pandamail `vimtext.rs` |
+| 2a | Read-only pager component | P1 | gpui_vim `gpui-vim::pager` ← pandamail `pager.rs` |
+| 2b | Ex command registry + command-line component | P1 | gpui_vim (vimcore registry + gpui-vim UI) ← pandagit `cmd.rs` / pandamail `lineedit.rs` |
+| 3 | Capability flags, TCK, release and platform matrix | P2 | all three repos |
 
-顺序约束：
+Ordering constraints:
 
-- 阶段 1 必须先于 2a/2b 落地：它是第一个组件，负责确立组件层的固定形态
-  （模块位置、样式注入方式、事件模型、headless 测试边界、宿主迁移流程），
-  后续两个组件照抄规矩，避免三种风格。
-- 2a 与 2b 互不依赖，可并行。
-- 阶段 3 的 TCK 可与 1/2 穿插切片；**发布（crates.io）放在 widget/pager/ex
-  三个公开 API 面稳定之后**，避免 0.x 版本号浪费在 breaking 上。
+- Stage 1 must land before 2a/2b: it is the first component, and it establishes the component layer's fixed
+  shape (module placement, style injection method, event model, headless test boundary, host migration
+  process); the following two components copy the conventions, avoiding three styles.
+- 2a and 2b are mutually independent and can run in parallel.
+- Stage 3's TCK can interleave slices with 1/2; **the release (crates.io) comes after the
+  widget/pager/ex public API surfaces are stable**, so 0.x version numbers aren't wasted on breaking changes.
 
-## 4. 阶段 0（P0）：嵌入模式决策文档
+## 4. Stage 0 (P0): embedding-mode decision document
 
-**现状**：`INTEGRATION.md` 只写了 `attach` 拦截器一条路线。两个真实宿主的
-共同选择是「宿主路由」（text-key guard → `process_key`），pandamail 增量发明
-了「只读 pager」——三种模式已并存于世，官方只承认第一种。
+**Status**: `INTEGRATION.md` documents only the `attach` interceptor route. Both real hosts
+chose "host routing" (text-key guard → `process_key`), and pandamail incrementally invented the
+"read-only pager" — three modes already coexist in the world, while the official document acknowledges only the first.
 
-**方案**：`INTEGRATION.md` 重写为决策结构（保留现有 attach 章节作为路线 A）：
+**Plan**: rewrite `INTEGRATION.md` into a decision structure (keeping the existing attach chapter as route A):
 
 ```mermaid
 flowchart TD
-    S["gpui 应用想接 vim"] --> Q1{"编辑区是否就是窗口焦点本体?"}
-    Q1 -->|"是（简单编辑器）"| A["路线 A：attach 拦截器"]
-    Q1 -->|"否（多视图/多字段）"| B["路线 B：宿主路由<br/>guard 处 to_core_key → process_key"]
-    S --> Q3{"内容是只读展示?"}
-    Q3 -->|"是（日志/diff/正文/列表）"| C["路线 C：扁平化 + 只读 pager"]
+    S["A gpui app wants vim"] --> Q1{"Is the editing area the window's focus itself?"}
+    Q1 -->|"yes (simple editor)"| A["Route A: attach interceptor"]
+    Q1 -->|"no (multi-view/multi-field)"| B["Route B: host routing<br/>at the guard: to_core_key → process_key"]
+    S --> Q3{"Is the content read-only display?"}
+    Q3 -->|"yes (log/diff/body/list)"| C["Route C: flatten + read-only pager"]
 ```
 
-每种路线给出：最小代码骨架（≤40 行）、真实宿主参照
-（A = demo，B = pandagit `merge_view/vim.rs` / pandamail `vimtext.rs`，
-C = pandamail `pager.rs`）、适用条件与已知坑（gpui 派发顺序、绑定字母键会
-劫持输入、`Subscription` 保活）。
+For each route give: a minimal code skeleton (≤40 lines), real host references
+(A = demo, B = pandagit `merge_view/vim.rs` / pandamail `vimtext.rs`,
+C = pandamail `pager.rs`), applicable conditions, and known pitfalls (gpui dispatch order, binding letter
+keys hijacks typing, `Subscription` keep-alive).
 
-**验收**：第三个集成者按文档自选路线不需要读宿主源码；demo 与现有文档示例
-全部可编译。
+**Acceptance**: a third integrator picks a route from the document alone without reading host source; the
+demo and all existing document examples compile.
 
-**陷阱**：不要把 attach 描述成「标准」而其它两条是「变通」——评估已证明
-attach 是三条路线中的少数派。
+**Pitfall**: do not describe attach as the "standard" and the other two as "workarounds" — the assessment
+proved attach is the minority among the three routes.
 
-## 5. 阶段 1（P0）：VimEdit 组件化
+## 5. Stage 1 (P0): VimEdit componentization
 
-这是全规划杠杆最高的一项：消灭「第三份拷贝」的必然性。
+This is the highest-leverage item in the whole plan: it eliminates the inevitability of a "third copy".
 
-**反哺源**：pandamail `vimtext.rs`（1186 行，链条上最完整的一份——含 IME、
-单行折叠、鼠标选区、事件外发；其祖先是 pandagit `config_editor`）。
+**Feed-in source**: pandamail `vimtext.rs` (1186 lines, the most complete link in the chain — with IME,
+single-line collapse, mouse selection, event out-push; its ancestor is pandagit `config_editor`).
 
-**方案**（落点 `crates/gpui-vim/src/edit.rs`，模块 `gpui_vim::edit`）：
+**Plan** (landing at `crates/gpui-vim/src/edit.rs`, module `gpui_vim::edit`):
 
-1. `LineBuf`：行向量缓冲（COW `Arc<Vec<String>>` 共享）+ 行列↔字节偏移换算
-   + UTF-16 映射（IME 必需），实现 `VimBuffer`/`VimBufferMut`。从
-   `vimtext.rs` 的 `LinesBuf` 上移，单测随之上移。
-2. `VimEdit`：gpui `Entity` + `Focusable`，公开：
-   - `process_key(window, cx)` —— 宿主路由入口（**不走 attach**，路线 B）；
-   - `VimEditEvent { Changed, Submit, Escape, … }` 事件外发（pandamail
-     `flush()` 的现形态）；
-   - 单行/多行开关（`collapse_single_line` 逻辑）；
-   - `VimEditStyle` 主题结构体（字体、配色、光标样式），宿主只管给主题；
-   - 内置 `EntityInputHandler`（IME），**原样保留 ROADMAP 任务 1 的
-     marked_range 契约与不变量 3**，这是两个宿主里唯一实现过 IME 的代码，
-     上移时逐行核对，不得重写。
-3. undo 归宿：widget 内置一个可选的简单文本 undo 栈（小宿主零配置可用）；
-   宿主要有统一撤销栈时经 `VimHost` 覆盖（pandagit config_editor 的既有
-   形态）。
-4. demo `editor.rs` 改为 widget 消费者（降为「attach 路线的参考」），
-   gpui-vim 的 render 模块成为 widget 的内部依赖。
+1. `LineBuf`: a line-vector buffer (COW `Arc<Vec<String>>` sharing) + line/col↔byte-offset conversion
+   + UTF-16 mapping (required for IME), implementing `VimBuffer`/`VimBufferMut`. Moved up from
+   `LinesBuf` in `vimtext.rs`, with its unit tests moved along.
+2. `VimEdit`: a gpui `Entity` + `Focusable`, exposing:
+   - `process_key(window, cx)` — the host-routing entry (**not via attach**, route B);
+   - `VimEditEvent { Changed, Submit, Escape, … }` event out-push (the current form of pandamail's
+     `flush()`);
+   - single-line/multi-line switch (the `collapse_single_line` logic);
+   - `VimEditStyle` theme struct (font, colors, cursor style); the host only supplies a theme;
+   - a built-in `EntityInputHandler` (IME), **preserving the ROADMAP task 1 marked_range contract and
+     invariant 3 verbatim**; this is the only IME-implementing code among the two hosts —
+     verify line by line when moving up, do not rewrite.
+3. undo home: the widget ships an optional simple text undo stack (small hosts work with zero
+   configuration); when the host has a unified undo stack it overrides via `VimHost` (the existing
+   form of pandagit config_editor).
+4. The demo `editor.rs` becomes a widget consumer (demoted to "the reference for the attach route"),
+   and the gpui-vim render module becomes the widget's internal dependency.
 
-**验收**：
+**Acceptance**:
 
-- pandamail 迁移 ≥1 个真实字段（建议 compose 主题行）到 widget，行为与
-  现有 `VimEdit` 无差异（含中文 IME 手测）；
-- pandagit `config_editor.rs` 迁到 widget，**顺带获得 IME**（pandagit 全仓
-  当前无 IME，是明确能力缺口）；
-- `cargo test` 全绿（LineBuf / collapse / IME 换算的无头测试进 gpui-vim）；
-- 两宿主各自净删 ≥600 行胶水。
+- pandamail migrates ≥1 real field (the compose subject line is suggested) to the widget, with behavior
+  identical to the existing `VimEdit` (including manual Chinese IME testing);
+- pandagit `config_editor.rs` migrates to the widget, **gaining IME along the way** (pandagit currently has
+  no IME repo-wide, an explicit capability gap);
+- `cargo test` fully green (headless tests for LineBuf / collapse / IME conversion move into gpui-vim);
+- each host net-deletes ≥600 lines of glue.
 
-**陷阱**：迁移必须在两宿主各自在进行中的工作（pandagit diff_view、
-pandamail webview）落地之后、以独立分支进行；widget API 冻结前不要让第三
-个宿主接入。
+**Pitfall**: migration must happen after each host's in-flight work (pandagit diff_view,
+pandamail webview) lands, on independent branches; do not let a third host adopt before the widget API is
+frozen.
 
-## 6. 阶段 2a（P1）：只读 pager 组件
+## 6. Stage 2a (P1): read-only pager component
 
-**反哺源**：pandamail `pager.rs`（866 行）。
+**Feed-in source**: pandamail `pager.rs` (866 lines).
 
-**方案**（落点 `crates/gpui-vim/src/pager.rs`）：
+**Plan** (landing at `crates/gpui-vim/src/pager.rs`):
 
-1. 扁平化协议通用化：`Piece { text, style }` + `flatten(pieces) -> 规范文本
-   + 字节区间映射`（pandamail `Group`/`walk_seq` 的抽象化）。内容来源不限
-   富文本——日志行、diff 行、帮助页都是合法输入。
-2. `PagerBuffer`：只读 `VimBuffer`；`VimBufferMut` 空实现（pandamail 已验证
-   该做法零引擎改动；引擎侧只读 flag 列为 P2 候选，非必需）。
-3. 选区读回：`selection() -> Range<usize>` + `spans() -> Vec<(piece_idx,
-   Range<usize>)>`，把引擎 visual 选区映射回宿主渲染单元（pandamail
-   `group_sel_spans` 的通用化）。
-4. 激活策略沿 pandamail 现状：仅 Visual 模式活动，normal 导航键由宿主路由
-   决定是否喂引擎。
+1. Generalize the flattening protocol: `Piece { text, style }` + `flatten(pieces) -> canonical text
+   + byte-range mapping` (an abstraction of pandamail `Group`/`walk_seq`). Content sources are not limited
+   to rich text — log lines, diff lines, help pages are all legal inputs.
+2. `PagerBuffer`: a read-only `VimBuffer`; empty `VimBufferMut` implementation (pandamail verified
+   this needs zero engine changes; an engine-side read-only flag is a P2 candidate, not required).
+3. Selection read-back: `selection() -> Range<usize>` + `spans() -> Vec<(piece_idx,
+   Range<usize>)>`, mapping the engine's visual selection back to host render units (a generalization of
+   pandamail `group_sel_spans`).
+4. Activation policy follows pandamail's current state: active only in Visual mode; whether
+   normal navigation keys reach the engine is decided by host routing.
 
-**验收**：pandamail `reader.rs` 迁到该 API，选区高亮与 `/`·n/N 搜索回归；
-demo 增加一个只读面板示例（帮助页或 README 渲染）。
+**Acceptance**: pandamail `reader.rs` migrates to this API, with selection highlighting and `/`·n/N search
+regressions; the demo gains a read-only panel example (help page or README rendering).
 
-**陷阱**：规范文本与渲染文本必须同源生成（pandamail reader.rs 的注释已经
-踩过「规范化不一致导致偏移漂移」的坑），API 要把两者绑定为同一次调用的
-产物。
+**Pitfall**: canonical text and rendered text must be generated from the same source (the comment in
+pandamail reader.rs already records stepping on the "normalization inconsistency causing offset drift"
+trap), and the API must bind the two as the products of a single call.
 
-## 7. 阶段 2b（P1）：Ex 命令注册表 + 命令行组件
+## 7. Stage 2b (P1): Ex command registry + command-line component
 
-两个宿主都自建命令行的集体行为，正确反应是切开复用：**引擎留输入状态机，
-宿主注册命令**。
+Both hosts self-building command lines is a collective behavior; the right reaction is to split the reuse:
+**the engine keeps the input state machine; hosts register commands**.
 
-**方案**：
+**Plan**:
 
-1. vimcore（`cmdline.rs`）新增注册表：
-   - `register_ex(name, aliases, completion, handler)`，handler 收
-     `(范围前缀, 参数串)` 与 `&mut Ctx`；
-   - **内置 Ex 套件（`:w :q :set :s` 等）改为注册表里的预注册项**——对外
-     行为不变（编辑器形状的宿主零迁移），架构上不再特殊；
-   - 补全候选接口覆盖：命令名补全 → 参数补全（pandamail
-     `ex_candidates` 的两级候选、pandagit wildmenu 的能力并集）。
-2. gpui-vim 出命令行 widget：提示符渲染、历史（按 prompt 分开）、wildmenu
-   导航、`hls` 联动的 incsearch。pandagit `cmd.rs` 的 UI 层与 pandamail
-   的浮层候选表都是它的等价物。
-3. 异步命令语义：应用命令（pandamail `send` → `MailRequest` 消息）不允许
-   假设同步完成——handler 的契约是「宿主自行派发、结果走 `status_message`」，
-   注册表不做任何执行期假设。
-4. 搜索语义归属：宿主命令声明用哪个匹配器。pandagit 的 `:s` 保持字面量
-   （D6 决策，**不被迫切换**）；想复用引擎 regex 的命令引用
-   `search::compile`。UI 层必须统一，匹配语义由注册方决定——这同时消解
-   「全项目唯一的语义重复」中的架构性部分。
+1. vimcore (`cmdline.rs`) gains a registry:
+   - `register_ex(name, aliases, completion, handler)`, where the handler receives
+     `(range prefix, argument string)` and `&mut Ctx`;
+   - **the built-in Ex suite (`:w :q :set :s` etc.) becomes pre-registered entries in the registry** —
+     external behavior unchanged (editor-shaped hosts migrate with zero effort), architecturally no longer special;
+   - the completion-candidate interface covers: command-name completion → argument completion (the union of
+     pandamail `ex_candidates`' two-level candidates and pandagit wildmenu's capabilities).
+2. gpui-vim ships the command-line widget: prompt rendering, history (per prompt), wildmenu
+   navigation, and the incsearch coupled with `hls`. The UI layer of pandagit `cmd.rs` and pandamail's
+   floating candidate table are both its equivalents.
+3. Async command semantics: app commands (pandamail `send` → `MailRequest` message) must not be assumed
+   to complete synchronously — the handler contract is "the host dispatches on its own; results go through
+   `status_message`", and the registry makes no execution-time assumptions.
+4. Search semantics ownership: host commands declare which matcher to use. pandagit's `:s` stays
+   literal (decision D6, **not forced to switch**); commands wanting to reuse the engine regex reference
+   `search::compile`. The UI layer must be unified while matching semantics stay the registrant's call —
+   this also dissolves the architectural part of "the project's only semantic duplication".
 
-**验收**：
+**Acceptance**:
 
-- pandagit：`cmd.rs` 的缓冲管理/解析/历史/wildmenu 迁引擎组件，
-  `:sort :g :d :y :normal :config :e!` 注册为宿主命令，行为回归（`s///c`
-  确认条等）；
-- pandamail：`lineedit.rs` + `ex_candidates` + `ex_line_key` 删除，
-  send/sync/expunge/folder/compose/account/help/theme 注册，Tab 两级补全
-  与历史回归；
-- 引擎：注册表 + 内置命令改造全部有 headless 测试；`/`·`?` 路径不回归
-  （不变量 1 的按键归一化）。
+- pandagit: `cmd.rs`'s buffer management/parsing/history/wildmenu migrate to the engine component,
+  `:sort :g :d :y :normal :config :e!` are registered as host commands, behavior regressions verified
+  (e.g. the `s///c` confirmation bar);
+- pandamail: `lineedit.rs` + `ex_candidates` + `ex_line_key` deleted; send/sync/expunge/folder/compose/account/help/theme
+  registered, with two-level Tab completion and history regressions;
+- engine: the registry + built-in command conversion are all covered by headless tests; the `/`·`?` paths
+  do not regress (the key normalization of invariant 1).
 
-**陷阱**：映射 RHS 进 cmdline 不得 break 按键队列（`:action Foo<CR>` 一口气
-跑完是既有语义）；cmdline 按键路径与 `/` 完全一致，不要为新 prompt 单开
-分支。
+**Pitfall**: a mapping RHS entering the cmdline must not break the key queue (`:action Foo<CR>` running in
+one go is existing semantics); the cmdline key path must be identical to `/` — do not open a separate
+branch for a new prompt.
 
-## 8. 阶段 3（P2）：协议收口与发布
+## 8. Stage 3 (P2): protocol closure and release
 
-### 8.1 宿主能力位（capability flags）
+### 8.1 Host capability flags
 
-`VimHost` 增加 `capabilities()`（默认全关）：
+`VimHost` gains `capabilities()` (all off by default):
 
-- `MACRO_HOST_UNDO`：宏回放期间宿主 undo 可用。pandagit 现状（`undo()`
-  返回 None + 响铃，「宏回放若含 undo 不支持」）从注释口头约定升级为显式
-  声明，行为不变；引擎据此决定宏功能完整可用 / 降级 / 拒录。
+- `MACRO_HOST_UNDO`: host undo is available during macro replay. pandagit's current state (`undo()`
+  returning None + bell, "macro replay not supported if it contains undo") is upgraded from a
+  comment-level verbal convention to an explicit declaration, behavior unchanged; the engine then decides
+  full macro capability / degradation / refusal to record.
 
-### 8.2 宿主契约测试套件（TCK）
+### 8.2 Host contract test kit (TCK)
 
-新文件 `crates/vimcore/tests/tck/`（或独立 `gpui-vim-tck` crate），把
-INTEGRATION.md「Notes & current limitations」里的每条警告变成可执行验收，
-供宿主对自己的 buffer/host 实现运行：
+A new file `crates/vimcore/tests/tck/` (or a standalone `gpui-vim-tck` crate) turns every warning in
+INTEGRATION.md "Notes & current limitations" into an executable acceptance check, for hosts to run against
+their own buffer/host implementations:
 
-- 行列↔字节偏移与 UTF-16 映射（ropey 1.x char index 类陷阱）；
-- `pending_unknown_char` 去重语义（双路径平台）；
-- undo 组合并（begin_insert 复用组、change 家族单步撤销）；
-- marks 平移（删除点之后/之前/区间内三况）；
-- 宽字符/ grapheme 步进与显示列。
+- line/col↔byte-offset and UTF-16 mapping (the ropey 1.x char-index class of traps);
+- `pending_unknown_char` dedup semantics (dual-path platforms);
+- undo-group merging (begin_insert reusing the group, single-step undo for the change family);
+- marks shifting (the three cases: delete after / before / inside a range);
+- wide-character / grapheme stepping and display columns.
 
-pandagit（`MergeVimBuffer`、config editor buffer）与 pandamail
-（`LinesBuf`、`PagerBuf`）各加一个调用 TCK 的测试文件。**接入质量从
-「读文档」变成「跑测试」**。
+pandagit (`MergeVimBuffer`, config editor buffer) and pandamail
+(`LinesBuf`, `PagerBuf`) each add a test file calling the TCK. **Integration quality moves from
+"reading the docs" to "running the tests"**.
 
-### 8.3 发布与平台策略
+### 8.3 Release and platform strategy
 
-- crates.io：`vimcore`（零 gpui 依赖）先发，`gpui-vim` 随后；版本要求
-  widget/pager/ex 三个 API 面冻结。
-- gpui 0.x 跟随规则：宿主锁 `gpui = "=0.2.x"` 直至 gpui 稳定；引擎升级
-  gpui 时在 CHANGELOG 声明兼容矩阵，宿主按矩阵排期跟随。
-- 平台矩阵：macOS 已逐事件验证；Linux(X11/Wayland)/Windows 用
-  `GPUI_VIM_SMOKE` + `GPUI_VIM_DEBUG_KEYS` 建立自动冒烟，差异收敛进
-  `to_core_key`/`dispatch_text`，两宿主集成时先跑冒烟。
-- 发布后两宿主把 path 依赖切到版本依赖（或 git rev-pin 过渡），三仓从
-  「兄弟目录耦合」解绑。
+- crates.io: `vimcore` (zero gpui dependency) ships first, `gpui-vim` after; the version requirement
+  is that the widget/pager/ex API surfaces are frozen.
+- gpui 0.x follow rule: hosts pin `gpui = "=0.2.x"` until gpui stabilizes; when the engine upgrades
+  gpui it declares a compatibility matrix in the CHANGELOG, and hosts follow on the matrix schedule.
+- Platform matrix: macOS is verified event by event; Linux(X11/Wayland)/Windows build automatic
+  smoke tests with `GPUI_VIM_SMOKE` + `GPUI_VIM_DEBUG_KEYS`, differences converge into
+  `to_core_key`/`dispatch_text`, and both hosts run the smoke first when integrating.
+- After the release, both hosts switch path dependencies to versioned dependencies (or a git rev-pin
+  transition), unbinding the three repos from "sibling-directory coupling".
 
-## 9. 各仓任务清单（汇总）
+## 9. Per-repo task lists (summary)
 
 **gpui_vim**
 
-1. P0：INTEGRATION.md 三模式决策文档（阶段 0）；
-2. P0：`gpui_vim::edit`（VimEdit widget，吸收 pandamail vimtext.rs）；
-3. P1：`gpui_vim::pager`（吸收 pandamail pager.rs）；
-4. P1：Ex 注册表（vimcore）+ 命令行 widget（gpui-vim）；
-5. P2：能力位与宏降级协议；
-6. P2：TCK；
-7. P2：crates.io 发布 + gpui 版本策略 + 平台冒烟矩阵。
+1. P0: INTEGRATION.md three-mode decision document (stage 0);
+2. P0: `gpui_vim::edit` (VimEdit widget, absorbing pandamail vimtext.rs);
+3. P1: `gpui_vim::pager` (absorbing pandamail pager.rs);
+4. P1: Ex registry (vimcore) + command-line widget (gpui-vim);
+5. P2: capability flags and macro degradation protocol;
+6. P2: TCK;
+7. P2: crates.io release + gpui versioning strategy + platform smoke matrix.
 
 **pandagit**
 
-1. P0（随组件）：`config_editor.rs` 迁 VimEdit widget（净删胶水 + 首次获得
-   IME）；
-2. P1：`cmd.rs` 命令行迁引擎 Ex 组件，应用命令全部注册化；`:s` 字面量语义
-   按 D6 显式保留并声明；
-3. P2：TCK 接入（两个 buffer 实现）；
-4. P2：能力位声明（宏回放 undo 不支持 → 协议化）；
-5. P2：依赖切换（path → 版本）。
+1. P0 (following the component): migrate `config_editor.rs` to the VimEdit widget (net glue deleted +
+   first IME capability);
+2. P1: migrate the `cmd.rs` command line to the engine Ex component; all app commands become registered;
+   the `:s` literal semantics are explicitly kept per D6 and declared;
+3. P2: TCK integration (the two buffer implementations);
+4. P2: capability-flag declaration (macro-replay undo unsupported → protocolized);
+5. P2: dependency switch (path → version).
 
 **pandamail**
 
-1. P0（随组件）：vimtext.rs 反哺上游后改为消费 widget（净删目标 ~1000 行，
-   保留宿主特有的事件/字段逻辑）；
-2. P1：`pager.rs` 迁 `gpui_vim::pager`（reader 选区/搜索回归）；
-3. P1：`lineedit.rs` + `ex_candidates` 迁命令行 widget，send/sync/expunge
-   等注册化；
-4. 小件：`docs/DESIGN.md` 引用的 `exline.rs`/`status.rs` 已不存在，文档与
-   实际模块对齐；
-5. P2：TCK 接入（`LinesBuf`/`PagerBuf`）；依赖切换同上。
+1. P0 (following the component): after vimtext.rs feeds upstream, consume the widget (net-deletion target
+   ~1000 lines, keeping host-specific event/field logic);
+2. P1: migrate `pager.rs` to `gpui_vim::pager` (reader selection/search regressions);
+3. P1: migrate `lineedit.rs` + `ex_candidates` to the command-line widget; register send/sync/expunge
+   etc.;
+4. Small items: `exline.rs`/`status.rs` referenced by `docs/DESIGN.md` no longer exist; align the docs with
+   the actual modules;
+5. P2: TCK integration (`LinesBuf`/`PagerBuf`); dependency switch as above.
 
-## 10. 风险与流程约束
+## 10. Risks and process constraints
 
-- **两宿主均有进行中的未提交工作**（pandagit diff_view、pandamail
-  webview）：一切迁移任务独立分支、单独 PR，不与其混流。
-- **三仓联动验证**：gpui_vim 每个 trait/API 变更合并前，对两个宿主目录跑
-  `cargo check`（path 依赖意味着 breaking 是三仓同时的）；引擎仓测试必须
-  全绿（当前 116 个）+ `cargo clippy --workspace` 零警告。
-- **IME 契约是最高风险迁移件**：widget 吸收 vimtext.rs 时，marked_range
-  契约、空区间返回 None、合成文本不经引擎管线三条必须原样带走，迁移后需
-  真机拼音输入法手测（ROADMAP 任务 1 的验收清单）。
-- **组件层纪律**：每个组件必须回答「第二个宿主迁移时删多少行」——widget
-  / pager / cmdline 的成功标准就是 §5-§7 验收里的净删行数，删不动就是
-  API 设计错了。
+- **Both hosts have in-flight uncommitted work** (pandagit diff_view, pandamail
+  webview): every migration task goes on an independent branch, a separate PR, not mixed with theirs.
+- **Three-repo linked validation**: before merging each gpui_vim trait/API change, run
+  `cargo check` against both host directories (path dependencies mean breakage hits all three repos at
+  once); the engine repo's tests must be fully green (currently 116) + `cargo clippy --workspace` with zero
+  warnings.
+- **The IME contract is the highest-risk migration item**: when the widget absorbs vimtext.rs, the
+  marked_range contract, returning None for empty ranges, and never routing composed text through the engine
+  pipeline — these three must be carried over verbatim; after migration, manual testing with a real pinyin
+  IME is required (the acceptance checklist of ROADMAP task 1).
+- **Component-layer discipline**: every component must answer "how many lines does the second host delete
+  when migrating" — the success criterion for widget / pager / cmdline is exactly the net-deletion numbers
+  in the §5-§7 acceptances; if lines can't be deleted, the API design is wrong.
 
-## 11. 非目标（与 ROADMAP 对齐）
+## 11. Non-goals (aligned with ROADMAP)
 
-- 不新增 vim 广度：fold、引擎侧 `:g`、vimscript、外部命令、多光标；
-- 不强制任何宿主迁到 attach 路线；
-- 不在组件层引入主题系统以外的视觉定制（渲染风格仍由宿主/widget 样式结构
-  体决定）；
-- 多 buffer 模型继续等真实多 buffer 宿主需求（ROADMAP 任务 13 遗留项）。
+- No new vim breadth: fold, engine-side `:g`, vimscript, external commands, multi-cursor;
+- Never force any host onto the attach route;
+- No visual customization beyond the theme struct at the component layer (rendering style stays decided by
+  the host / widget style struct);
+- The multi-buffer model continues to wait for a real multi-buffer host need (the leftover item of
+  ROADMAP task 13).

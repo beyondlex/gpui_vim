@@ -5,7 +5,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
-# 只作参考宿主，不发布（path 依赖无版本号，publish 会失败）
+# Reference host only, not published (path deps carry no version, publish would fail)
 publish = false
 
 [[bin]]
@@ -16,8 +16,9 @@ path = "src/main.rs"
 vimcore = { workspace = true }
 gpui-vim = { path = "../gpui-vim", package = "gpui-vim-x" }
 gpui = { version = "0.2", package = "gpui-x" }
-# 应用启动入口 helper（未发布 crates.io，取自 gpui-x 同源）。
-# font-kit 必须显式开启，否则 gpui_macos 退到 NoopTextSystem（无文字）
+# App launch-entry helper (not on crates.io, taken from the same gpui-x source).
+# font-kit must be enabled explicitly, otherwise gpui_macos falls back to
+# NoopTextSystem (no text renders)
 gpui_platform = { version = "0.1", package = "gpui-x-platform", features = [
     "font-kit",
 ] }

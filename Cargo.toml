@@ -12,13 +12,16 @@ repository = "https://github.com/beyondlex/gpui_vim"
 [workspace.dependencies]
 ropey = "1"
 unicode-width = "0.2"
-# 引擎单一来源：crates.io registry（0.1.24 起与 git main 同步发版）。
-# 本地迭代引擎时临时换 path 覆盖（cargo 不会自动偏好本地目录）：
+# Single source for the engine: the crates.io registry (0.1.24 onwards it is
+# released in sync with git main). To iterate on the engine locally, temporarily
+# override with a path dependency (cargo does not prefer local directories on
+# its own):
 #   [patch.crates-io] vimcore = { path = "../vimcore" }
 vimcore = "0.2"
 
 [profile.dev]
 opt-level = 1
 
-# gpui 线单一来源：registry 的 gpui-x 发行版（原 fork-gpui-x 分支线已转为
-# gpui-vim-x + gpui-x 家族发布，git/patch 依赖全部退役）。
+# Single source for the gpui line: the gpui-x releases on the registry (the
+# former fork-gpui-x branch line is now published as the gpui-vim-x + gpui-x
+# family; all git/patch dependencies are retired).

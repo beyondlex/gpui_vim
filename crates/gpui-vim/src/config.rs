@@ -162,9 +162,11 @@ fn accumulate(total: &mut LoadedStats, stats: ConfigStats, count_file: bool) {
 
 fn load<E: VimEditor>(editor: &mut E, path: &Path, depth: usize) -> std::io::Result<ConfigStats> {
     let text = std::fs::read_to_string(path)?;
-    // Windows 记事本一类编辑器会写 UTF-8 BOM；BOM 黏在第一行行首，引擎
-    // parse 认不出 `\u{feff}set` 就把第一条指令静默丢掉。剥掉再交给解析器
-    // （环境适配是加载层的职责，与 tilde 展开同理）。
+    // Editors like Windows Notepad write a UTF-8 BOM; glued to the first
+    // line's start, the engine's parser can't recognize `\u{feff}set` and
+    // silently drops the first directive. Strip it before handing the text to
+    // the parser (environment adaptation is the loading layer's job, same
+    // rationale as tilde expansion).
     let text = text.strip_prefix('\u{feff}').unwrap_or(&text);
     let config = config::parse(text);
     let (vim, _, _) = editor.vim_parts();
@@ -256,8 +258,10 @@ mod tests {
             std::fs::create_dir_all(full.parent().unwrap()).unwrap();
             std::fs::write(full, content).unwrap();
         }
-        // 换环境必须还原：remove 会让同进程后续测试读到「无 HOME」的世界
-        // （default_config_path 静默返回 None），并行测试也可能读到假 HOME
+        // Swapping the environment must restore it: leaving it removed makes
+        // later tests in the same process read a "no HOME" world
+        // (default_config_path silently returns None), and concurrent tests
+        // could also read the fake HOME
         let saved_home = std::env::var_os("HOME");
         std::env::set_var("HOME", &dir);
         f(&dir);
@@ -321,8 +325,9 @@ mod tests {
 
     #[test]
     fn utf8_bom_does_not_eat_the_first_directive() {
-        // 回归：Windows 编辑器常写 BOM；BOM 黏在第一行行首时引擎 parse
-        // 认不出 `\u{feff}set`，加载层必须先剥掉。
+        // Regression: Windows editors commonly write a BOM; when it is glued
+        // to the first line's start the engine's parser can't recognize
+        // `\u{feff}set`, so the loading layer must strip it first.
         with_fake_home(&[(".vimcorerc", "\u{feff}set number\nset expandtab\n")], |dir| {
             let mut editor = editor();
             let layers = Layers {
