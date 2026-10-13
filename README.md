@@ -1,80 +1,81 @@
 # gpui-vim
 
-为 [gpui](https://gpui.rs)（Zed 的 Rust UI 框架）文本编辑项目打造的**可复用 Vim 引擎**。
+A **reusable Vim engine** for text editing in [gpui](https://gpui.rs) (Zed's Rust UI framework) projects.
 
-架构参考 JetBrains IdeaVim 的"纯引擎 + 宿主适配层"分层（只借鉴设计，未复制任何 GPL 代码），让任何 gpui 应用通过三个步骤获得完整的 vim 编辑能力。
+The architecture follows JetBrains IdeaVim's "pure engine + host adapter layer" split (design inspiration
+only; no GPL code copied), letting any gpui app gain full vim editing capability in three steps.
 
 ```
 ┌────────────────────────────────────────────────┐
-│ 你的 gpui 应用 / 编辑器组件                      │
+│ Your gpui app / editor component               │
 ├────────────────────────────────────────────────┤
-│ gpui-vim        集成层：按键拦截、模式上下文      │
+│ gpui-vim   integration: key intercept, modes   │
 ├────────────────────────────────────────────────┤
-│ vimcore        纯 Rust 引擎（零 gpui 依赖）     │
-│   模式机 · 按键流水线 · Trie 命令表               │
-│   motion · operator · text object               │
-│   寄存器 · 搜索 · marks · undo 语义              │
+│ vimcore    pure Rust engine (zero gpui deps)   │
+│   mode machine · key pipeline · Trie tables    │
+│   motion · operator · text object              │
+│   registers · search · marks · undo semantics  │
 ├────────────────────────────────────────────────┤
-│ 宿主 trait：VimBuffer(Mut) + VimHost（你实现）   │
+│ Host traits: VimBuffer(Mut) + VimHost (yours)  │
 └────────────────────────────────────────────────┘
 ```
 
-## 功能（v1）
+## Features (v1)
 
-- **模式**：Normal / Insert / Visual（char & line）/ 命令行（`/` `?` 搜索）
-- **Motion**：`h j k l 0 ^ $ g_ w W b B e E ge gE f F t T ; , % gg G { } ( ) n N * # | H M L zz zt zb C-d C-u C-f C-b + - ' ` 等，全部支持 count（`3w`、`2gg`）
-- **Operator**：`d c y > < gu gU g~`，与 motion / text object 正交组合（`dd` `cw` `ciw` `3dw` `dap` `g~~` `>j`…），实现 vim 的范围特判规则（`dw` 不跨行、`cw` 等价 `ce`、列 1 规则等）
-- **Text object**：`iw aw iW aW is as ip ap`、引号 `i" a" i' a' i` a`` `、括号块 `i( a( i[ a[ i{ a{ i< a< ib aB`、`it at`
-- **寄存器**：unnamed、`"0` yank、`"1`-`"9` 删除环、`"-` 小删除、`"_` blackhole、`"+` 系统剪贴板、`"a-"z` 命名寄存器，linewise/charwise 语义，`p P` 支持 count
-- **编辑命令**：`x X s S D C Y r ~ J gJ p P u C-r o O i a I A gI >> << zz zt zb gv m ' ` 及方向键/翻页键
-- **搜索**：`/ ? n N * #`，Rust `regex` 语法，incsearch / hlsearch 高亮，搜索历史
-- **Marks**：`m{a-z}`、`` `{char} ``、`'{char}`、自动 marks（`< > ^ .`）
-- **undo**：一次命令一组、整个 insert 会话一组（`i…<Esc>` 一次 undo），语义由引擎发出、宿主执行
-- **用户映射**：`map`/`noremap` 程序化 API（如经典的 `jk` → Esc，支持等待态与递归上限）
-- **UI 配套**：模式指示、showcmd、block/beam 光标、搜索高亮、行号（absolute/relative）
+- **Modes**: Normal / Insert / Visual (char & line) / command line (`/` `?` search)
+- **Motions**: `h j k l 0 ^ $ g_ w W b B e E ge gE f F t T ; , % gg G { } ( ) n N * # | H M L zz zt zb C-d C-u C-f C-b + - ' ` etc., all count-aware (`3w`, `2gg`)
+- **Operators**: `d c y > < gu gU g~`, composing orthogonally with motions / text objects (`dd` `cw` `ciw` `3dw` `dap` `g~~` `>j`…), implementing vim's range special-case rules (`dw` does not cross lines, `cw` equals `ce`, the column-1 rule, etc.)
+- **Text objects**: `iw aw iW aW is as ip ap`, quotes `i" a" i' a' i` a`` ``, bracket blocks `i( a( i[ a[ i{ a{ i< a< ib aB`, `it at`
+- **Registers**: unnamed, `"0` yank, `"1`-`"9` delete ring, `"-` small delete, `"_` blackhole, `"+` system clipboard, `"a-"z` named registers; linewise/charwise semantics; `p P` with count
+- **Editing commands**: `x X s S D C Y r ~ J gJ p P u C-r o O i a I A gI >> << zz zt zb gv m ' ` plus arrow keys/page keys
+- **Search**: `/ ? n N * #`, Rust `regex` syntax, incsearch / hlsearch highlighting, search history
+- **Marks**: `m{a-z}`, `` `{char} ``, `'{char}`, automatic marks (`< > ^ .`)
+- **Undo**: one command one group; one whole insert session one group (`i…<Esc>` undoes in one step); semantics emitted by the engine, executed by the host
+- **User mappings**: programmatic `map`/`noremap` API (e.g. the classic `jk` → Esc, with pending state and a recursion limit)
+- **UI companion**: mode indicator, showcmd, block/beam cursor, search highlighting, line numbers (absolute/relative)
 
-## 快速开始
+## Quick start
 
 ```bash
-cargo run --release -p gpui-vim-demo        # 运行演示编辑器
-GPUI_VIM_SMOKE=1 cargo run -p gpui-vim-demo # 启动 2 秒后自动注入按键序列做自检
-cargo test                                  # 集成层 + demo 测试（46 个；引擎测试在 vimcore 仓库）
+cargo run --release -p gpui-vim-demo        # run the demo editor
+GPUI_VIM_SMOKE=1 cargo run -p gpui-vim-demo # auto-injects a key sequence 2s after launch for a self-check
+cargo test                                  # integration layer + demo tests (46; engine tests live in the vimcore repo)
 ```
 
-演示应用是一个完整的多行编辑器（ropey buffer、行号、状态栏、搜索高亮、鼠标点选/拖选、IME），`crates/gpui-vim-demo/src/` 就是新项目的参考实现。
+The demo app is a complete multi-line editor (ropey buffer, line numbers, status line, search highlighting, mouse click/drag selection, IME); `crates/gpui-vim-demo/src/` is the reference implementation for new projects.
 
-## 在你的项目里使用
+## Using it in your project
 
-三步接入，详见 [INTEGRATION.md](INTEGRATION.md)：
+Three-step integration; details in [INTEGRATION.md](INTEGRATION.md):
 
-1. 你的 buffer 实现 `VimBuffer` / `VimBufferMut`（参考 demo 的 ropey 实现）
-2. 你的编辑器视图实现 `gpui_vim::VimEditor` trait
-3. `gpui_vim::attach(&editor_entity, cx)` + 在 `InputHandler::replace_text_in_range` 里调用 `gpui_vim::dispatch_text`
+1. Your buffer implements `VimBuffer` / `VimBufferMut` (see the demo's ropey implementation)
+2. Your editor view implements the `gpui_vim::VimEditor` trait
+3. `gpui_vim::attach(&editor_entity, cx)` + call `gpui_vim::dispatch_text` inside `InputHandler::replace_text_in_range`
 
 ```rust
-// 按键处理完全是数据驱动的，扩展命令 = 表里加一行
+// Key handling is fully data-driven: extending commands = adding a row to the table
 b.normal(&["Z", "Z"], CmdKind::Normal(NormalCmd::SaveAndQuit));
 ```
 
-## 关键设计（承自 IdeaVim）
+## Key design (inherited from IdeaVim)
 
-- **引擎零依赖**：`vimcore` 不依赖 gpui，`KeyResult::Unknown` 表示"引擎不处理、还给宿主"，与宿主 keymap / 系统快捷键共存
-- **数据驱动命令表**：静态命令表 + 每模式一棵按键 Trie（对应 IdeaVim 的 `KeyStrokeTrie`），Trie 中间节点即 operator-pending 等待态
-- **引擎持有光标**：插件模型下引擎自己管理 cursor/mode/选区锚点，宿主只实现 buffer 读写与视口/剪贴板/undo 钩子（比 IdeaVim 的宿主持有 caret 模型简单得多）
-- **单一边界坐标**：引擎内部统一 UTF-8 字节偏移，仅在 gpui `InputHandler`（UTF-16）边界转换一次
-- **macOS 按键双路径**（gpui 0.2 平台特性，集成层已处理）：特殊键（Esc/方向键/`C-*`）走 `intercept_keystrokes` 拦截器；可打印字符被系统先路由给 IME（`replace_text_in_range`），需经 `dispatch_text` 汇入同一条引擎流水线
+- **Zero engine dependencies**: `vimcore` does not depend on gpui; `KeyResult::Unknown` means "not handled by the engine, returned to the host", coexisting with host keymaps / system shortcuts
+- **Data-driven command table**: a static command table + one key Trie per mode (the counterpart of IdeaVim's `KeyStrokeTrie`); Trie interior nodes are exactly the operator-pending states
+- **The engine owns the caret**: under the plug-in model the engine manages cursor/mode/selection anchors itself; the host only implements buffer read/write and the viewport/clipboard/undo hooks (much simpler than IdeaVim's host-owned-caret model)
+- **Single boundary coordinate**: the engine uses UTF-8 byte offsets internally throughout, converting once only at the gpui `InputHandler` (UTF-16) boundary
+- **macOS dual key paths** (a gpui 0.2 platform trait, already handled in the integration layer): special keys (Esc/arrows/`C-*`) go through the `intercept_keystrokes` interceptor; printable characters are routed to the IME first by the system (`replace_text_in_range`) and must be funneled into the same engine pipeline via `dispatch_text`
 
-## 目录
+## Layout
 
 ```
 crates/
-(纯引擎已剥离为独立仓库：beyondlex/vimcore，含 TCK 契约)
-├── gpui-vim/       gpui 集成：VimEditor trait、attach 拦截、dispatch_text（IME）、
-│                   render 组件（overlay/行绘制/闪烁）、~/.vimcorerc 加载
-└── gpui-vim-demo/  参考宿主：ropey buffer + 编辑器视图 + IME + 鼠标 + 状态栏
+(The pure engine has been split into its own repo: beyondlex/vimcore, incl. the TCK contract)
+├── gpui-vim/       gpui integration: VimEditor trait, attach interception, dispatch_text (IME),
+│                   render components (overlay/line painting/blink), ~/.vimcorerc loading
+└── gpui-vim-demo/  reference host: ropey buffer + editor view + IME + mouse + status line
 ```
 
-## 把引擎嵌进你的 gpui 应用
+## Embedding the engine in your gpui app
 
 ```rust
 use gpui::prelude::*;
@@ -96,43 +97,44 @@ impl gpui_vim::VimEditor for Editor {
 }
 
 // inside Application::run:
-let subscription = gpui_vim::attach(&editor_entity, cx); // 必须保活（存到 view 上）
+let subscription = gpui_vim::attach(&editor_entity, cx); // must be kept alive (store it on the view)
 ```
 
-渲染用 `gpui_vim::render`：每行 `compute_line_overlays` → `paint_vim_line`
-（含反色块光标、三种可视选区、搜索高亮、caret 闪烁 `CaretBlinker`），返回的
-`ShapedLine` 供鼠标/IME 反查。配置分两层加载（`~/.vimcorerc` 用户层 +
-`~/.config/<app>/vimrc` 宿主层；`set`、`:map` 家族含 `noremap`/`<Leader>`、
-`source`、`"` 注释），映射 RHS 里的 `:action SomeId<CR>`
-会调用宿主 action 系统（`VimHost::dispatch_host_action_hinted`）。
-路线 B 的现成组件 `gpui_vim::edit::VimEdit` 额外带 IME、鼠标拖选、单行
-折叠、事件外发与空缓冲占位提示（`set_placeholder`）。
+Render via `gpui_vim::render`: per line `compute_line_overlays` → `paint_vim_line`
+(including the inverted block cursor, the three visual selection styles, search highlights, and
+caret blink via `CaretBlinker`); the returned `ShapedLine` is used for mouse/IME reverse lookup.
+Configuration loads in two layers (`~/.vimcorerc` user layer +
+`~/.config/<app>/vimrc` host layer; `set`, the `:map` family incl. `noremap`/`<Leader>`,
+`source`, `"` comments). `:action SomeId<CR>`
+in a mapping RHS calls the host action system (`VimHost::dispatch_host_action_hinted`).
+The ready-made route-B component `gpui_vim::edit::VimEdit` additionally ships IME, mouse
+drag selection, single-line collapse, event out-push, and an empty-buffer placeholder hint (`set_placeholder`).
 
-支持的功能：`hjkl w b e f t % gg G 0 ^ $`、算子 `d c y > < gu gU g~`、text
-objects `iw aw i" a( it ...`、`C-v` 块可视（含块 `I/A/c/p`）、`R`、`.`、宏
-`q/@`、jumplist `C-o/C-i`、`/ ? n N * #`（incsearch/hlsearch）。
+Supported features: `hjkl w b e f t % gg G 0 ^ $`, operators `d c y > < gu gU g~`, text
+objects `iw aw i" a( it ...`, `C-v` blockwise Visual (incl. block `I/A/c/p`), `R`, `.`, macros
+`q/@`, jumplist `C-o/C-i`, `/ ? n N * #` (incsearch/hlsearch).
 
-### 配置分层（多应用共享一份 rc）
+### Config layering (one rc shared across apps)
 
-多个 gpui 应用可共享同一份 `~/.vimcorerc`：选项和映射各应用独立生效；唯一
-的跨应用差异是 `:action <id>` 的目标。加载采用两层：
+Multiple gpui apps can share one `~/.vimcorerc`: options and mappings take effect per app independently;
+the only cross-app difference is the target of `:action <id>`. Loading uses two layers:
 
-1. **用户层** `~/.vimcorerc`——跨应用的键位习惯。`action` 未命中**静默忽
-   略**（这里的映射可能写给别的应用）；
-2. **宿主层** `~/.config/<app>/vimrc`——应用专属映射，**后加载、同键覆盖**，
-   `action` 未命中**上报**（真错误要暴露）。
+1. **User layer** `~/.vimcorerc` — cross-app key-binding habits. An unmatched `action` is **silently
+   ignored** (mappings here may be written for another app);
+2. **Host layer** `~/.config/<app>/vimrc` — app-specific mappings, **loaded later, same key overrides**;
+   an unmatched `action` is **reported** (real errors must surface).
 
-宿主用 `gpui_vim::config::{Layers, load_layers}` 定制路径；`:action <id>`
-桥经 `VimHost::dispatch_host_action_hinted(id, strict)` 交给宿主决定报错还
-是忽略。
+The host customizes paths via `gpui_vim::config::{Layers, load_layers}`; the `:action <id>`
+bridge is handed to the host via `VimHost::dispatch_host_action_hinted(id, strict)` to decide whether to
+report an error or ignore.
 
-## 状态
+## Status
 
-ROADMAP（见 `ROADMAP.md`）中 13 项任务全部完成：块可视、`.`、宏、jumplist、
-`R`、宽字符列模型、`:` 命令（`:noh`/`:set`/`:%s`/`:w`/`:q`）、rc 配置与
-`:action` 桥、渲染组件化。未支持（有意）：多光标、折叠、`'timeout'` 等待、
-`init.lua`/完整 vimscript、`:g`/外部命令。
+All 13 ROADMAP tasks (see `ROADMAP.md`) are complete: blockwise Visual, `.`, macros, jumplist,
+`R`, the wide-character column model, `:` commands (`:noh`/`:set`/`:%s`/`:w`/`:q`), rc configuration and
+the `:action` bridge, render componentization. Not supported (deliberately): multi-cursor, folding,
+`'timeout'` waits, `init.lua`/full vimscript, `:g`/external commands.
 
 ## License
 
-MIT OR Apache-2.0。架构思想参考 IdeaVim（GPL-3，仅设计借鉴）与 Zed vim 模式（GPL-3，仅行为对照），全部代码为原创实现。
+MIT OR Apache-2.0. Architectural ideas reference IdeaVim (GPL-3, design inspiration only) and Zed's vim mode (GPL-3, behavior comparison only); all code is an original implementation.

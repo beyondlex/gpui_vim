@@ -1,456 +1,582 @@
 # gpui-vim Roadmap
 
-> **2026-09-28**：纯引擎已剥离为独立仓库 [beyondlex/vimcore](https://github.com/beyondlex/vimcore)（crate 名 `vimcore`）。本文的引擎侧任务（原 `crates/vim-core` 路径、`tests/engine.rs` 等）随代码迁往该仓库；「全局不变量」中属于引擎的部分以 vimcore 为准。本仓库现存任务只覆盖集成层与 demo。
+> **2026-09-28**: the pure engine has been extracted into a standalone repo,
+> [beyondlex/vimcore](https://github.com/beyondlex/vimcore) (crate name
+> `vimcore`). The engine-side tasks in this document (former `crates/vim-core`
+> paths, `tests/engine.rs`, etc.) moved with the code to that repo; for the
+> engine parts of the "global invariants" below, vimcore is authoritative. The
+> tasks remaining in this repo cover only the integration layer and the demo.
 
-给后续贡献者 / AI agent 的执行计划。每个任务给出：现状（含代码位置）、方案、
-验收标准、陷阱。**动手前先读「全局不变量」一节**——这些是本代码库已经踩过坑
-换来的语义约束，违反它们会直接回归已修复的 bug。
+Execution plan for later contributors / AI agents. Each task gives: the current
+state (with code locations), the plan, acceptance criteria, and pitfalls.
+**Read the "global invariants" section before starting work** — these are
+semantic constraints this codebase paid for in already-stepped-on traps;
+violating them regresses already-fixed bugs outright.
 
-工程布局（当前）：
+Project layout (current):
 
-- `crates/gpui-vim` — 集成层：`attach()`（keystroke interceptor）、
-  `to_core_key`（gpui `Keystroke` → 引擎 `Key` 转换）、`dispatch_text`（IME 文本
-  路径）、`VimEditor` trait、`edit::VimEdit` 组件（路线 B 打包形态）、
-  `pager`（只读路线 C）、`render` 行渲染组件、`config` rc 分层加载。
-- `crates/gpui-vim-demo` — 参考宿主（多 buffer tab、渲染、IME、鼠标、剪贴板）。
-  `editor.rs` 是「复制走」的 attach 路线参考实现；`edit.rs`/`pager.rs` 的消费
-  形态见 INTEGRATION.md 三条路线。
+- `crates/gpui-vim` — integration layer: `attach()` (keystroke interceptor),
+  `to_core_key` (gpui `Keystroke` → engine `Key` conversion), `dispatch_text`
+  (IME text path), the `VimEditor` trait, the `edit::VimEdit` component (route
+  B packaged form), `pager` (read-only route C), the `render` line-rendering
+  component, `config` layered rc loading.
+- `crates/gpui-vim-demo` — the reference host (multi-buffer tabs, rendering,
+  IME, mouse, clipboard). `editor.rs` is the copy-out reference implementation
+  of the attach route; for the consumption shapes of `edit.rs`/`pager.rs` see
+  the three routes in INTEGRATION.md.
 
-验证命令：
+Verification commands:
 
 ```sh
-cargo test                # 全部测试（当前 46 个，必须全绿再交付）
-cargo clippy --workspace  # 当前 0 警告，不要引入新警告
+cargo test                # all tests (86 currently, must be fully green before delivering)
+cargo clippy --workspace  # currently 0 warnings, do not introduce new ones
 cargo run -p gpui-vim-demo
 ```
 
 ---
 
-## 全局不变量（违反即回归）
+## Global invariants (a violation is a regression)
 
-1. **Key 规范化发生在两处，缺一不可**
-   - `to_core_key`（gpui-vim/src/lib.rs）：macOS 给 Enter/Tab 的 `key_char` 是
-     `"\n"`/`"\t"`，必须归一化回 `Key::enter()`/`Key::tab()`，否则 cmdline 会把
-     Enter 追加进搜索词。
-   - `VimState::handle_key` 入口（vim-core/src/state.rs）：plain `Char` 键上的
-     `shift` 标志必须剥离。命令表全部用 `Key::parse("I")` 这类 **无修饰符** 的
-     plain char 注册；gpui 送达 shift+I 是 `{shift, Char('I')}`，`Key` 的
-     Hash/Eq 包含 modifiers，不剥离则所有大写字母与 shift 标点（`$ ^ % ~ < > "`）
-     全部 miss。
-   - 新增按键处理时不要在命令表里写 `{shift, ...}` 形式的 Key，用 notation 字符串。
+1. **Key normalization happens in two places; both are required**
+   - `to_core_key` (gpui-vim/src/lib.rs): on macOS the `key_char` for
+     Enter/Tab is `"\n"`/`"\t"`, and must be normalized back to
+     `Key::enter()`/`Key::tab()`, otherwise the cmdline appends Enter into the
+     search term.
+   - The `VimState::handle_key` entry (vim-core/src/state.rs): the `shift`
+     flag on plain `Char` keys must be stripped. The command tables are all
+     registered with **modifier-free** plain chars via `Key::parse("I")`-style
+     notation; gpui delivers shift+I as `{shift, Char('I')}`, and the
+     Hash/Eq of `Key` include modifiers — without stripping, every uppercase
+     letter and shifted punctuation (`$ ^ % ~ < > "`) misses.
+   - When adding key handling, do not write `{shift, ...}`-form Keys into the
+     command table; use notation strings.
 
-2. **undo 组：一个逻辑命令 = 一个组**。宿主（demo host.rs 与测试 HostView）在
-   `begin_undo_group(id, ..)` 调用时**拍快照**。因此引擎必须保证：
-   - `begin_insert` 在 `open_undo` 已有组时**复用**该组（change 家族 c/s/C/S
-     的「删除+输入」是一步撤销，见 `change_C_types_and_undoes_in_one_step`）；
-   - `complete_operator_with_span` / `apply_visual_operator` 在进入了 insert
-     session 时**不得** `end_edit()`；
-   - `o`/`O` 在 mutate buffer **之前** `begin_edit`（否则快照已含新行，undo
-     永远删不掉它）。
-   改动 undo 相关代码后必须跑 `change_*` 与 `open_line_o_*` 测试。
+2. **Undo groups: one logical command = one group.** The host (demo host.rs
+   and the test HostView) **takes a snapshot** on the `begin_undo_group(id, ..)`
+   call. Therefore the engine must guarantee:
+   - `begin_insert` **reuses** the group when `open_undo` already has one (the
+     "delete + type" of the change family c/s/C/S is a one-step undo, see
+     `change_C_types_and_undoes_in_one_step`);
+   - `complete_operator_with_span` / `apply_visual_operator` must **not** call
+     `end_edit()` when an insert session was entered;
+   - `o`/`O` call `begin_edit` **before** mutating the buffer (otherwise the
+     snapshot already contains the new line and undo can never remove it).
+   After changing undo-related code, run the `change_*` and `open_line_o_*`
+   tests.
 
-3. **IME 合成协议**（gpui 0.2.2 macOS，见 platform/mac/window.rs 的
-   `handle_key_event`）：只要 `marked_text_range()` 返回 `Some`，**所有** keyDown
-   先路由给输入法（`is_composing` 分支），引擎的 interceptor 在其间收不到键——
-   这是平台行为，不要试图绕过；集成层要做的是把合成协议的三个回调都实现正确
-   （见任务 1）。
+3. **IME composition protocol** (gpui 0.2.2 macOS, see `handle_key_event` in
+   platform/mac/window.rs): as long as `marked_text_range()` returns `Some`,
+   **all** keyDown events are routed to the input method first (the
+   `is_composing` branch), and the engine's interceptor receives no keys in
+   between — this is platform behavior; do not try to bypass it. What the
+   integration layer must do is implement all three composition-protocol
+   callbacks correctly (see task 1).
 
-4. **打印字符在 insert 模式返回 `Unknown`** 是刻意设计（保 IME/组合输入可用），
-   不要为了「引擎全接管」改成 Consumed。
+4. **Returning `Unknown` for printable characters in insert mode** is deliberate
+   (keeps IME/composed input working). Do not switch it to Consumed in the name
+   of "the engine takes over everything".
 
-5. `intercept_keystrokes` 的 `Subscription` 必须保活（demo 里存在 view 上），
-   drop 即退订。
-
----
-
-## P0 — 正确性
-
-### 任务 1：中文/日文 IME 合成输入完全不可用 ✅ 已完成并通过用户验收
-
-**症状**（已由用户在中文拼音输入法下复现）：insert 模式中切换到拼音输入法后，
-(1) Esc 退不出 insert 模式；(2) 候选词上屏后，已输入的拼音字母残留在 buffer
-里，汉字出现在错误位置（形如 `nihao你好`）。
-
-**根因**（已在源码中确认，非宽字符问题）：
-
-1. 合成期间 `replace_and_mark_text_in_range`（demo editor.rs）把**原始拼音**
-   （如 `nihao`）直接插入 buffer 并记录 `marked_range`。这一步本身可行（作为
-   合成预览），但——
-2. 候选上屏时 macOS 调 `insertText:"你好"` → gpui 转成
-   `replace_text_in_range(None, "你好")`。demo 的实现把 `None` 当作「普通输入」
-   走 `dispatch_text`（追加到光标），**没有替换 marked_range** → 拼音残留。
-   正确契约：`marked_range` 为 `Some` 时，`replace_text_in_range(None, ..)` 必须
-   用新文本**替换 marked_range** 并清除标记。
-3. `unmark_text` 只把 `marked_range` 置 None，不删除 buffer 中的合成文本。若
-   上屏/取消路径只触发 unmark 而未先经过空串 setMarkedText，拼音永久残留。
-4. `marked_text_range` 对 `start..start` **空区间**仍返回 `Some`：合成被取消后
-   （IME 以空串 setMarkedText 结束时，demo 会留下 `start..start`），gpui 的
-   `is_composing` 恒为 true，**所有按键（含 Esc）永久先路由给输入法**——这就是
-   「Esc 退不出 insert」的主因之一。空区间必须返回 `None`。
-5. Esc 在合成期间被输入法消费（取消合成）是 macOS 标准行为，正确的做法是接受
-   「合成中按 Esc = 取消本次合成，再按一次才退出 insert」，与真实 vim GUI 一致；
-   不要尝试拦截。
-
-**方案**：
-
-- demo `editor.rs`：
-  - `marked_text_range`：`if start == end { return None }`。
-  - `replace_text_in_range`：进入时先判 `let composing = self.marked_range.take();`；
-    当 `composing` 为 `Some` 且传入 range 为 None 时，执行
-    `vim.replace_range(ctx, composing, text)`（不经 `dispatch_text`，**合成文本
-    不得跑引擎按键管线**，否则会误触发 insert 模式映射如 `jk`），游标落在
-    `composing.start + text.len()`。
-  - `unmark_text`：若 `marked_range` 非空，先删除该区间的文本再置 None（防御
-    直接 unmark 的取消路径）。
-  - `replace_and_mark_text_in_range`：沿用现有「替换上一段 marked 文本」逻辑，
-    但新 marked 区间为空时直接置 None。
-- 引擎侧无需改动（合成不经过引擎管线）。
-
-**验收**（手动，需切系统输入法为拼音）：
-
-1. insert 模式输入 `nihao` → buffer 显示拼音（可带 marked 高亮），选候选「你好」
-   → buffer 恰为 `…你好…`，无 `nihao` 残留，游标在 `好` 之后。
-2. 输入 `ni` 后按 Esc → 拼音被移除（取消合成），buffer 不残留；再按 Esc 退出
-   insert 模式。
-3. 合成文本落在游标处而非行尾/文件尾；连续两次合成（两句中文）均正确替换。
-4. 英文直接输入（无合成）路径不回归：`cargo test` 与普通打字、`jk` 映射仍工作。
-
-**陷阱**：`marked_range` 是 UTF-8 字节区间，gpui 传入的 range 是 UTF-16；转换
-只用 demo buffer.rs 已有的 `utf16_to_byte`/`byte_to_utf16`，不要自写换算。
-
-### 任务 2：marks 在编辑后不平移 ✅ 已完成
-> 实现超出原设计：所有 buffer 变更收敛到 `VimState::edit_insert/edit_delete/
-> edit_replace` 三个包装器（22 个调用点），顺带修复了 `dw` 在 buffer 最后一行
-> 吃掉换行的既有 bug（`span_from_motion` 的 target 未钳到行尾）。等长替换
-> （`gu`/`gU`/`g~`）保持区域内 mark 的相对位置。
-
-**现状**：`vim-core/src/marks.rs` 存裸字节偏移。任何插入/删除都不会调整
-`a-z`、`'^`、`'.'` 与 `'<`/`'>`；在文件头部插入一行后所有 mark 错位。
-
-**方案**：在 `VimState` 加 `fn adjust_marks(&mut self, at: usize, delta: isize)`：
-对所有存储的偏移量，`>= at` 的加 delta（clamp 到 0..=len）。调用点放在
-`ctx.buf.insert_text` / `delete_range` 的**唯一汇聚处**——目前引擎所有变更都经
-`VimState::insert_text_at_cursor`、`replace_range`、`ops::delete_span`、
-`ops::put`、`start_insert(OpenLine)`；建议直接包一层私有 helper（如
-`edit_buf`），避免散弹式调用。删除区间内部的 mark：vim 语义是落在删除起点。
-
-**验收**：headless 测试——mark 在删除点之后/之前/区间内三种情况；`'<`/`'>`
-随可视区删除平移；`yyp` 后 `'^` 正确。
-
-**陷阱**：寄存器文本不需要平移（存的是文本）；`last_change` 用于 `.` 与
-changelist，平移规则相同。
+5. The `Subscription` from `intercept_keystrokes` must be kept alive (in the
+   demo it lives on the view); dropping it unsubscribes.
 
 ---
 
-## P1 — 日常功能
+## P0 — Correctness
 
-### 任务 3：`:` Ex 命令行（`:noh` `:set` `:s` `:w` `:q`）✅ 已完成
-> 实现：`:noh[lsearch]`、`:set`（`name`/`noname`/`name!`/`name=value`，数值项
-> `ts/sw/so`）、`:[%]s/pat/rep/[g]`（Rust regex 展开，`$1` 代替 vim 的 `\1`，
-> 空 pattern 复用上次搜索）、`:w`/`:q`/`:q!`/`:wq`/`:x`（新 host 契约
-> `save`/`request_close`，demo 里 `:w` 显示状态、`:q` 退出）。历史按 prompt
-> 分开；`:s` 是单步 undo；高亮发布全部尊重 `hlsearch`（修了 jump 路径无视
-> 该选项的不一致）。不支持：范围语法（`1,3s`/`'<,'>`）、`:\d` 行号、确认模式、
-> `:g`（见「非目标」）。
+### Task 1: Chinese/Japanese IME composition input completely unusable ✅ Done, accepted by the user
 
-**现状**：`Mode::CommandLine { prompt }` 只有 `'/'`/`'?'`；normal 模式按 `:`
-返回 `Unknown`。`options.set_boolean`（options.rs）就是为 `:set` 预留的；
-`search::clear_highlights`（现为死代码）就是 `:noh` 的实现；Esc 清高亮的行为
-已上线（`:noh` 语义，`n`/`N` 重新点亮）。
+**Symptom** (reproduced by the user under a Chinese pinyin input method): in
+insert mode, after switching to the pinyin input method, (1) Esc cannot exit
+insert mode; (2) after the candidate word is committed, the typed pinyin
+letters remain in the buffer and the Han characters appear at the wrong
+position (shaped like `nihao你好`).
 
-**方案**：
+**Root cause** (confirmed in the source; not a wide-character issue):
 
-1. `Mode::CommandLine` 的 prompt 增加 `':'`（`Cmdline` 结构加一个
-   `ex_buffer` 或复用 buffer + prompt 区分）。normal_key 的 `':'` 分支从
-   `Unknown` 改为 `begin_cmdline(':')`。
-2. `cmdline.rs` 增加 `execute_ex(ctx, line)`，先支持：
-   `:noh[lsearch]`、`:set <name>`/`:set no<name>`（走 `set_boolean`，数字项
-   `:set ts=8` 后置）、`:s/foo/bar/[g]`（当前行，`:%s` 全文，flags `g` 计数；
-   复用 `search::compile` 的 regex 与 smartcase 规则）、`:w`（新 `VimHost`
-   契约 `save(&mut self)`）、`:q`（新契约 `request_close(&mut self)`；宿主
-   决定是否弹「未保存」——需要 `bell` 之外的消息通道，见任务 13）。
-3. 历史：`Cmdline.history` 已有，`:` 与 `/` 共用或按 prompt 分开（vim 分开，
-   建议分开：`history: HashMap<prompt, Vec<String>>` 需迁移现有字段）。
-4. 状态栏渲染：demo `mode_label` 对 `':'` 显示 `:…` 内容即可。
+1. During composition, `replace_and_mark_text_in_range` (demo editor.rs)
+   inserts the **raw pinyin** (e.g. `nihao`) directly into the buffer and
+   records `marked_range`. This step itself is viable (as the composition
+   preview), but—
+2. When the candidate is committed, macOS calls `insertText:"你好"` → gpui
+   turns it into `replace_text_in_range(None, "你好")`. The demo implementation
+   treats `None` as "ordinary input" and goes through `dispatch_text` (appends
+   at the cursor), **without replacing the marked_range** → pinyin residue.
+   The correct contract: when `marked_range` is `Some`,
+   `replace_text_in_range(None, ..)` must **replace the marked_range** with the
+   new text and clear the mark.
+3. `unmark_text` only sets `marked_range` to None; it does not delete the
+   composed text from the buffer. If the commit/cancel path only fires unmark
+   without first passing through an empty-string setMarkedText, the pinyin
+   stays forever.
+4. `marked_text_range` still returns `Some` for the **empty range**
+   `start..start`: after a cancelled composition (when the IME ends with an
+   empty-string setMarkedText, the demo is left holding `start..start`), gpui's
+   `is_composing` is permanently true and **every key (including Esc) is
+   permanently routed to the input method first** — this is a main cause of
+   "Esc cannot exit insert". An empty range must return `None`.
+5. Esc being consumed by the input method during composition (cancelling the
+   composition) is standard macOS behavior; the correct stance is to accept
+   "Esc during composition = cancel this composition, press again to exit
+   insert", consistent with real vim GUIs; do not try to intercept it.
 
-**验收**：headless 测试覆盖每个命令（含 `:%s/x/y/g` 的计数、未命中、regex
-非法输入只 bell 不 panic）；`:set hls!`/`:set nohls` 后 `/` 搜索不再发布高亮。
+**Plan**:
 
-**陷阱**：`:` 之后按键路径与 `/` 完全一致（含任务 1 的控制字符归一化）；
-不要为新 prompt 单开模式分支。`:s` 的替换里 `\1` 后向引用交给 regex crate
-的 `replace_all`（`$1` 语法），文档中注明与 vim 的 `\1` 差异。
+- demo `editor.rs`:
+  - `marked_text_range`: `if start == end { return None }`.
+  - `replace_text_in_range`: at entry first evaluate `let composing = self.marked_range.take();`;
+    when `composing` is `Some` and the incoming range is None, call
+    `vim.replace_range(ctx, composing, text)` (bypassing `dispatch_text` —
+    **composed text must not run through the engine key pipeline**, otherwise
+    it falsely triggers insert-mode mappings such as `jk`); the cursor lands
+    at `composing.start + text.len()`.
+  - `unmark_text`: if `marked_range` is non-empty, delete the text in that
+    range first, then set it to None (defensive against cancel paths that call
+    unmark directly).
+  - `replace_and_mark_text_in_range`: keep the existing "replace the previously
+    marked text" logic, but set None directly when the new marked range is
+    empty.
+- No engine-side change needed (composition does not go through the engine
+  pipeline).
 
-### 任务 4：`.` 重复上一变更 ✅ 已完成
-> 实现：`VimState` 录制「结构键 + 文本片段」两种步骤（`RecordedStep`）——插入
-> 期间的打字在 macOS 上不走按键管线（IME 路径），所以文本录为 `Text` 步骤，
-> 重放时经合成 marker（`DOT_TEXT_MARKER`，`Key::parse` 不可产生，无碰撞）直落
-> buffer，避免宿主二次插入。提交点：`end_command`/`complete_operator_with_span`
-> /`exit_insert`/`execute_ex`；visual 变更可重复：visual 模式下 commit 保持
-> 累积（`v` + 运动 + 操作符作为一个变更），选区落定时提交，重放按键即重新进入
-> visual 重建选区;blockwise 的 `I`/`A`/`c`/`p` 仍不可重复（逐行复制依赖退出
-> 插入时的行表,`Text` 步骤无法复现,`recording_blocked`）；
-> `Esc` 取消半截命令即丢弃；`N.` = 重放 N 次（与 vim 的乘法语义一致）；IME 合成
-> 预览经 `set_recording_suppressed` 抑制，只有上屏文本可重复。顺带修复：
-> cmdline 模式的按键此前不进录制路径；重放 `:` 时主循环不再提前 break。
+**Acceptance** (manual; requires switching the system input method to pinyin):
 
-**现状**：无实现。`NormalCmd::Redo` 之外没有「上一个变更」的概念。
+1. Type `nihao` in insert mode → the buffer shows the pinyin (possibly with
+   marked highlighting); pick the candidate `你好` → the buffer is exactly
+   `…你好…`, no `nihao` residue, cursor after `好`.
+2. Type `ni` then press Esc → the pinyin is removed (composition cancelled),
+   nothing left in the buffer; press Esc again to exit insert mode.
+3. Composed text lands at the cursor rather than at the line end / file end;
+   two consecutive compositions (two Chinese phrases) are both replaced
+   correctly.
+4. Direct English input (no composition) does not regress: `cargo test` still
+   passes and ordinary typing and the `jk` mapping still work.
 
-**方案**：在 `execute_command` / `execute_normal_cmd` / `complete_operator_with_span`
-的完成点记录一个可重放的 `LastChange` 枚举：
+**Pitfall**: `marked_range` is a UTF-8 byte range while the ranges gpui passes
+in are UTF-16; for conversion use only the existing `utf16_to_byte`/
+`byte_to_utf16` in demo buffer.rs — do not hand-roll conversions.
+
+### Task 2: marks do not shift after edits ✅ Done
+> The implementation went beyond the original design: all buffer changes now
+> converge into the three wrappers `VimState::edit_insert/edit_delete/
+> edit_replace` (22 call sites), which also fixed the pre-existing bug where
+> `dw` on the buffer's last line ate the newline (the target of
+> `span_from_motion` was not clamped to the line end). Equal-length replacements
+> (`gu`/`gU`/`g~`) keep marks inside the region at their relative positions.
+
+**Current state**: `vim-core/src/marks.rs` stores bare byte offsets. No
+insert/delete adjusts `a-z`, `'^`, `'.'` or `'<`/`'>`; after inserting a line at
+the head of the file every mark is misplaced.
+
+**Plan**: add `fn adjust_marks(&mut self, at: usize, delta: isize)` to
+`VimState`: for every stored offset, those `>= at` get delta added (clamped to
+0..=len). Put the call at the **single convergence point** of
+`ctx.buf.insert_text` / `delete_range` — currently every engine change goes
+through `VimState::insert_text_at_cursor`, `replace_range`, `ops::delete_span`,
+`ops::put`, `start_insert(OpenLine)`; recommend wrapping one private helper
+(e.g. `edit_buf`) to avoid shotgun call sites. For a mark inside a deleted
+range: vim semantics put it at the start of the deletion.
+
+**Acceptance**: headless tests — marks after / before / inside the deleted
+range; `'<`/`'>` shift with a visual-range delete; `'^` is correct after `yyp`.
+
+**Pitfall**: register text does not need shifting (it stores text);
+`last_change` is used by `.` and the changelist, with the same shifting rule.
+
+---
+
+## P1 — Everyday features
+
+### Task 3: `:` Ex command line (`:noh` `:set` `:s` `:w` `:q`) ✅ Done
+> Implementation: `:noh[lsearch]`, `:set` (`name`/`noname`/`name!`/
+> `name=value`, numeric items `ts/sw/so`), `:[%]s/pat/rep/[g]` (Rust regex
+> expansion, `$1` instead of vim's `\1`, empty pattern reuses the last search),
+> `:w`/`:q`/`:q!`/`:wq`/`:x` (new host contract `save`/`request_close`; in the
+> demo `:w` shows status and `:q` exits). History is kept per prompt; `:s` is a
+> single-step undo; highlight publication always respects `hlsearch` (fixed the
+> inconsistency where the jump path ignored the option). Not supported: range
+> syntax (`1,3s`/`'<,'>`), `:\d` line numbers, confirm mode, `:g` (see "non-goals").
+
+**Current state**: `Mode::CommandLine { prompt }` only has `'/'`/`'?'`; pressing
+`:` in normal mode returns `Unknown`. `options.set_boolean` (options.rs) exists
+precisely as the reservation for `:set`; `search::clear_highlights` (currently
+dead code) is the `:noh` implementation; clearing highlights on Esc already
+shipped (`:noh` semantics, `n`/`N` re-light them).
+
+**Plan**:
+
+1. Add `':'` to the prompt of `Mode::CommandLine` (either add an `ex_buffer` to
+   the `Cmdline` struct or reuse the buffer + the prompt to distinguish).
+   Change the `':'` branch of normal_key from `Unknown` to `begin_cmdline(':')`.
+2. Add `execute_ex(ctx, line)` to `cmdline.rs`, first supporting:
+   `:noh[lsearch]`, `:set <name>`/`:set no<name>` (via `set_boolean`, numeric
+   items `:set ts=8` later), `:s/foo/bar/[g]` (current line, `:%s` whole file,
+   `g` flag counts; reuse `search::compile`'s regex and smartcase rules), `:w`
+   (new `VimHost` contract `save(&mut self)`), `:q` (new contract
+   `request_close(&mut self)`; the host decides whether to pop "unsaved
+   changes" — needs a message channel beyond `bell`, see task 13).
+3. History: `Cmdline.history` already exists; `:` and `/` either share it or
+   split per prompt (vim splits; recommend splitting:
+   `history: HashMap<prompt, Vec<String>>` requires migrating the current field).
+4. Status bar rendering: demo `mode_label` just needs to show the `:…` content
+   for `':'`.
+
+**Acceptance**: headless tests covering every command (including `:%s/x/y/g`
+counts, no-match, and invalid regex only ringing the bell without panicking);
+after `:set hls!`/`:set nohls`, `/` searches no longer publish highlights.
+
+**Pitfall**: the key path after `:` is identical to `/` (including the
+control-character normalization of task 1); do not open a separate mode branch
+for the new prompt. For the `\1` backreference inside `:s` replacements, defer
+to the regex crate's `replace_all` (`$1` syntax), and note the difference from
+vim's `\1` in the docs.
+
+### Task 4: `.` repeats the last change ✅ Done
+> Implementation: `VimState` records two kinds of steps, "structural keys +
+> text segments" (`RecordedStep`) — typing during insert does not go through
+> the key pipeline on macOS (IME path), so text is recorded as `Text` steps and,
+> on replay, dropped straight into the buffer via a synthetic marker
+> (`DOT_TEXT_MARKER`, not producible by `Key::parse`, no collision) so the host
+> does not insert twice. Commit points: `end_command`/
+> `complete_operator_with_span`/`exit_insert`/`execute_ex`; visual changes are
+> repeatable: in visual mode the commit stays accumulating (`v` + motion +
+> operator as one change), committing when the selection lands; replaying the
+> keys re-enters visual and rebuilds the selection; blockwise `I`/`A`/`c`/`p`
+> are still not repeatable (the per-line copy depends on the line table at
+> insert exit; `Text` steps cannot reproduce it; `recording_blocked`). `Esc`
+> cancelling a half-finished command discards it; `N.` = replay N times
+> (consistent with vim's multiplication semantics); IME composition previews are
+> suppressed via `set_recording_suppressed` — only committed text is repeatable.
+> Also fixed: keys in cmdline mode previously did not enter the recording path;
+> replaying `:` no longer breaks the main loop early.
+
+**Current state**: no implementation. Besides `NormalCmd::Redo` there is no
+concept of a "last change".
+
+**Plan**: at the completion points of `execute_command` /
+`execute_normal_cmd` / `complete_operator_with_span`, record a replayable
+`LastChange` enum:
 
 ```rust
 enum LastChange {
-    // 记录「算子 + 运动描述 + count/register」，回放时用当前游标重新求 motion
+    // record "operator + motion description + count/register"; on replay, re-evaluate the motion against the current cursor
     Operator { op: Operator, target: ReplayableTarget, register: Option<char> },
-    Edit { cmd: NormalCmd },       // x, p, J, ~, >>, …（含 count）
-    Insert { entries: Vec<Key> },  // i/a/c… 进入 + 输入文本 + Esc 的按键序列
+    Edit { cmd: NormalCmd },       // x, p, J, ~, >>, … (with count)
+    Insert { entries: Vec<Key> },  // i/a/c… entry + typed text + the Esc key sequence
 }
 ```
 
-- 回放 = 把记录的 key 序列重新喂 `handle_key`（复用现有管线，天然获得新位置的
-  motion 语义）。**不要**记录字节偏移再平移——运动必须在回放时重新求值。
-- `1.` / `3.`：count 覆盖原命令的 count。
-- 合成期间（任务 1）输入的文本不经管线，天然不进 `LastChange`，符合 vim。
+- Replay = feed the recorded key sequence back into `handle_key` (reuses the
+  existing pipeline, naturally getting motion semantics at the new position).
+  **Do not** record byte offsets and shift them — motions must be re-evaluated
+  at replay time.
+- `1.` / `3.`: the count overrides the original command's count.
+- Text typed during composition (task 1) does not go through the pipeline, so
+  it naturally does not enter `LastChange` — consistent with vim.
 
-**验收**：`dw.`、`dd.`、`3x.`、`ciw foo <Esc> j .`、`A text <Esc> .`（`A` +
-文本 + Esc 的重复是 `. ` 最常见用例）。
+**Acceptance**: `dw.`, `dd.`, `3x.`, `ciw foo <Esc> j .`, `A text <Esc> .`
+(repeating `A` + text + Esc is the most common `.` use case).
 
-**陷阱**：`u`/`C-r`/`:` 本身不更新 LastChange；undo 后 `.` 重放的仍是最后的
-变更。回放期间禁止再触发映射展开（`map_depth` 语义不变即可）。
+**Pitfall**: `u`/`C-r`/`:` themselves do not update LastChange; after undo, `.`
+still replays the last change. During replay, do not trigger further map
+expansion (the `map_depth` semantics stay unchanged).
 
-### 任务 5：Visual Block（`C-v`）✅ 已完成
-> 实现：`BlockSpan`（显示列空间 + 逐行字节区间，`block_row_range` 按「列跨度
-> 相交」选字符，宽字符跨边界整字符入选）。算子：`d`（自底向上删）、`y`
-> （块宽补空格、Blockwise 寄存器、光标到块首）、`c`（删块 + 光标行输入 +
-> 退出时复制到其余行）；`I`/`A` 块缘插入同样复制；短行插入到行尾。多行插入
-> 的偏移做了两层修正：删除按**上方**前缀和调整（初版方向反了），复制时
-> **光标行打出的文本长度**只补偿光标行之下的行。单 undo 组（会话组覆盖复
-> 制）。`p`/`P`：Blockwise 寄存器逐行对齐替换，其他寄存器文本逐行复制。
-> 不支持：`$` 延伸到行尾的块、大写寄存器追加、`C-v` 下的 `o` 换角。
+### Task 5: Visual Block (`C-v`) ✅ Done
+> Implementation: `BlockSpan` (display-column space + per-line byte ranges;
+> `block_row_range` selects characters by "column-span intersection", and wide
+> characters straddling the boundary are included as whole characters).
+> Operators: `d` (delete bottom-up), `y` (pad to block width with spaces,
+> Blockwise register, cursor to block start), `c` (delete block + type on the
+> cursor line + copy to the remaining lines on exit); the block-edge inserts
+> `I`/`A` copy the same way; short lines insert at the line end. Two layers of
+> offset correction for multi-line insertion: deletion adjusts against the
+> prefix of lines **above** (the first version had the direction reversed), and
+> on copy, **the text length typed on the cursor line** compensates only the
+> lines below the cursor line. Single undo group (the session group covers the
+> copy). `p`/`P`: a Blockwise register replaces row-aligned; other register
+> text is copied per line. Not supported: blocks extended to the line end with
+> `$`, uppercase-register append, `o` corner swap under `C-v`.
 
-**现状**：`VisualKind::Block` 与 `RegisterKind::Blockwise` 只是 enum 占位；
-无进入命令、无块级 span、无块级 put。
+**Current state**: `VisualKind::Block` and `RegisterKind::Blockwise` are only
+enum placeholders; no entering command, no block span, no block put.
 
-**前置**：**先做任务 8（宽字符列模型）**。块的行内区间必须是「显示列」区间，
-字节区间在含 CJK/emoji 的行上会错位。trait 变更一次到位。
+**Prerequisite**: **do task 8 (wide-character column model) first.** The
+per-line ranges of a block must be "display column" ranges; byte ranges
+misalign on lines containing CJK/emoji. Change the trait once, completely.
 
-**方案**：
+**Plan**:
 
-- 命令表：`b.normal(&["<C-v>"], CmdKind::EnterVisual(VisualKind::Block))`。
-- `ops::span_from_visual` 对 Block 返回逐行区间列表（新类型
-  `BlockSpan { col_start, col_end, lines: Vec<Range<usize>> }`）；`d`/`y`/`c`
-  按 list 应用；`y` 存 `RegisterKind::Blockwise`；`p` 逐行插入。
-- `I`/`A` in block-visual = 块插入（vim 招牌），实现为对每行 start/end 插入
-  同一文本，最后一次性进 undo 组。
-- 渲染：demo `overlays_for_line` 增加块分支（每行画 `col_start..col_end` 的
-  quad）；`LineOverlays` 结构不必改。
+- Command table: `b.normal(&["<C-v>"], CmdKind::EnterVisual(VisualKind::Block))`.
+- `ops::span_from_visual` returns a list of per-line ranges for Block (new type
+  `BlockSpan { col_start, col_end, lines: Vec<Range<usize>> }`); `d`/`y`/`c`
+  apply over the list; `y` stores `RegisterKind::Blockwise`; `p` inserts per line.
+- `I`/`A` in block-visual = block insert (vim's signature move), implemented as
+  inserting the same text at each line's start/end, entering one undo group at
+  the end.
+- Rendering: demo `overlays_for_line` gains a block branch (draw a quad for
+  each line's `col_start..col_end`); the `LineOverlays` struct need not change.
 
-**验收**：矩形删除/复制/粘贴；跨 CJK 行的块选择列对齐；块插入后一次 `u`
-全部还原（不变量 2）。
+**Acceptance**: rectangular delete/copy/paste; block selection column-aligned
+across CJK lines; after a block insert, one `u` restores everything (invariant 2).
 
-### 任务 6：`R` 替换模式 ✅ 已完成
-> 实现：`InsertKind::Replace` + 命令表行；`begin_insert` 按 kind 进入
-> `Mode::Replace`；退出行为与 insert 一致（vim 实际是在最后一个被覆盖字符上，
-> 最初「R 不回退」的假设有误，已按真实 vim 行为实现）。与 `.` 协同：重放
-> `[R, Text, Esc]` 即重复覆盖。不支持 `{count}R`（重放 N 次），留给后续。
+### Task 6: `R` replace mode ✅ Done
+> Implementation: `InsertKind::Replace` + a command-table row; `begin_insert`
+> enters `Mode::Replace` per kind; the exit behavior matches insert (vim
+> actually lands on the last overwritten character — the original assumption
+> "R does not step back" was wrong, implemented per real vim behavior). Works
+> with `.`: replaying `[R, Text, Esc]` repeats the overtype. `{count}R` (replay
+> N times) not supported, left for later.
 
-**现状**：`Mode::Replace` 存在；`insert_text_at_cursor` 已有 overwrite 分支。
-缺进入命令与退出细节。方案：命令表加 `R → EnterInsert(Replace)`（新
-`InsertKind::Replace`），`begin_insert` 不再移动游标；`exit_insert` 对 Replace
-不回退一格（现逻辑回退一字符是 insert 的语义）。注意 demo `cursor_is_block`
-对 Replace 显示下划线光标（cosmetic，可选）。
+**Current state**: `Mode::Replace` exists; `insert_text_at_cursor` already has
+the overwrite branch. Missing the entering command and exit details. Plan: add
+`R → EnterInsert(Replace)` (new `InsertKind::Replace`) to the command table,
+`begin_insert` no longer moves the cursor; `exit_insert` does not step back one
+column for Replace (the current one-character step-back is insert semantics).
+Note demo `cursor_is_block` should show an underline cursor for Replace
+(cosmetic, optional).
 
-### 任务 7：宏 `q` / `@` ✅ 已完成
-> 实现：宏存为 `HashMap<char, Vec<RecordedStep>>`（与 `.` 共用步骤模型：键 +
-> 文本片段——打字在 macOS 走 IME 不经管线，所以 Text 步骤必须一并录制）。
-> `q{reg}` 开录、录制中按 `q` **立即**停止（不走 char-arg pending，否则下一个
-> 键会被当成"停止键"吃掉、真正的 `q` 留在宏里）；`@{reg}`/`@@` 重放（录制
-> 寄存器即"最后使用"，录完 `@@` 可直接用）；重放复用 `replaying` 抑制（`.`
-> 不变、cmdline 模式不提前 break），500 键护栏防递归宏（护栏路径现在会复位
-> replaying）。demo 状态栏显示红色 `recording @x`。不支持：大写寄存器追加、
-> `:registers` 查看（等任务 13 的消息通道）。
+### Task 7: macros `q` / `@` ✅ Done
+> Implementation: macros are stored as `HashMap<char, Vec<RecordedStep>>`
+> (sharing the step model with `.`: keys + text segments — typing goes through
+> the IME on macOS and not the pipeline, so Text steps must be recorded too).
+> `q{reg}` starts recording; pressing `q` while recording stops **immediately**
+> (not through char-arg pending, otherwise the next key is eaten as the "stop
+> key" and the real `q` is left inside the macro); `@{reg}`/`@@` replay
+> (recording into a register makes it the "last used", so `@@` works right
+> after recording); replay reuses the `replaying` suppression (`.` unchanged,
+> the queue is not broken early in cmdline mode), with a 500-key guard against
+> recursive macros (the guard path now resets replaying). The demo status bar
+> shows a red `recording @x`. Not supported: uppercase-register append,
+> `:registers` display (waits for task 13's message channel).
 
-**方案**：`VimState` 加 `macro_recording: Option<(char, Vec<Key>)>`；`q{reg}`
-开始、`q` 结束、`@{reg}` 回放 = `parse_key_sequence` 反向——直接把录得的
-`Vec<Key>` 逐个喂 `handle_key`（`feed_raw` 循环），`@@` 引用上一个。寄存器
-复用 `Registers.named`（宏与文本寄存器同名空间，回放文本寄存器时按字符逐个
-喂，与 vim 一致）。回放走 `count` 次循环；防死循环：回放期间禁用录制。
+**Plan**: add `macro_recording: Option<(char, Vec<Key>)>` to `VimState`;
+`q{reg}` starts, `q` stops, `@{reg}` replay = the inverse of
+`parse_key_sequence` — feed the recorded `Vec<Key>` one by one into
+`handle_key` (a `feed_raw` loop), `@@` refers to the previous one. Registers
+reuse `Registers.named` (macros and text registers share one namespace;
+replaying a text register feeds it character by character, consistent with
+vim). Replay loops `count` times; infinite-loop protection: recording is
+disabled while replaying.
 
 ---
 
-## P2 — 引擎核心演进（先定 trait 再加功能）
+## P2 — Engine core evolution (define the trait first, then add features)
 
-### 任务 8：宽字符 / grapheme 列模型 ✅ 已完成
-> 实现比原设计更好：**没有动 `VimBuffer` trait**。宽度与 grapheme 都由引擎从
-> `char_at` 推导（新依赖 `unicode-width`，纯表零传递依赖），宿主零迁移即可
-> 获得正确行为。要点：
-> - `desired_col` 从字节列改为**显示列**；关键修复是 `apply_motion_result`
->   必须在光标落地**前**读取目标列（宽字符钳位后从落点推导会丢失原列，
->   即 vim 的 `wv_col` 语义）
-> - `j`/`k` 跨宽字符行保列；`|` 按显示列（1-based，同 vim）；越界落在最后
->   一个字符上
-> - grapheme 边界规则：宽度 0 的字符（组合符/变体选择符）附属于前字符，
->   ZWJ 串联整个簇（覆盖重音、emoji 家庭）；`h`/`l`/`x`/`X`/`r`/`~`/`a`
->   均按簇步进
-> - demo：鼠标点击与 IME 光标矩形改用 paint 时缓存的 shaped 几何
->   （`closest_index_for_x`/`x_for_index`）精确反查，CJK/emoji 命中不再偏移
-> - 已知限制（文档化）：`w`/`b`/`e` 词运动仍按 char（对 emoji 串基本无感）；
->   tab 宽度按 1 记（未按 tabstop 展开）
+### Task 8: wide-character / grapheme column model ✅ Done
+> The implementation is better than the original design: **the `VimBuffer`
+> trait was not touched**. Both width and graphemes are derived by the engine
+> from `char_at` (new dependency `unicode-width`, pure tables, zero transitive
+> dependencies), so hosts get correct behavior with zero migration. Key points:
+> - `desired_col` changed from a byte column to a **display column**; the key
+>   fix is that `apply_motion_result` must read the target column **before**
+>   the cursor lands (deriving it from the landing point after wide-char
+>   clamping loses the original column — vim's `wv_col` semantics)
+> - `j`/`k` keep the column across wide-character lines; `|` by display column
+>   (1-based, same as vim); out-of-range lands on the last character
+> - grapheme boundary rules: zero-width characters (combining marks / variation
+>   selectors) attach to the preceding character, ZWJ chains the whole cluster
+>   (covering accents and emoji families); `h`/`l`/`x`/`X`/`r`/`~`/`a` all step
+>   by cluster
+> - demo: mouse clicks and the IME caret rect use the shaped geometry cached at
+>   paint time (`closest_index_for_x`/`x_for_index`) for exact back-lookup;
+>   CJK/emoji hits no longer misalign
+> - known limitations (documented): `w`/`b`/`e` word motions still step by char
+>   (mostly no-op on emoji strings); tab width counted as 1 (not expanded per
+>   tabstop)
 
-> **状态：字节算术类光标 bug 已清零**（`p`/`~`/visual `p` 的 `len - 1` 光标、
-> demo 非边界插入静默追加、光标宽度 `byte+1`——见 `cjk_*` 回归测试）。本任务
-> 剩余部分是**列语义**（desired_col 的字节列 → 显示列、grapheme 步进、鼠标
-> 命中）。
+> **Status: byte-arithmetic cursor bugs are at zero** (the `len - 1` cursor of
+> `p`/`~`/visual `p`, the demo's silent append when inserting at a non-boundary,
+> caret width `byte+1` — see the `cjk_*` regression tests). What remains of this
+> task is **column semantics** (desired_col's byte column → display column,
+> grapheme stepping, mouse hit-testing).
 
-**现状**：`Cursor.desired_col`、`desired_column`、所有上下移动、`|`、`H/M/L`
-都用 **字节列**。CJK 双宽字符、emoji（多 char grapheme、ZWJ 序列）导致 j/k
-列漂移；鼠标点击（demo `byte_at_point` 用统一 `char_width`）在中文文本上
-错位。**这不是任务 1 的 IME 问题的原因**（IME 是协议 bug，见任务 1），但它
-决定了合成文字上屏后的游标/点击体验，以及任务 5 的块列对齐。
+**Current state**: `Cursor.desired_col`, `desired_column`, all vertical motions,
+`|`, `H/M/L` all use **byte columns**. CJK double-width characters and emoji
+(multi-char graphemes, ZWJ sequences) cause j/k column drift; mouse clicks
+(demo `byte_at_point` uses a uniform `char_width`) misalign on Chinese text.
+**This is not the cause of task 1's IME problem** (IME is a protocol bug, see
+task 1), but it determines the cursor/click experience after composed text is
+committed, and task 5's block column alignment.
 
-**方案**（trait 变更，一次到位）：
+**Plan** (trait change, once and for all):
 
-1. `VimBuffer` 增加两个方法（有默认实现则旧宿主零成本迁移）：
+1. Add two methods to `VimBuffer` (with default implementations, old hosts
+   migrate at zero cost):
 
 ```rust
-/// 该 char 的显示宽度（0=组合符, 1=窄, 2=宽/East Asian Wide/Fullwidth）
-fn char_width(&self, offset: usize) -> usize { /* 默认: unicode-width, 需新依赖或内置表 */ }
-/// offset 所在 grapheme cluster 的边界（向后取完整 cluster）
+/// Display width of the char at this offset (0=combining mark, 1=narrow, 2=wide/East Asian Wide/Fullwidth)
+fn char_width(&self, offset: usize) -> usize { /* default: unicode-width, needs a new dependency or a built-in table */ }
+/// Boundary of the grapheme cluster containing offset (back up to the complete cluster)
 fn next_grapheme_offset(&self, offset: usize) -> Option<usize>;
 ```
 
-2. 引擎内部把「列」语义从字节改为 `usize` 显示列：`desired_column`、
-   `Motion::Up/Down/Column` 的换算经 `line_start + 累加 char_width`。f/t/w/
-   e 的词法边界改用 grapheme（`word.rs` 的 `is_word_char` 保持按 char，但
-   前进/后退一步 = 一个 grapheme 而非一个 char）。
-3. demo：`byte_at_point` 用 shaped line 的 `x_for_index` 反查（shaped 已有
-   精确几何），删掉 `char_width` 均摊近似。
+2. Inside the engine, change "column" semantics from bytes to `usize` display
+   columns: the conversions for `desired_column`, `Motion::Up/Down/Column` go
+   through `line_start + accumulated char_width`. The lexical boundaries of
+   f/t/w/e switch to graphemes (`is_word_char` in `word.rs` stays char-based,
+   but one step forward/back = one grapheme rather than one char).
+3. demo: `byte_at_point` uses the shaped line's `x_for_index` for back-lookup
+   (shaped already has exact geometry); delete the uniform-`char_width`
+   approximation.
 
-**验收**：含 `中文 mix English` 与 emoji（`👨‍👩‍👧`、带变体选择符）的行上：
-`j`/`k` 列保持、`0`/`$`/`|`、点击定位、`x` 一次删一个完整 grapheme。
+**Acceptance**: on lines containing `中文 mix English` and emoji (`👨‍👩‍👧`, with
+variation selectors): `j`/`k` keep the column, `0`/`$`/`|`, click positioning,
+`x` deletes one whole grapheme at a time.
 
-**陷阱**：不要在引擎里引入对 gpui 的依赖；宽度表用 `unicode-width` crate
-（纯表，无传递依赖问题）或内置精简表并文档化差异。**所有**受影响测试要先
-写「宽字符回归」用例再改实现。
+**Pitfall**: do not introduce a gpui dependency into the engine; for the width
+table use the `unicode-width` crate (pure tables, no transitive-dependency
+issues) or a built-in reduced table with the differences documented. **All**
+affected tests must first get "wide-character regression" cases written before
+changing the implementation.
 
-### 任务 9：soft wrap 与真实 `gj`/`gk` ✅ 已降级关闭（v1 明确不支持）
-> 按本任务预留的降级选项处理：引擎与 demo 均按「无 soft wrap」实现，
-> `gj`/`gk` 保持为 `j`/`k` 别名。若未来引入 wrap，需要 host 提供行→显示行
-> 映射契约并依赖任务 8 的显示列，届时再开。
+### Task 9: soft wrap and real `gj`/`gk` ✅ Downgraded and closed (explicitly unsupported in v1)
+> Handled via the downgrade option this task reserved: engine and demo are both
+> implemented as "no soft wrap", and `gj`/`gk` stay aliases of `j`/`k`. If wrap
+> is introduced later, the host must provide a line→display-row mapping
+> contract and it will depend on task 8's display columns; open it then.
 
-**现状**：`gj`/`gk` 注册为 `Motion::Down/Up` 的别名（tables.rs 注明 "no soft
-wrap in v1"）。需要 host 报告「显示行 ↔ 逻辑行/列」映射：`VimHost` 增加
-`wrapped_line_bounds(&self, line) -> Vec<显示行首列>` 之类的最小契约，或退一步：
-v1 只保证 `j`/`k` 在 wrap 行间按显示行移动（读 viewport 的 host 已有行概念，
-需要升级为 (line, display_row)）。**依赖任务 8 的显示列**。此任务动契约较大，
-允许降级为「文档明确声明不支持 wrap」并移除误导性的 `gj`/`gk` 行。
+**Current state**: `gj`/`gk` are registered as aliases of `Motion::Down/Up`
+(tables.rs notes "no soft wrap in v1"). This needs the host to report a
+"display row ↔ logical line/column" mapping: add a minimal contract like
+`wrapped_line_bounds(&self, line) -> Vec<display-row start columns>` to
+`VimHost`, or step back: in v1 only guarantee that `j`/`k` move per display row
+across wrapped rows (hosts reading the viewport already have a line concept,
+which must be upgraded to (line, display_row)). **Depends on task 8's display
+columns**. This task changes the contract substantially, so downgrading to
+"explicitly document that wrap is unsupported" and removing the misleading
+`gj`/`gk` rows is allowed.
 
-### 任务 10：jumplist（`C-o`/`C-i`）✅ 已完成
-> 实现：`jumps: Vec<usize>` + `jump_pos`（当前项下标）。`goto_motion` 对
-> `is_jump()` 运动（G/gg/n/N/*/`%`/`(`)`/`{`/`}`/H/M/L/C-d/u/f/b/'`` ` ``）在
-> 成功后记录 origin→dest；`` '{char}`` 与 `/pattern<CR>` 执行路径同样记录。
-> 新跳转截断前方分支；上限 100 条。`C-o`/`C-i` 按下标前后走，越界响铃。v1 不
-> 跨 buffer、不经 `:jumps` 展示（等任务 13）。
+### Task 10: jumplist (`C-o`/`C-i`) ✅ Done
+> Implementation: `jumps: Vec<usize>` + `jump_pos` (index of the current
+> entry). `goto_motion` records origin→dest after success for `is_jump()`
+> motions (G/gg/n/N/*/`%`/`(`)`/`{`/`}`/H/M/L/C-d/u/f/b/'`` ` ``); the
+> `` '{char}`` and `/pattern<CR>` execution paths record too. A new jump
+> truncates the forward branch; cap of 100 entries. `C-o`/`C-i` step
+> backward/forward by index; out of range rings the bell. v1 does not cross
+> buffers and has no `:jumps` display (waits for task 13).
 
-**方案**：`VimState` 加 `jumps: Vec<(usize, u64)>`（offset + buffer 内容纪元，
-纪元用 `undo_seq` 或 host `changed()` 计数，防陈旧跳转）；`gg/G/n/N/'{char}/
-{`/`}`/`%`/`*` 等大跳转在 `goto_motion` 成功且位移 > 阈值时入栈（当前位先入栈）。
-`C-o`/`C-i` 注册进命令表（`Key::ctrl_char('o'/'i')`）。无需 host 契约（v1 不跨
-buffer）。
+**Plan**: add `jumps: Vec<(usize, u64)>` to `VimState` (offset + buffer content
+epoch; for the epoch use `undo_seq` or the host `changed()` counter, to guard
+against stale jumps); the big jumps (`gg/G/n/N/'{char}/{`/`}`/`%`/`*` etc.) are
+pushed in `goto_motion` on success when the displacement exceeds a threshold
+(the current position is pushed first). `C-o`/`C-i` are registered in the
+command table (`Key::ctrl_char('o'/'i')`). No host contract needed (v1 does not
+cross buffers).
 
 ---
 
-## P4 — 配置文件与宿主桥（用户追加）
+## P4 — Configuration files and host bridge (added by the user)
 
-### 任务 14：`~/.gpui-vimrc` 配置 + `:action` 宿主桥 ✅ 已完成
-> 动机：IdeaVim 兼容（`~/.ideavimrc` 同款子集；不读 `init.lua`——嵌入式引擎
-> 无法执行 Lua，用户可 `source ~/.vimrc` 迁移选项与映射）。
-> - `vim-core::config`：解析 `set`（`on/no/!`/`=`）、`:map` 家族
->   （`[nv]noremap`/`[nvi]map`）、`let mapleader = "x"`、`source`、`"` 注释；
->   未识别行进 `ignored` 静默跳过（IdeaVim 同策略）；`<Leader>` 在 LHS/RHS
->   都按 mapleader 展开（默认 `\`）
-> - `Keymaps` 升级为 `Trie<Mapping>`（rhs + noremap）；引擎主循环在消费
->   noremap 展开期间不再查映射表（真 noremap 语义，非递归）；映射 RHS 进入
->   cmdline 时不提前 break 队列（`:action Foo<CR>` 一口气跑完）
-> - `VimHost::dispatch_host_action(id)` 桥接 `:action <id>`；gpui-vim 的
->   `load_config_file`（`~` 展开、source 递归一层上限 4）；demo 启动时加载
->   `~/.gpui-vimrc` 并把 action 派发经 FocusHandle 路由到应用自身的
->   `on_action` 处理器
-> - 多应用共享一份 rc：`load_layers` 分两层（用户层 action 未命中静默、宿
->   主层上报且同键覆盖用户层）；`dispatch_host_action_hinted(id, strict)`
->   把策略交给宿主
-> - 已知限制：`:map` 无 buffer 参数（全部全局）、无 `:unmap`、`<expr>`、
->   `silent`；带 JSON 参数的 gpui action 不支持（只桥无参 action）
+### Task 14: `~/.gpui-vimrc` config + `:action` host bridge ✅ Done
+> Motivation: IdeaVim compatibility (the same subset as `~/.ideavimrc`; does not
+> read `init.lua` — an embedded engine cannot execute Lua; users can
+> `source ~/.vimrc` to migrate options and mappings).
+> - `vim-core::config`: parses `set` (`on/no/!`/`=`), the `:map` family
+>   (`[nv]noremap`/`[nvi]map`), `let mapleader = "x"`, `source`, `"` comments;
+>   unrecognized lines go into `ignored` and are silently skipped (IdeaVim's
+>   same policy); `<Leader>` is expanded per mapleader in both LHS and RHS
+>   (default `\`)
+> - `Keymaps` upgraded to `Trie<Mapping>` (rhs + noremap); while consuming a
+>   noremap expansion the engine main loop no longer consults the mapping table
+>   (true noremap semantics, not recursive); when a mapping RHS enters the
+>   cmdline it does not break the queue early (`:action Foo<CR>` runs through
+>   in one go)
+> - `VimHost::dispatch_host_action(id)` bridges `:action <id>`; gpui-vim's
+>   `load_config_file` (`~` expansion, source recursion capped at one level,
+>   limit 4); the demo loads `~/.gpui-vimrc` at startup and routes action
+>   dispatch through the FocusHandle to the application's own `on_action`
+>   handlers
+> - Multiple apps sharing one rc: `load_layers` splits into two layers
+>   (user-layer action misses are silent, host-layer misses are reported and
+>   the same key overrides the user layer); `dispatch_host_action_hinted(id, strict)`
+>   hands the policy to the host
+> - known limitations: `:map` has no buffer argument (everything is global), no
+>   `:unmap`, `<expr>`, `silent`; gpui actions with JSON arguments are not
+>   supported (only no-arg actions are bridged)
 
 
-### 任务 11：渲染组件化 ✅ 已完成
-> 实现：新模块 `gpui_vim::render`——`compute_line_overlays`（纯计算：搜索高
-> 亮/IME 标记/三种可视选区/光标，headless 可测）、`paint_vim_line`（反色光
-> 标 run 拆分 + 形状化 + quad 绘制，返回 shaped line 供宿主做鼠标/IME 反
-> 查）、`CaretBlinker`（500ms 闪烁，输入复位相位，`Rc` + 泛型 spawn）。demo
-> 全部改调库 API，本地 overlay 结构与绘制 guts 已删除。overlay 计算有
-> headless 测试。
+### Task 11: rendering as components ✅ Done
+> Implementation: new module `gpui_vim::render` — `compute_line_overlays`
+> (pure computation: search highlights / IME marks / the three visual selection
+> kinds / cursor, headless-testable), `paint_vim_line` (inverted-caret run
+> splitting + shaping + quad painting; returns the shaped line for the host's
+> mouse/IME back-lookup), `CaretBlinker` (500ms blink, input resets the phase,
+> `Rc` + generic spawn). The demo now calls the library APIs throughout; the
+> local overlay structs and painting guts are deleted. Overlay computation has
+> headless tests.
 
-**现状**：光标/选区/搜索高亮/行号/闪烁全在 demo `editor.rs`（约 800 行），
-注释自称 "the file to copy"。本计划修过的渲染 bug（V-line 0 宽 canvas、块光标
-反色、闪烁）每个宿主都会再踩一遍。
+**Current state**: cursor/selection/search highlights/line numbers/blink all
+live in demo `editor.rs` (~800 lines), whose comment self-describes as "the
+file to copy". Every rendering bug this plan fixed (V-line 0-width canvas,
+block-caret inversion, blink) will be stepped on again by each host.
 
-**方案**：`gpui-vim` 增加公开模块 `overlay`：
+**Plan**: add a public module `overlay` to `gpui-vim`:
 
 - `struct VimOverlays { quads: Vec<Quad>, cursor: Option<CursorGeom> }` +
   `fn compute(state: &VimState, buf: &dyn VimBuffer, line, line_start, line_end) -> Self`
-  （把 demo `overlays_for_line` 的逻辑搬过来，含任务 5 的 block 分支）；
-- `fn paint(window, bounds, shaped, overlays, style) `（把 paint 闭包搬过来，
-  cursor 颜色/宽度可配）；
-- blink 提供为独立 helper（`CaretBlinker::new(cx)`，任务中保留输入重置语义）。
-- demo 改为调用方；`editor.rs` 缩到只做 buffer/IME/鼠标粘合。
+  (move the demo `overlays_for_line` logic over, including task 5's block branch);
+- `fn paint(window, bounds, shaped, overlays, style) ` (move the paint closure
+  over, cursor color/width configurable);
+- blink provided as a standalone helper (`CaretBlinker::new(cx)`, keeping the
+  input-reset semantics through the task).
+- The demo becomes a caller; `editor.rs` shrinks to buffer/IME/mouse glue only.
 
-**验收**：demo 行为不变（截图对比）；`cargo test` 全绿；README 增加最小集成
-示例 <100 行。
+**Acceptance**: demo behavior unchanged (screenshot comparison); `cargo test`
+fully green; README gains a minimal integration example under 100 lines.
 
-### 任务 12：跨平台按键路径验证 ✅ 已文档化（本仓库只在 macOS 验证）
-> macOS 已逐事件验证（gpui 0.2.2 源码级 + 实测探针）。Linux(X11/Wayland)/
-> Windows 未经真机验证——**集成方在其它平台接入时必须先跑
-> `GPUI_VIM_DEBUG_KEYS=1` 冒烟**，差异收敛进 `to_core_key`/`dispatch_text`。
+### Task 12: cross-platform key-path validation ✅ Documented (this repo is validated on macOS only)
+> macOS has been verified event by event (source level for gpui 0.2.2 + live
+> probes). Linux (X11/Wayland)/Windows are unverified on real hardware —
+> **integrators on other platforms must first run the `GPUI_VIM_DEBUG_KEYS=1`
+> smoke test**; converge the differences into `to_core_key`/`dispatch_text`.
 
-**现状**：`attach()` 的 interceptor → keymap → IME 顺序分析全部基于 gpui
-0.2.2 macOS 源码；`pending_unknown_char` 机制（insert 模式 interceptor 退回
-的字符由平台再投递一次）是 mac 特化。Linux(X11/Wayland)/Windows 上：打印字符
-大概率**直接进 interceptor**（没有 IME 截流），`dispatch_text` 的
-`already_dispatched` 分支就是为此写的，但从未验证。
+**Current state**: the interceptor → keymap → IME ordering analysis of
+`attach()` is entirely based on gpui 0.2.2 macOS sources; the
+`pending_unknown_char` mechanism (characters the interceptor returns in insert
+mode are re-delivered by the platform) is mac-specific. On
+Linux (X11/Wayland)/Windows: printable characters most likely **go straight
+into the interceptor** (no IME interception); the `already_dispatched` branch of
+`dispatch_text` was written for exactly this, but has never been verified.
 
-**方案**：三平台各跑一遍 demo 冒烟（现有 `GPUI_VIM_SMOKE` 覆盖引擎管线，需补
-真键盘路径）；问题集中处把差异收敛进 `to_core_key`/`dispatch_text`，不要让
-demo 感知平台。
+**Plan**: run the demo smoke test once on each of the three platforms (the
+existing `GPUI_VIM_SMOKE` covers the engine pipeline; the real keyboard path
+needs adding); where problems concentrate, converge the differences into
+`to_core_key`/`dispatch_text` — do not make the demo platform-aware.
 
-### 任务 13：`VimHost` 契约扩展 ✅ 已完成（随任务 3/11 交付）
-> 已交付：`status_message`（E486/E492/替换计数走状态 UI，demo 状态栏显示）、
-> `buffer_name`（demo 为 "untitled"，`:w` 消息引用）、`save`/`request_close`
-> （随 `:w`/`:q` 交付）。**未交付**：viewport 升级为含列信息（任务 5 用
-> 显示列绕过）、多 buffer 模型——留待有真实多 buffer 宿主时再设计。
+### Task 13: `VimHost` contract extensions ✅ Done (delivered with tasks 3/11)
+> Delivered: `status_message` (E486/E492/replacement counts go through the
+> status UI; the demo status bar shows them), `buffer_name` (the demo uses
+> "untitled", referenced by `:w` messages), `save`/`request_close` (delivered
+> with `:w`/`:q`). **Not delivered**: upgrading the viewport to carry column
+> info (task 5 worked around it with display columns), multi-buffer model — to
+> be designed when a real multi-buffer host shows up.
 
-- `fn status_message(&mut self, msg: &str) {}`（E 级错误提示通道：`E37`、
-  `:q` 未保存、搜索无匹配替代裸 bell）；
-- `fn buffer_name(&self) -> &str`（`%` 寄存器、状态栏、`dw` 报错文案）；
-- `fn save(&mut self) -> bool` / `fn request_close(&mut self)`（任务 3）；
-- viewport 升级为含列信息（任务 5/9 的前置，可与之一并做）。
+- `fn status_message(&mut self, msg: &str) {}` (E-level error channel: `E37`,
+  `:q` with unsaved changes, no search match — replacements for a bare bell);
+- `fn buffer_name(&self) -> &str` (the `%` register, status bar, `dw` error wording);
+- `fn save(&mut self) -> bool` / `fn request_close(&mut self)` (task 3);
+- upgrade the viewport to carry column info (prerequisite of tasks 5/9, can be
+  done together with them).
 
 ---
 
-## 小件清单（每个 ≤ 半天，可与相邻任务捎带）
+## Small items (each ≤ half a day, can ride along with adjacent tasks)
 
-- `gi`：数据已就绪（`marks.last_insert_exit` = `'^`），加命令表行即可。
-- insert 模式 `C-o`：临时切 normal 执行一条命令后回 insert（复用
-  `InsertSession`，不关组）。
-- `C-a`/`C-x`：游标处/下一个数字 ± count，进位处理。
-- `g;`/`g,`：changelist（需记录每次 `bump()` 的位置栈，注意与任务 2 平移联动）。
-- `:jumps`/`:registers`/`:marks`（依赖任务 3，纯信息展示，走 status_message）。
-- `ga`/`g8`：字符信息展示。
-- demo：`relativenumber` 已支持但无开关入口；`:set rnu!`（任务 3）后即用。
+- `gi`: the data is ready (`marks.last_insert_exit` = `'^`); just add a
+  command-table row.
+- Insert-mode `C-o`: temporarily switch to normal for one command, then return
+  to insert (reuse `InsertSession`, do not close the group).
+- `C-a`/`C-x`: at/next number relative to the cursor ± count, with carry handling.
+- `g;`/`g,`: changelist (needs a position stack recorded on every `bump()`;
+  mind the interplay with task 2's shifting).
+- `:jumps`/`:registers`/`:marks` (depends on task 3; pure informational
+  display, via status_message).
+- `ga`/`g8`: character info display.
+- demo: `relativenumber` is supported but has no toggle entry; usable once
+  `:set rnu!` (task 3) lands.
 
-## 已知非目标（v1 明确不做，勿误加）
+## Known non-goals (explicitly not in v1, do not add by mistake)
 
-- 多光标（Zed 特性，非 vim 语义）；
-- `:g`/`:v` 全局命令、`:norm`、外部命令 `:!`；
-- fold（zf/zo）、diff 模式、terminal 集成；
-- 跨 buffer 的 `A-Z` marks 与 `:bnext`（等任务 13 的多 buffer 模型）。
+- multiple cursors (a Zed feature, not vim semantics);
+- `:g`/`:v` global commands, `:norm`, external commands `:!`;
+- folding (zf/zo), diff mode, terminal integration;
+- cross-buffer `A-Z` marks and `:bnext` (waits for task 13's multi-buffer model).
