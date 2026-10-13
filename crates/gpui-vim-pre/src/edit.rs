@@ -1,17 +1,22 @@
-//! 可复用的 vim 文本编辑实体（嵌入路线 B「宿主路由」的官方打包形态）。
+//! Reusable vim text-editing entity (the officially packaged form of
+//! embedding route B, "host-routed keys").
 //!
-//! - 按键由宿主路由：宿主把 gpui [`gpui::Keystroke`] 经 [`crate::to_core_key`]
-//!   转成引擎按键后喂 [`VimEdit::process_key`]，不走 [`crate::attach`]（避免
-//!   双路处理）；IME 提交文本经 `EntityInputHandler::replace_text_in_range`
-//!   进引擎。宿主只管路由与事件（drain [`VimEditEvent`]）。
-//! - 单行模式：表单字段、路径输入；多行：正文编辑器。
-//! - 引擎副作用统一暂存 [`EditHost`]，flush 落位并产生 [`VimEditEvent`]。
-//! - 视觉参数集中在 [`VimEditStyle`]：宿主从各自主题构造（见宿主侧
-//!   `theme_style()` 一类 helper），[`VimEditStyle::default`] 给一套中性深色
-//!   默认值。
-//! - vimrc 分层：[`VimEdit::new`] 只加载跨应用的用户层 `~/.vimcorerc`
-//!   （action 宽松）；宿主专属层由宿主构造后用 [`crate::config::load_layers`]
-//!   追加（后加载、同键覆盖、action 严格）。
+//! - Keys are routed by the host: the host converts gpui [`gpui::Keystroke`]
+//!   into engine keys via [`crate::to_core_key`] and feeds
+//!   [`VimEdit::process_key`] directly, bypassing [`crate::attach`] (to avoid
+//!   double processing); IME-committed text enters the engine through
+//!   `EntityInputHandler::replace_text_in_range`. The host only handles
+//!   routing and events (drain [`VimEditEvent`]).
+//! - Single-line mode: form fields, path input; multi-line: body editors.
+//! - Engine side effects are staged in [`EditHost`], landed on flush and
+//!   surfaced as [`VimEditEvent`]s.
+//! - Visual parameters live in [`VimEditStyle`]: hosts build them from their
+//!   own theme (see host-side `theme_style()`-style helpers), and
+//!   [`VimEditStyle::default`] provides a neutral dark palette.
+//! - vimrc layering: [`VimEdit::new`] loads only the cross-app user layer
+//!   `~/.vimcorerc` (lenient actions); the host-specific layer is appended by
+//!   the host after construction via [`crate::config::load_layers`]
+//!   (loaded later, same-key overrides, strict actions).
 
 use std::cell::Cell;
 use std::ops::Range;
@@ -30,33 +35,34 @@ use vimcore::key::KeyKind;
 use vimcore::mode::{Mode, VisualKind};
 use vimcore::state::{Ctx, KeyResult, VimState};
 
-// ---------- 视觉样式 ----------
+// ---------- visual style ----------
 
-/// 编辑框的视觉参数（颜色/字体/度量）。宿主从自己的主题构造；`Default`
-/// 是一套中性深色值（0xRRGGBB，与 gpui `rgb`/`rgba` 直接配套）。
+/// Visual parameters for the edit box (colors/font/metrics). Hosts build them
+/// from their own theme; `Default` is a neutral dark palette (0xRRGGBB,
+/// feeding straight into gpui `rgb`/`rgba`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct VimEditStyle {
-    /// 等宽字体 family。
+    /// Monospace font family.
     pub mono_font: String,
-    /// 字号（px）。
+    /// Font size (px).
     pub font_size: f32,
-    /// 行高（px）。滚动与点击定位都按它换算。
+    /// Line height (px); scrolling and click-to-position both use it.
     pub line_height: f32,
-    /// 等宽单字符 advance（px）；光标/高亮的列定位按此换算。
+    /// Monospace character advance (px); cursor/highlight column positions use it.
     pub char_width: f32,
-    /// 编辑框底色。
+    /// Edit box background.
     pub surface_bg: u32,
-    /// 未聚焦描边。
+    /// Border when unfocused.
     pub border: u32,
-    /// 聚焦描边。
+    /// Border when focused.
     pub focus_border: u32,
-    /// accent（聚焦底色混合、搜索高亮、可视选区）。
+    /// Accent (focus background blend, search highlight, visual selection).
     pub accent: u32,
-    /// 当前搜索命中高亮。
+    /// Highlight of the current search match.
     pub gold: u32,
-    /// 光标颜色。
+    /// Cursor color.
     pub cursor: u32,
-    /// 占位提示文本颜色（缓冲为空时的非内容渲染）。
+    /// Placeholder text color (non-content rendering when the buffer is empty).
     pub placeholder: u32,
 }
 
@@ -78,7 +84,7 @@ impl Default for VimEditStyle {
     }
 }
 
-/// 在 a、b 间线性混合（t=0 → a）。
+/// Linear blend between a and b (t=0 → a).
 fn blend_rgb(a: u32, b: u32, t: f32) -> u32 {
     let (ar, ag, ab) = (a >> 16, (a >> 8) & 0xff, a & 0xff);
     let (br, bg_, bb) = (b >> 16, (b >> 8) & 0xff, b & 0xff);
@@ -86,7 +92,7 @@ fn blend_rgb(a: u32, b: u32, t: f32) -> u32 {
     (f(ar, br) << 16) | (f(ag, bg_) << 8) | f(ab, bb)
 }
 
-// ---------- 行缓冲（Arc COW） ----------
+// ---------- line buffer (Arc COW) ----------
 
 #[derive(Clone, Default)]
 pub struct SharedLines(Rc<std::cell::RefCell<Arc<Vec<String>>>>);
@@ -100,11 +106,12 @@ impl SharedLines {
     }
 }
 
-/// offset（UTF-8 字节）↔（行, grapheme 列）。
+/// offset (UTF-8 bytes) ↔ (line, grapheme column).
 ///
-/// `offset` 一般来自引擎（char boundary），但这条路径也接宿主侧输入
-///（IME 恢复、宿主 splice 后的陈旧偏移）：非边界偏移向下取整到边界，
-/// 而不是在 `line[..rem]` 切片上 panic。
+/// `offset` usually comes from the engine (char boundary), but this path also
+/// receives host-side input (IME restore, stale offsets after a host splice):
+/// non-boundary offsets floor down to the boundary instead of panicking on the
+/// `line[..rem]` slice.
 pub fn offset_rc(lines: &[String], offset: usize) -> (usize, usize) {
     let mut rem = offset;
     for (row, line) in lines.iter().enumerate() {
@@ -138,7 +145,7 @@ pub fn rc_offset(lines: &[String], row: usize, col: usize) -> usize {
     off.saturating_sub(1)
 }
 
-/// `Arc<Vec<String>>` 上的 VimBuffer 实现。
+/// VimBuffer implementation over `Arc<Vec<String>>`.
 pub struct LinesBuf(pub SharedLines);
 
 impl VimBuffer for LinesBuf {
@@ -154,10 +161,11 @@ impl VimBuffer for LinesBuf {
         self.0.get().len().max(1)
     }
     fn char_at(&self, offset: usize) -> Option<char> {
-        // 合同：非字符边界必须返回 None（引擎 line_end/line_indent 会探测
-        // range.end-1；多字节行尾时 offset 落在字符中间）。按行定位，不做
-        // 整缓冲 join——这是引擎逐字符 motion 的探针路径，O(offset) 无分配
-        // 优于 O(全部文本) 的 join。
+        // Contract: a non-char-boundary offset must return None (the engine
+        // probes range.end-1 via line_end/line_indent; with a multi-byte line
+        // end the offset lands mid-character). Locate per line, no whole-
+        // buffer join — this is the engine's per-character motion probe path,
+        // so allocation-free O(offset) beats an O(all text) join.
         if offset >= self.len() {
             return None;
         }
@@ -168,7 +176,7 @@ impl VimBuffer for LinesBuf {
                 return line.is_char_boundary(rem).then(|| line[rem..].chars().next())?;
             }
             if rem == line.len() {
-                // 行尾分隔字节：offset < len 保证后面还有行
+                // line-end separator byte: offset < len guarantees a following line
                 return Some('\n');
             }
             rem -= line.len() + 1;
@@ -188,15 +196,19 @@ impl VimBuffer for LinesBuf {
                 }
                 return match line[..rem].chars().next_back() {
                     Some(c) => Some(offset - c.len_utf8()),
-                    // 行内无前字符 = 行首：前一字节是行间分隔 '\n'（首行
-                    // 行首即 offset 0，已被早退挡住），长度恒 1
+                    // no preceding char inside the line = line start: the
+                    // previous byte is the inter-line separator '\n' (the
+                    // first line's start is offset 0, already caught by the
+                    // early return), always length 1
                     None => Some(offset - 1),
                 };
             }
             if rem == line.len() {
-                // offset 是行尾：指向本行的分隔 '\n'（有后续行）或缓冲区
-                // 尾字节之前（末行）——两种情况的前一字符都是本行最后一个
-                // 内容字符；空行则退到前一字节（上一行的 '\n'）
+                // offset is the line end: it points at this line's separator
+                // '\n' (when a line follows) or just past the buffer's last
+                // byte (last line) — in both cases the previous char is this
+                // line's last content char; an empty line steps back one byte
+                // (the previous line's '\n')
                 return match line.chars().next_back() {
                     Some(c) => Some(offset - c.len_utf8()),
                     None => Some(offset - 1),
@@ -208,8 +220,9 @@ impl VimBuffer for LinesBuf {
     }
     fn line_range(&self, line: usize) -> Range<usize> {
         let lines = self.0.get();
-        // 合同要求 range 包含本行换行符（end = 下一行起点 / 末行 = 缓冲区尾），
-        // 否则引擎的 linewise 操作（dd/cc/yy）会在原位留下空行
+        // The contract requires the range to include this line's newline
+        // (end = next line's start / last line = buffer end), otherwise the
+        // engine's linewise operators (dd/cc/yy) would leave an empty line in place
         let start = rc_offset(&lines, line, 0);
         match lines.get(line) {
             Some(l) if line + 1 < lines.len() => start..start + l.len() + 1,
@@ -229,9 +242,11 @@ impl VimBuffer for LinesBuf {
 }
 
 impl VimBufferMut for LinesBuf {
-    // 换行按真实内容插入/删除，不做压平：单行语义由 VimEdit.single_line
-    // 在 flush 时 collapse（按内容行数判断会把多行编辑器初始的单行状态
-    // 误判为单行模式，enter/o 的 '\n' 全被替换成空格）
+    // Newlines are inserted/deleted as real content, never flattened: the
+    // single-line semantics are applied by VimEdit.single_line collapsing on
+    // flush (judging by content line count would misread a multi-line
+    // editor's initial one-line state as single-line mode and replace every
+    // enter/o '\n' with a space)
     fn insert_text(&mut self, offset: usize, text: &str) {
         let lines = self.0.get();
         let text = text.replace('\r', "");
@@ -261,8 +276,9 @@ impl LinesBuf {
     pub fn byte_to_utf16(&self, byte: usize) -> usize {
         let lines = self.0.get();
         let text = lines.join("\n");
-        // 宿主侧陈旧偏移可能落在多字节字符中间：`get(..mid)` 返回 None，
-        // 旧实现直接归零（IME 高亮框跳到行首）。向下取整到最近边界。
+        // A stale host-side offset may land mid multi-byte char: `get(..mid)`
+        // returns None, and the old implementation zeroed it outright (the IME
+        // highlight box jumped to the line start). Floor to the nearest boundary.
         let byte = floor_char_boundary(&text, byte.min(text.len()));
         text[..byte].chars().map(|c| c.len_utf16()).sum()
     }
@@ -280,13 +296,15 @@ impl LinesBuf {
     }
 }
 
-// ---------- 组件本地文本撤销栈 ----------
+// ---------- component-local text undo stack ----------
 
-/// `VimEdit` 的快照式撤销状态：`(文本快照, (行, 列) 光标)` 两个栈。
+/// Snapshot-style undo state for `VimEdit`: two stacks of
+/// `(text snapshot, (line, col) cursor)`.
 ///
-/// 抽成普通结构体是因为 `VimEdit::new` 需要 gpui `App`（focus handle），
-/// 无法无头构造——语义测试直接打在 `TextUndo` 上。规则与 vim 一致：
-/// 新快照使 redo 分支失效。
+/// Extracted as a plain struct because `VimEdit::new` needs a gpui `App`
+/// (focus handle) and cannot be built headless — semantic tests hit
+/// `TextUndo` directly. The rule matches vim: a new snapshot invalidates
+/// the redo branch.
 #[derive(Default)]
 struct TextUndo {
     undo: Vec<(Vec<String>, (usize, usize))>,
@@ -294,14 +312,15 @@ struct TextUndo {
 }
 
 impl TextUndo {
-    /// 把变更前的状态记为还原点；同时丢弃 redo 分支——undo 之后的新编辑
-    /// 必须作废 redo，否则一次重做会把旧文本盖在新编辑之上。
+    /// Record the pre-change state as a restore point, dropping the redo
+    /// branch — a new edit after an undo must invalidate redo, otherwise one
+    /// redo would overwrite the fresh edits with the old text.
     fn record(&mut self, before: Vec<String>, cursor: (usize, usize)) {
         self.undo.push((before, cursor));
         self.redo.clear();
     }
 
-    /// 撤销：把当前状态压入 redo 栈，返回要恢复的状态。
+    /// Undo: push the current state onto the redo stack, return the state to restore.
     fn undo(
         &mut self,
         current: Vec<String>,
@@ -312,7 +331,7 @@ impl TextUndo {
         Some(entry)
     }
 
-    /// 重做：`undo` 的镜像。
+    /// Redo: the mirror of `undo`.
     fn redo(
         &mut self,
         current: Vec<String>,
@@ -329,7 +348,7 @@ impl TextUndo {
     }
 }
 
-// ---------- 宿主副作用容器 ----------
+// ---------- host side-effect container ----------
 
 pub struct EditHost {
     pub storage: SharedLines,
@@ -369,8 +388,8 @@ impl EditHost {
         self.group_snapshot.take()
     }
 
-    /// 当前命中的搜索序号（1-based）与总数，供状态栏渲染 vim 风格的
-    /// 「3/17」。见 [`search_status`]。
+    /// Index (1-based) and total of the current search match, for the status
+    /// bar's vim-style "3/17". See [`search_status`].
     pub fn search_status(&self) -> Option<(usize, usize)> {
         search_status(&self.highlights, self.current_highlight.as_ref())
     }
@@ -403,7 +422,7 @@ impl VimHost for EditHost {
         }
     }
     fn undo(&mut self) -> Option<usize> {
-        None // 视图本地撤销栈处理
+        None // handled by the view-local undo stack
     }
     fn redo(&mut self) -> Option<usize> {
         None
@@ -423,10 +442,12 @@ impl VimHost for EditHost {
     fn dispatch_host_action_hinted(&mut self, _id: &str, _strict: bool) {}
 }
 
-/// 当前命中的搜索序号（1-based）与总数，供状态栏渲染 vim 风格的「3/17」。
-/// 无当前命中（未搜索/incsearch 尚无命中）或当前命中不在已发布列表里时
-/// 返回 None——UI 直接隐藏计数即可。自由函数是因为宿主的 VimHost 实现
-/// 各自持有高亮列表（demo `HostState`、pandamail），都可直接委托。
+/// Index (1-based) and total of the current search match, for the status
+/// bar's vim-style "3/17". Returns None when there is no current match (no
+/// search yet / incsearch without a match) or the current match is not in
+/// the published list — the UI just hides the counter. Free function because
+/// each host's VimHost impl keeps its own highlight list (demo `HostState`,
+/// pandamail) and can all delegate here.
 pub fn search_status(
     highlights: &[Range<usize>],
     current: Option<&Range<usize>>,
@@ -438,7 +459,8 @@ pub fn search_status(
 
 // ---------- VimEdit ----------
 
-/// 宿主可观察的编辑事件（flush 后进入 pending_events，宿主 drain）。
+/// Editor events observable by the host (pushed to pending_events on flush,
+/// drained by the host).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VimEditEvent {
     Changed,
@@ -457,28 +479,29 @@ pub struct VimEdit {
     pub buf: LinesBuf,
     pub host: EditHost,
     pub vim: VimState,
-    /// 视觉参数（宿主构造后注入自己的主题；见 [`VimEditStyle`]）。
+    /// Visual parameters (hosts inject their theme after construction; see [`VimEditStyle`]).
     pub style: VimEditStyle,
     text_undo: TextUndo,
     pub scroll: ScrollHandle,
     pub marked_range: Option<Range<usize>>,
-    /// 多行模式可见行数（估算，用于 viewport 汇报）
+    /// Visible row count in multi-line mode (estimate, used for viewport reporting)
     pub visible_rows: usize,
     pub modified: bool,
     pub label: &'static str,
-    /// flush 产生的宿主事件（宿主在 process_key 后 drain）
+    /// Host events produced by flush (the host drains them after process_key)
     pub pending_events: Vec<VimEditEvent>,
-    /// 编辑框几何（IME canvas 捕获，用于视口换算）
+    /// Edit-box geometry (captured by the IME canvas, used for viewport math)
     pub area: std::rc::Rc<Cell<gpui::Bounds<gpui::Pixels>>>,
-    /// 鼠标拖选中（mousedown 置位，mouseup 复位）
+    /// Mouse drag-selecting (set on mousedown, cleared on mouseup)
     pub mouse_selecting: bool,
-    /// 缓冲为空时渲染的占位提示文本（非缓冲内容，纯显示；见
-    /// [`VimEdit::placeholder_text`]）。
+    /// Placeholder text rendered when the buffer is empty (not buffer
+    /// content, display-only; see [`VimEdit::placeholder_text`]).
     pub placeholder: Option<String>,
 }
 
-/// 占位渲染判据：仅当整个缓冲为空（单空行）时显示。抽成自由函数是因为
-/// `VimEdit` 构造需要 gpui `App`，语义测试直接打在这里。
+/// Placeholder rendering rule: show only when the whole buffer is empty (a
+/// single empty line). Extracted as a free function because `VimEdit`
+/// construction needs a gpui `App`; semantic tests hit this directly.
 fn placeholder_text<'a>(lines: &[String], placeholder: &'a Option<String>) -> Option<&'a str> {
     let empty = lines.len() == 1 && lines[0].is_empty();
     match (empty, placeholder.as_deref()) {
@@ -487,13 +510,15 @@ fn placeholder_text<'a>(lines: &[String], placeholder: &'a Option<String>) -> Op
     }
 }
 
-/// 为「换一份新内容」重置引擎瞬态（模式/光标/可视锚/待决命令/搜索态/宏…），
-/// 但保留配置面 `options` 与 `keymaps`。
+/// Reset the engine's transient state (mode/cursor/visual anchor/pending
+/// command/search state/macros…) for "load new content", keeping the
+/// configuration surface `options` and `keymaps`.
 ///
-/// 抽成自由函数的原因同上：`VimEngine` 的宿主测试无法构造 gpui `App`，语义
-/// 测试直接打在这里。引擎没有轻量 reset API，`VimState::new()` 会连同
-/// rc 分层加载进来的 options/keymaps 一起清零——`set_text` 场景下那是
-/// 配置丢失，不是重置。
+/// Extracted as a free function for the same reason: host tests of
+/// `VimEngine` cannot construct a gpui `App`, so semantic tests hit this.
+/// The engine has no lightweight reset API and `VimState::new()` zeroes the
+/// options/keymaps loaded through rc layering too — in a `set_text` scenario
+/// that is configuration loss, not a reset.
 fn reset_engine_for_new_text(vim: &mut VimState) {
     let keymaps = std::mem::take(&mut vim.keymaps);
     let options = vim.options.clone();
@@ -532,10 +557,12 @@ impl VimEdit {
             mouse_selecting: false,
             placeholder: None,
         };
-        // vimrc 分层：这里只加载跨应用的用户层 ~/.vimcorerc（action 宽松，
-        // 其 :action 映射可能面向其他应用）。宿主专属层由宿主构造后追加：
+        // vimrc layering: only the cross-app user layer ~/.vimcorerc is
+        // loaded here (lenient actions; its :action mappings may target other
+        // apps). The host-specific layer is appended by the host after
+        // construction:
         // `config::load_layers(&mut edit, &Layers { user: None, host: Some(...) })`
-        // （后加载、同键覆盖、action 严格）。
+        // (loaded later, same-key overrides, strict actions).
         crate::config::load_layers(
             &mut editor_self,
             &crate::config::Layers::with_default_user(),
@@ -551,11 +578,12 @@ impl VimEdit {
         }
     }
 
-    /// 替换全部内容（光标回 0、normal 模式、清撤销）。
+    /// Replace all content (cursor back to 0, normal mode, undo cleared).
     ///
-    /// 配置面（options/keymaps）保留：本方法换的是「内容」，不是「配置」——
-    /// 旧实现整体重建 `VimState`，宿主每次 `set_text` 都会把 rc 分层加载的
-    /// 用户映射与选项静默清空。见 [`reset_engine_for_new_text`]。
+    /// The configuration surface (options/keymaps) survives: this method
+    /// replaces content, not configuration — the old implementation rebuilt
+    /// `VimState` wholesale, silently wiping the rc-layered user mappings and
+    /// options on every host `set_text`. See [`reset_engine_for_new_text`].
     pub fn set_text(&mut self, text: &str) {
         let mut lines: Vec<String> = if self.single_line {
             vec![text.replace(['\n', '\r'], " ")]
@@ -596,7 +624,7 @@ impl VimEdit {
         self.vim.showcmd()
     }
 
-    /// 拦截器路径按键处理。返回 true = 已消费。
+    /// Key handling for the interceptor path. Returning true = consumed.
     pub fn process_key(&mut self, ks: &gpui::Keystroke, cx: &mut Context<Self>) -> bool {
         if ks.modifiers.platform || ks.modifiers.function {
             return false;
@@ -604,9 +632,10 @@ impl VimEdit {
         let key = crate::to_core_key(ks);
         let mode = self.vim.mode;
 
-        // 撤销/重做（normal 态 + 引擎空闲，本地栈）。is_idle 门槛必不可少：
-        // `gu` 之后的 `u`、`guu` 的尾键都是引擎待完成命令的一部分，抢先拦截
-        // 会把它们吞成本地 undo，导致 gu/guw/guu/gugu 全部失效。
+        // Undo/redo (normal mode + engine idle, local stack). The is_idle
+        // gate is essential: the `u` after `gu` and the trailing key of `guu`
+        // are part of a pending engine command — intercepting them early
+        // swallows them into a local undo and breaks gu/guw/guu/gugu entirely.
         if mode == Mode::Normal && self.vim.is_idle() {
             if let KeyKind::Char('u') = &key.kind {
                 if !key.modifiers.control {
@@ -634,7 +663,8 @@ impl VimEdit {
             };
             self.vim.handle_key(&mut ctx, key.clone())
         };
-        // 引擎留给宿主的可打印字符（insert/replace 态）直接落缓冲
+        // Printable chars the engine leaves to the host (insert/replace modes)
+        // go straight into the buffer
         if result == KeyResult::Unknown && matches!(self.vim.mode, Mode::Insert | Mode::Replace) {
             if let Some(c) = key.printable_char() {
                 let mut ctx = Ctx {
@@ -761,8 +791,9 @@ impl VimEdit {
         self.scroll.set_offset(Point::new(px(0.0), px(-target)));
     }
 
-    /// 用 `s` 替换扁平字节区间并把光标移到插入内容之后（补全插入用）。
-    /// 进入 insert 态；不经引擎命令流水线。
+    /// Replace the flat byte range with `s` and move the cursor after the
+    /// inserted text (used for completion insertion). Enters insert mode;
+    /// bypasses the engine command pipeline.
     pub fn splice_range(&mut self, range: Range<usize>, s: &str) {
         let before = self.lines.as_ref().clone();
         let cursor_before = self.cursor_rc();
@@ -781,15 +812,16 @@ impl VimEdit {
         self.vim.cursor.offset = end.min(self.buf.len());
         self.vim.cursor.desired_col = None;
         self.modified = true;
-        // 宿主旁路编辑与键入同权：记撤销点并作废 redo 分支，否则补全
-        // 插入之后一次重做会回到 splice 前的陈旧快照
+        // Host-bypass edits rank with typing: record the undo point and
+        // invalidate the redo branch, otherwise one redo after a completion
+        // insert would jump back to the stale pre-splice snapshot
         self.push_undo(before, cursor_before);
         if self.single_line {
             self.collapse_single_line();
         }
     }
 
-    /// 指定行的可视选区（grapheme 列区间）。
+    /// Visual selection span for a line (grapheme column range).
     fn selection_span(&self, line: usize) -> Option<(usize, usize)> {
         let (anchor, cursor, kind) = self.vim.visual_selection()?;
         let lines = &self.lines;
@@ -824,7 +856,8 @@ impl VimEdit {
         }
     }
 
-    /// 渲染编辑框（父视图组合调用）。`focused` 决定描边与光标可见。
+    /// Render the edit box (composed by the parent view). `focused` decides
+    /// the border and cursor visibility.
     pub fn render_view(&self, focused: bool) -> gpui::Stateful<gpui::Div> {
         let line_h = px(self.style.line_height);
         let line_height_f = self.style.line_height;
@@ -832,7 +865,8 @@ impl VimEdit {
         let mono = SharedString::from(self.style.mono_font.clone());
         let font_size = px(self.style.font_size);
 
-        // 可见行窗口（area 由 IME canvas 捕获；首帧取不到就全画）
+        // Visible-line window (area captured by the IME canvas; draw
+        // everything on the first frame when it is unavailable)
         let area = self.area.get();
         let viewport_h = f32::from(area.size.height);
         let scroll_y = -f32::from(self.scroll.offset().y);
@@ -855,7 +889,7 @@ impl VimEdit {
 
         let (crow, ccol) = self.cursor_rc();
 
-        // 搜索高亮按行分组
+        // Search highlights grouped by line
         let search_by_row: Vec<(usize, usize, usize)> = self
             .host
             .highlights
@@ -915,7 +949,8 @@ impl VimEdit {
                 };
                 let x_of =
                     |col: usize| -> f32 { display_width_before(line, col) as f32 * char_width_f };
-                // 占位提示：整缓冲为空时首行画一段灰字（非缓冲内容，纯显示）
+                // Placeholder: when the whole buffer is empty, draw gray text
+                // on the first line (not buffer content, display-only)
                 let ph = if ix == 0 { placeholder_text(&self.lines, &self.placeholder) } else { None };
                 let mut row = div()
                     .h(line_h)
@@ -931,7 +966,7 @@ impl VimEdit {
                                 .child(SharedString::from(ph.unwrap_or_default().to_owned())),
                         )
                     });
-                // 搜索高亮
+                // Search highlights
                 for (hit_row, c0, c1) in &search_by_row {
                     if *hit_row == ix {
                         let is_cur = self.host.current_highlight.as_ref().is_some_and(|cur| {
@@ -954,7 +989,7 @@ impl VimEdit {
                         );
                     }
                 }
-                // 可视选区
+                // Visual selection
                 if focused {
                     if let Some((c0, c1)) = self.selection_span(ix) {
                         row = row.child(
@@ -968,7 +1003,7 @@ impl VimEdit {
                         );
                     }
                 }
-                // 光标（块/竖线）
+                // Cursor (block/bar)
                 if focused && ix == crow {
                     let block = self.vim.cursor_is_block();
                     let under: Option<char> = line.chars().nth(ccol);
@@ -1002,7 +1037,8 @@ impl VimEdit {
         container
     }
 
-    /// IME 挂接画布（父视图叠在编辑框上；顺带捕获几何供视口换算）。
+    /// IME attachment canvas (the parent view layers it over the edit box;
+    /// also captures geometry for viewport math).
     pub fn render_ime_canvas(&self, entity: &gpui::Entity<Self>) -> impl gpui::IntoElement {
         let entity = entity.clone();
         let focus = self.focus.clone();
@@ -1020,13 +1056,16 @@ impl VimEdit {
         .inset_0()
     }
 
-    // ---- 鼠标点击定位 / 拖选 ----
+    // ---- mouse click-to-position / drag-select ----
 
-    /// 按下：点击定位光标；normal 态进入可视拖选，insert 态仅移动光标。
+    /// Press: click positions the cursor; normal mode starts visual
+    /// drag-select, insert mode only moves the cursor.
     pub fn mouse_down(&mut self, pos: gpui::Point<gpui::Pixels>) {
-        // 搜索/命令提示符开着时，点击走 enter_visual_char 会把 'v' 当
-        // 提示符输入拼进 pattern；待决 operator（如已按 `d`）也不该被
-        // 点击重摆光标打断——两者都直接忽略本次按下。
+        // While the search/command prompt is open, a click through
+        // enter_visual_char would feed 'v' into the pattern as prompt input;
+        // a pending operator (e.g. `d` already typed) must not be interrupted
+        // by the click repositioning the cursor — both cases ignore this
+        // press outright.
         if matches!(self.vim.mode, Mode::CommandLine { .. }) || !self.vim.is_idle() {
             return;
         }
@@ -1039,14 +1078,16 @@ impl VimEdit {
         }
         self.place_cursor(off);
         if self.vim.mode == Mode::Normal {
-            // 已在可视模式时再点击：只移动光标延伸既有选区（锚点不动），
-            // 不再喂 'v'（引擎里 visual 内 'v' 会切换/退出可视语义）
+            // Clicking again while already in visual mode: just move the
+            // cursor to extend the existing selection (the anchor stays),
+            // without feeding 'v' (inside visual, 'v' toggles/exits visual in
+            // the engine)
             self.enter_visual_char();
         }
         self.mouse_selecting = true;
     }
 
-    /// 拖动：光标跟随（选区由引擎可视锚点延伸）。
+    /// Drag: the cursor follows (the selection extends from the engine's visual anchor).
     pub fn mouse_drag(&mut self, pos: gpui::Point<gpui::Pixels>) {
         if !self.mouse_selecting {
             return;
@@ -1056,7 +1097,7 @@ impl VimEdit {
         }
     }
 
-    /// 抬起：结束拖选；原地点击（选区为空）退回 normal。
+    /// Release: ends the drag-select; an in-place click (empty selection) returns to normal.
     pub fn mouse_up(&mut self) {
         if !self.mouse_selecting {
             return;
@@ -1073,7 +1114,8 @@ impl VimEdit {
         self.set_cursor_rc(rc);
     }
 
-    /// 引擎按键流进入字符可视（与宿主 pager 的 enter_visual 同法）。
+    /// Enter charwise visual through the engine key stream (same technique as
+    /// the host pager's enter_visual).
     fn enter_visual_char(&mut self) {
         self.host.viewport = (0, self.visible_rows.saturating_sub(1));
         let mut ctx = Ctx {
@@ -1083,7 +1125,8 @@ impl VimEdit {
         self.vim.handle_key(&mut ctx, vimcore::key::Key::char('v'));
     }
 
-    /// 窗口坐标 → 扁平偏移。行 = 视口行 + 滚动补偿；列 = 等宽字宽估算。
+    /// Window coordinates → flat offset. Row = viewport row + scroll
+    /// compensation; column = monospace advance estimate.
     fn offset_at_point(&self, pos: gpui::Point<gpui::Pixels>) -> Option<usize> {
         let area = self.area.get();
         if area.size.width <= gpui::px(0.0) || area.size.height <= gpui::px(0.0) {
@@ -1122,7 +1165,7 @@ fn ceil_char_boundary(s: &str, mut i: usize) -> usize {
     i
 }
 
-/// 供测试/宿主构造。
+/// For tests/host construction.
 impl VimEdit {
     pub fn cursor_offset(&self) -> usize {
         self.vim.cursor.offset
@@ -1134,22 +1177,23 @@ impl VimEdit {
         self.password = on;
     }
 
-    /// 设置空缓冲时渲染的占位提示文本（`None` 关闭）。纯显示——不进缓冲、
-    /// 不参与光标/搜索/选区的任何换算。
+    /// Set the placeholder text rendered when the buffer is empty (`None`
+    /// disables it). Display-only — it never enters the buffer and takes no
+    /// part in cursor/search/selection math.
     pub fn set_placeholder(&mut self, text: Option<String>) {
         self.placeholder = text;
     }
 
-    /// 当前应渲染的占位文本：仅整个缓冲为空时有值。
+    /// The placeholder text to render now: only set when the whole buffer is empty.
     pub fn placeholder_text(&self) -> Option<&str> {
         placeholder_text(&self.lines, &self.placeholder)
     }
 }
 
-// ---- IME / text-input 协议 ----
+// ---- IME / text-input protocol ----
 //
-// 引擎持有光标；所有变更在此转发给 VimState。UTF-16(gpui)/UTF-8(引擎)
-// 边界只在这一层转换。
+// The engine owns the cursor; every mutation is forwarded to VimState here.
+// The UTF-16 (gpui) / UTF-8 (engine) boundary converts only at this layer.
 
 impl EntityInputHandler for VimEdit {
     fn text_for_range(
@@ -1192,8 +1236,9 @@ impl EntityInputHandler for VimEdit {
         _cx: &mut Context<Self>,
     ) -> Option<Range<usize>> {
         let range = self.marked_range.as_ref()?;
-        // 空 marked range = IME 结束（setMarkedText 空串），报 None 避免
-        // gpui 的 is_composing 永远为 true 把 Esc 都吞掉
+        // An empty marked range = the IME ended (setMarkedText with an empty
+        // string); report None so gpui's is_composing never wedges true and
+        // eats Esc
         if range.is_empty() {
             return None;
         }
@@ -1225,7 +1270,8 @@ impl EntityInputHandler for VimEdit {
             (start < end).then_some(start..end)
         });
 
-        // 提交中的组合文本要替换 marked 区间，且不走按键流水线
+        // Committing composed text must replace the marked range and bypass
+        // the key pipeline
         let committing = explicit_range.is_none()
             && !text.is_empty()
             && self.marked_range.as_ref().is_some_and(|r| !r.is_empty());
@@ -1263,7 +1309,8 @@ impl EntityInputHandler for VimEdit {
         _window: &mut Window,
         _cx: &mut Context<Self>,
     ) {
-        // 组合预览文本直接落盘并标记（不进命令流水线，不做 . 记录）
+        // Composition preview text lands directly in the buffer and is marked
+        // (not through the command pipeline, no `.` recording)
         if !matches!(self.vim.mode(), Mode::Insert | Mode::Replace) {
             return;
         }
@@ -1300,8 +1347,10 @@ impl EntityInputHandler for VimEdit {
         let (row, col) = offset_rc(&self.lines, byte);
         let line = self.lines.get(row)?;
         let x = display_width_before(line, col) as f32 * self.style.char_width;
-        // IME canvas 叠在视口上（offset_at_point 同一假设）：内容坐标减去
-        // 已滚动距离才是屏幕位置，否则多行滚动后候选框飞出可视区
+        // The IME canvas overlays the viewport (same assumption as
+        // offset_at_point): content coordinates minus the scrolled distance
+        // give the screen position, otherwise after multi-line scrolling the
+        // candidate box flies out of the visible area
         let scroll_y = -f32::from(self.scroll.offset().y);
         let origin = Point::new(
             element_bounds.origin.x + gpui::px(x + 6.0),
@@ -1324,7 +1373,8 @@ impl EntityInputHandler for VimEdit {
         _cx: &mut Context<Self>,
     ) -> Option<usize> {
         let area = self.area.get();
-        // 与 offset_at_point 同一换算：视口 y 加回滚动距离得到内容行
+        // Same conversion as offset_at_point: add the scrolled distance back
+        // to the viewport y to get the content row
         let scroll_y = -f32::from(self.scroll.offset().y);
         let dy = point.y - area.origin.y + gpui::px(scroll_y);
         let dx = point.x - area.origin.x - gpui::px(6.0);
@@ -1344,8 +1394,8 @@ impl EntityInputHandler for VimEdit {
     }
 }
 
-/// VimEditor trait 实现（仅为复用 [`crate::dispatch_text`] 的 IME 文本路径；
-/// 按键不通过 attach 拦截，由宿主 guard 路由）。
+/// VimEditor trait impl (only to reuse [`crate::dispatch_text`]'s IME text
+/// path; keys are not intercepted through attach, the host guard routes them).
 impl crate::VimEditor for VimEdit {
     fn vim_parts(&mut self) -> (&mut VimState, &mut dyn VimBufferMut, &mut dyn VimHost) {
         (&mut self.vim, &mut self.buf, &mut self.host)
@@ -1375,10 +1425,11 @@ mod multiline_tests {
     use vimcore::key::Key;
     use vimcore::state::Ctx;
 
-    // ---- set_text 的引擎重置语义（配置存活） ----
+    // ---- set_text engine-reset semantics (configuration survives) ----
 
-    /// 回归：旧实现整体重建 `VimState`，宿主 `set_text` 换内容后，rc 分层
-    /// 加载的选项与用户映射被静默清空（jk→Esc 变成逐字输入）。
+    /// Regression: the old implementation rebuilt `VimState` wholesale, so
+    /// after a host `set_text` swapped content, rc-layered options and user
+    /// mappings were silently wiped (jk→Esc became literal typing).
     #[test]
     fn engine_reset_for_new_text_keeps_options_and_mappings() {
         let (_, mut buf, mut host, mut vim) = setup();
@@ -1388,16 +1439,17 @@ mod multiline_tests {
             "<Esc>",
             true,
         );
-        vim.options.number = true; // 默认 false，断言不会空洞地绿
+        vim.options.number = true; // default false, so the assertion isn't vacuously green
         vim.mode = Mode::Insert;
         vim.cursor.offset = 3;
 
         reset_engine_for_new_text(&mut vim);
-        assert_eq!(vim.mode, Mode::Normal, "瞬态模式随新内容归零");
-        assert_eq!(vim.cursor.offset, 0, "光标随新内容归零");
-        assert!(vim.options.number, "用户选项必须存活");
+        assert_eq!(vim.mode, Mode::Normal, "transient mode resets with new content");
+        assert_eq!(vim.cursor.offset, 0, "cursor resets with new content");
+        assert!(vim.options.number, "user options must survive");
 
-        // 映射存活：insert 态 jk 仍替换为 Esc，而不是把 k 打进缓冲
+        // Mapping survives: in insert mode jk still replaces with Esc instead
+        // of typing k into the buffer
         vim.mode = Mode::Insert;
         let mut ctx = Ctx {
             buf: &mut buf,
@@ -1405,15 +1457,16 @@ mod multiline_tests {
         };
         vim.handle_key(&mut ctx, Key::char('j'));
         vim.handle_key(&mut ctx, Key::char('k'));
-        assert_eq!(vim.mode, Mode::Normal, "jk 映射必须仍然生效");
+        assert_eq!(vim.mode, Mode::Normal, "the jk mapping must still work");
         assert_eq!(
             buf.0.get().as_ref(),
             &vec!["".to_string()],
-            "映射右侧不得落进缓冲"
+            "the mapping's RHS must not land in the buffer"
         );
     }
 
-    /// 组装引擎 + 单行初始内容的 buffer（正文编辑器打开时的状态）。
+    /// Assemble the engine plus a buffer with single-line initial content
+    /// (the state a body editor opens with).
     fn setup() -> (SharedLines, LinesBuf, EditHost, VimState) {
         let storage = SharedLines::default();
         storage.set(Arc::new(vec![String::new()]));
@@ -1422,7 +1475,7 @@ mod multiline_tests {
         (storage, buf, host, VimState::new())
     }
 
-    // ---- TextUndo（无头语义测试；VimEdit 需要 App 才能构造） ----
+    // ---- TextUndo (headless semantic tests; VimEdit needs an App to construct) ----
 
     fn rc(row: usize, col: usize) -> (usize, usize) {
         (row, col)
@@ -1435,22 +1488,22 @@ mod multiline_tests {
         let b = vec!["ab".to_string()];
         u.record(a.clone(), rc(0, 1));
         assert_eq!(u.undo(b.clone(), rc(0, 2)), Some((a.clone(), rc(0, 1))));
-        // redo 回到 b，undo 又回到 a，可往复
+        // redo returns to b, undo back to a, ping-ponging works
         assert_eq!(u.redo(a.clone(), rc(0, 1)), Some((b.clone(), rc(0, 2))));
         assert_eq!(u.undo(b.clone(), rc(0, 2)), Some((a, rc(0, 1))));
     }
 
     #[test]
     fn text_undo_record_invalidates_redo() {
-        // 回归：undo → 新编辑 → redo 会把旧快照盖在新编辑上
+        // Regression: undo → new edit → redo would overwrite the fresh edit with the old snapshot
         let mut u = TextUndo::default();
         let a = vec!["a".to_string()];
         let b = vec!["b".to_string()];
         let c = vec!["c".to_string()];
         u.record(a, rc(0, 0));
         assert!(u.undo(b.clone(), rc(0, 1)).is_some());
-        u.record(c, rc(0, 1)); // undo 之后的新编辑
-        assert!(u.redo(b, rc(0, 1)).is_none(), "redo 分支必须已被作废");
+        u.record(c, rc(0, 1)); // a fresh edit after the undo
+        assert!(u.redo(b, rc(0, 1)).is_none(), "the redo branch must be invalidated");
     }
 
     #[test]
@@ -1463,11 +1516,12 @@ mod multiline_tests {
         assert!(u.undo(vec![], rc(0, 0)).is_none());
     }
 
-    // ---- offset_rc 边界鲁棒性 ----
+    // ---- offset_rc boundary robustness ----
 
     #[test]
     fn offset_rc_floors_mid_char_offsets_instead_of_panicking() {
-        // 回归："中文"[1] 不是字符边界，旧实现 line[..1] 直接 panic
+        // Regression: "中文"[1] is not a char boundary; the old
+        // implementation panicked directly on line[..1]
         let lines = vec!["中文".to_string(), "ab".to_string()];
         assert_eq!(offset_rc(&lines, 1), (0, 0), "mid-char floors to boundary");
         assert_eq!(offset_rc(&lines, 4), (0, 1), "mid-char within 文 floors to its start");
@@ -1478,7 +1532,7 @@ mod multiline_tests {
         assert_eq!(offset_rc(&lines, 999), (1, 0), "past the end clamps");
     }
 
-    // ---- offset 语义与 join 版等价(含跨行 '\n' 探针) ----
+    // ---- offset semantics equivalent to the join version (incl. cross-line '\n' probes) ----
 
     fn buf(text: &str) -> LinesBuf {
         let storage = SharedLines::default();
@@ -1488,7 +1542,7 @@ mod multiline_tests {
 
     #[test]
     fn char_and_prev_char_probes_match_flat_text_semantics() {
-        // "ab\n中cd":字节 0'a' 1'b' 2'\n' 3..5'中' 6'c' 7'd',len=8
+        // "ab\n中cd": bytes 0'a' 1'b' 2'\n' 3..5'中' 6'c' 7'd', len=8
         let b = buf("ab\n中cd");
         assert_eq!(b.char_at(0), Some('a'));
         assert_eq!(b.char_at(2), Some('\n'));
@@ -1502,21 +1556,24 @@ mod multiline_tests {
         assert_eq!(b.prev_char_offset(0), None);
         assert_eq!(b.prev_char_offset(2), Some(1));
         assert_eq!(b.prev_char_offset(8), Some(7), "buffer end steps to last char");
-        // 空行分隔:"a\n\nb" 行首的前一字节是空行自己的 '\n'
+        // Empty-line separator: in "a\n\nb" the byte before a line start is
+        // the empty line's own '\n'
         let b = buf("a\n\nb");
         assert_eq!(b.prev_char_offset(3), Some(2));
         assert_eq!(b.char_at(2), Some('\n'));
-        // 末行为空行(文本以 \n 结尾):缓冲尾的前一字节是那个 '\n'
+        // Last line empty (text ends with \n): the byte before the buffer end
+        // is that '\n'
         let b = buf("a\n");
         assert_eq!(b.prev_char_offset(2), Some(1));
         assert_eq!(b.char_at(1), Some('\n'));
     }
 
-    /// 回归：非边界字节偏移（宿主侧陈旧值）在 UTF-16 换算里曾直接归零，
-    /// IME 定位框跳到缓冲开头；应向下取整到所在字符起点再换算。
+    /// Regression: non-boundary byte offsets (stale host values) used to zero
+    /// out in the UTF-16 conversion, jumping the IME placement box to the
+    /// buffer start; they must floor to the containing char's start first.
     #[test]
     fn byte_to_utf16_floors_mid_char_offsets() {
-        let b = buf("中文x"); // 边界 0,3,6,7
+        let b = buf("中文x"); // boundaries 0,3,6,7
         assert_eq!(b.byte_to_utf16(0), 0);
         assert_eq!(b.byte_to_utf16(3), 1, "one char before 文");
         assert_eq!(b.byte_to_utf16(4), 1, "mid-文 floors to its start (was 0)");
@@ -1526,23 +1583,24 @@ mod multiline_tests {
         assert_eq!(b.utf16_to_byte(2), 6, "roundtrip back to a boundary");
     }
 
-    // ---- 占位文本判据 ----
+    // ---- placeholder text rule ----
 
-    /// EditHost::search_status 的「n/total」计数语义。
+    /// The "n/total" counting semantics of EditHost::search_status.
     #[test]
     fn search_status_indexes_current_highlight() {
         let storage = SharedLines::default();
         let mut host = EditHost::new(storage);
-        assert_eq!(host.search_status(), None, "无搜索时不显示计数");
+        assert_eq!(host.search_status(), None, "no counter without a search");
 
         host.highlights = vec![0..3, 8..11, 20..23];
         host.current_highlight = Some(8..11);
         assert_eq!(host.search_status(), Some((2, 3)));
 
         host.current_highlight = None;
-        assert_eq!(host.search_status(), None, "incsearch 尚无当前命中");
+        assert_eq!(host.search_status(), None, "incsearch with no current match yet");
 
-        // 当前命中不在已发布列表（引擎发布间隙的陈旧值）：返回 None 而不是错位
+        // The current match is not in the published list (a stale value
+        // between engine publishes): return None rather than a wrong index
         host.current_highlight = Some(99..102);
         assert_eq!(host.search_status(), None);
     }
@@ -1577,8 +1635,9 @@ mod multiline_tests {
         );
     }
 
-    /// 回归：多行编辑器初始只有一行内容，insert 态 enter 被压成空格
-    /// （旧的 lines.len()==1 内容启发式把多行编辑器误判为单行）。
+    /// Regression: a multi-line editor starts with one content line, and
+    /// insert-mode enter was flattened to a space (the old lines.len()==1
+    /// content heuristic misjudged a multi-line editor as single-line).
     #[test]
     fn insert_enter_creates_line() {
         let (_, mut buf, mut host, mut vim) = setup();
@@ -1594,7 +1653,8 @@ mod multiline_tests {
         assert_eq!(*lines, vec!["收件人".to_string(), "正文".to_string()]);
     }
 
-    /// 回归：normal 态 o 无法新建一行（同样是内容启发式压掉 '\n'）。
+    /// Regression: normal-mode o could not open a line (same content
+    /// heuristic flattening the '\n').
     #[test]
     fn normal_o_opens_line_below() {
         let (_, mut buf, mut host, mut vim) = setup();
@@ -1609,11 +1669,12 @@ mod multiline_tests {
         );
         let lines = buf.0.get();
         assert_eq!(*lines, vec!["hello".to_string(), String::new()]);
-        assert!(matches!(vim.mode, Mode::Insert), "o 应进入 insert 模式");
+        assert!(matches!(vim.mode, Mode::Insert), "o should enter insert mode");
     }
 
-    /// 回归：行尾是多字节字符（中文）时 enter 曾在 char_at→offset_rc
-    /// 非边界切片处 panic（char_at 合同要求非边界返回 None）。
+    /// Regression: with a multi-byte (CJK) char at the line end, enter used
+    /// to panic in the char_at→offset_rc non-boundary slice (the char_at
+    /// contract requires None at non-boundaries).
     #[test]
     fn cjk_line_tail_enter_no_panic() {
         let (_, mut buf, mut host, mut vim) = setup();
@@ -1622,13 +1683,14 @@ mod multiline_tests {
             buf: &mut buf,
             host: &mut host,
         };
-        vim.handle_key(&mut ctx, Key::char('A')); // 行尾进入 insert
+        vim.handle_key(&mut ctx, Key::char('A')); // enter insert at the line end
         assert_eq!(vim.handle_key(&mut ctx, Key::enter()), KeyResult::Consumed);
-        assert_eq!(buf.0.get().len(), 2, "enter 应新建一行");
+        assert_eq!(buf.0.get().len(), 2, "enter must create a new line");
         assert_eq!(buf.0.get()[0], "第一行收件人");
     }
 
-    /// 多行结构操作：dd 删除一行后剩余行保持独立。
+    /// Multi-line structural edit: after dd deletes a line the remaining
+    /// lines stay separate.
     #[test]
     fn dd_keeps_line_structure() {
         let (_, mut buf, mut host, mut vim) = setup();
@@ -1647,8 +1709,9 @@ mod multiline_tests {
         assert_eq!(*lines, vec!["two".to_string(), "three".to_string()]);
     }
 
-    /// 单行字段（表单/头部字段）语义不变：enter 产生的换行在 buffer 里
-    /// 短暂存在，flush 时由 collapse_single_line 并回一行。
+    /// Single-line field (form/header field) semantics unchanged: the
+    /// newline enter produces exists briefly in the buffer, merged back into
+    /// one line by collapse_single_line on flush.
     #[test]
     fn join_semantics_for_single_line_fields() {
         let (_, mut buf, mut host, mut vim) = setup();
@@ -1660,7 +1723,7 @@ mod multiline_tests {
         vim.insert_text_at_cursor(&mut ctx, "a");
         vim.handle_key(&mut ctx, Key::enter());
         vim.insert_text_at_cursor(&mut ctx, "b");
-        // collapse 与 VimEdit::text() 同规则：join(" ")
+        // collapse follows the same rule as VimEdit::text(): join(" ")
         let joined = buf.0.get().join(" ");
         assert_eq!(joined, "a b");
     }
@@ -1668,11 +1731,12 @@ mod multiline_tests {
 
 #[cfg(test)]
 mod tck_tests {
-    //! 引擎 TCK（vimcore::tck）对 LinesBuf 的验收。
+    //! Engine TCK (vimcore::tck) acceptance for LinesBuf.
     use super::*;
     use vimcore::tck;
 
-    /// LinesBuf 满足编辑契约与引擎冒烟（宿主侧用真实 EditHost）。
+    /// LinesBuf satisfies the edit contract and the engine smoke test (with a
+    /// real EditHost on the host side).
     #[test]
     fn lines_buf_meets_engine_contract() {
         let storage = SharedLines::default();
@@ -1682,7 +1746,8 @@ mod tck_tests {
         tck::engine_smoke_contract(&mut buf, &mut host).unwrap();
     }
 
-    /// 预填多字节与空行内容后只读契约仍成立。
+    /// The read contract still holds after prefilling multi-byte and
+    /// empty-line content.
     #[test]
     fn lines_buf_read_contract_prefilled() {
         let storage = SharedLines::default();

@@ -5,7 +5,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
-# 只作参考宿主，不发布（path 依赖无版本号，publish 会失败）
+# Reference host only, not published (path deps carry no version, publish would fail)
 publish = false
 
 [[bin]]
@@ -16,8 +16,10 @@ path = "src/main.rs"
 vimcore = { workspace = true }
 gpui-vim = { path = "../gpui-vim-pre", package = "gpui-vim-pre" }
 gpui = { version = "0.3.8", package = "gpui-pre" }
-# 应用启动入口 helper（gpui-pre 家族发布为 gpui-pre-platform，lib 名仍是 gpui_platform）。
-# font-kit 必须显式开启，否则 gpui_macos 退到 NoopTextSystem（无文字）
+# App launch-entry helper (published in the gpui-pre family as gpui-pre-platform, the
+# lib name is still gpui_platform).
+# font-kit must be enabled explicitly, otherwise gpui_macos falls back to
+# NoopTextSystem (no text renders)
 gpui_platform = { version = "0.3.8", package = "gpui-pre-platform", features = [
     "font-kit",
 ] }

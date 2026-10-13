@@ -307,9 +307,10 @@ impl Editor {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // 搜索/命令提示符开着时，点击会重摆光标并弄脏 incsearch 高亮；待决
-        // operator（如已按 `d`）也不该被点击打断命令（与 VimEdit::mouse_down
-        // 的守卫同规则）。
+        // While the search/command prompt is open, a click would reposition
+        // the cursor and dirty the incsearch highlight; a pending operator
+        // (e.g. `d` already typed) must not have its command interrupted by
+        // the click (same guard rule as VimEdit::mouse_down).
         if matches!(self.tab().vim.mode(), Mode::CommandLine { .. }) || !self.tab().vim.is_idle() {
             return;
         }
@@ -351,14 +352,16 @@ impl Editor {
         cx: &mut Context<Self>,
     ) {
         self.dragging.set(false);
-        // 原地点击（无拖动位移）不得留下退化的空可视选区：拖动途中松手保留
-        // 可视模式（vim 语义，可直接 d/y），没动过的点击则退出可视。
+        // An in-place click (no drag movement) must not leave a degenerate
+        // empty visual selection: releasing mid-drag keeps visual mode (vim
+        // semantics, d/y can follow directly), an unmoved click exits visual.
         let cursor = self.tab().vim.cursor_offset();
         if cursor == self.drag_anchor.get()
             && matches!(self.tab().vim.mode(), Mode::Visual { .. })
         {
-            // engine visual_selection 对非 Visual 模式返回 None（陈旧 anchor
-            // 有防护），直接切模式安全——VimEdit::mouse_up 同此结论。
+            // The engine's visual_selection returns None outside Visual mode
+            // (stale anchor is guarded), so switching the mode directly is
+            // safe — same conclusion as VimEdit::mouse_up.
             self.tab_mut().vim.mode = Mode::Normal;
         }
         cx.notify();
@@ -434,7 +437,8 @@ impl Editor {
             cx.write_to_clipboard(ClipboardItem::new_string(text));
             self.status_message = Some(format!("copied {len} bytes"));
         } else {
-            // 静默无反馈让人分不清「复制失败」还是「已复制」
+            // silent no-feedback leaves users guessing whether copy failed
+            // or silently succeeded
             self.status_message = Some("nothing to copy".to_owned());
         }
         cx.notify();
@@ -449,8 +453,9 @@ impl Editor {
         // the visual PutReplace) see what the system clipboard has
         self.tab_mut().host.clipboard = Some(text.clone());
         if matches!(self.tab().vim.mode(), Mode::CommandLine { .. }) {
-            // 提示符开着（搜索/命令）：走按键流水线把文本拼进 pattern，
-            // 直发 `"`,`+`,`p` 会被当成提示符输入污染搜索词
+            // prompt open (search/command): route through the key pipeline so
+            // the text appends to the pattern; sending `"`,`+`,`p` directly
+            // would be treated as prompt input and pollute the search term
             for c in text.chars() {
                 let key = vimcore::key::Key::char(c);
                 self.with_vim_ctx(|vim, ctx| vim.handle_key(ctx, key.clone()));
@@ -498,8 +503,9 @@ impl Editor {
     }
     /// Switch to the next/previous buffer tab.
     pub fn cycle_tab(&mut self, forward: bool) {
-        // 离开的 tab 若停在搜索/命令提示符上，回来时是一个陈旧的悬空
-        // 提示符（光标已不在原位）；vim 切换缓冲同样会关掉命令行。
+        // If the tab being left sits on a search/command prompt, returning to
+        // it would show a stale dangling prompt (cursor no longer in place);
+        // vim likewise closes the command-line when switching buffers.
         if matches!(self.tab().vim.mode(), Mode::CommandLine { .. }) {
             self.tab_mut().vim.mode = Mode::Normal;
             self.tab_mut().vim.cmdline.buffer.clear();
@@ -652,8 +658,9 @@ impl Editor {
     fn sync_visible_state(&mut self, visible: Range<usize>) {
         let buf = &self.tab().buffer;
         let line_count = buf.line_count();
-        // 空缓冲/越界视口：清空缓存后仍要走到 viewport 汇报——早退会让引擎
-        // 的滚动 motion（C-d/H/M/L）读到一个陈旧的视口
+        // Empty buffer / out-of-range viewport: after clearing the cache we
+        // must still reach the viewport report — an early return would leave
+        // the engine's scroll motions (C-d/H/M/L) reading a stale viewport
         let first = visible.start.min(line_count - 1);
         let last = (visible.end.saturating_sub(1)).min(line_count - 1);
         let lo = buf.line_start(first);
@@ -898,7 +905,8 @@ impl Editor {
             .child(div().child(format!("{line}:{col}")))
     }
 
-    /// vim 风格的搜索计数（右侧「3/17」）：无当前命中时整体隐藏。
+    /// vim-style search counter (right-side "3/17"): hidden entirely when
+    /// there is no current match.
     fn search_indicator(&self) -> Option<String> {
         let tab = self.tab();
         let (index, total) =
