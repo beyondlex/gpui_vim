@@ -423,6 +423,14 @@ impl VimHost for EditHost {
             self.open_group = Some(id);
         }
     }
+    // The engine's deterministic close signal (vimcore 0.2.3): only clears
+    // open_group; the staged group_snapshot stays for flush to take over.
+    // "The group is closed" is expressed by open_group == None.
+    fn end_undo_group(&mut self, id: u64) {
+        if self.open_group == Some(id) {
+            self.open_group = None;
+        }
+    }
     fn undo(&mut self) -> Option<usize> {
         None // handled by the view-local undo stack
     }
@@ -688,7 +696,12 @@ impl VimEdit {
             self.modified = true;
             self.pending_events.push(VimEditEvent::Changed);
         }
-        if !matches!(self.vim.mode, Mode::Insert | Mode::Replace) {
+        // Push once the engine closed the group — its end_undo_group signal
+        // (vimcore 0.2.3) cleared open_group, a fact rather than the old
+        // mode inference. During an insert session the group stays open;
+        // take_group_snapshot is idempotent, and push_undo already skips
+        // before == after (an edit-less group lands no empty step).
+        if self.host.open_group.is_none() {
             if let Some((snap_lines, snap_cursor)) = self.host.take_group_snapshot() {
                 let cursor_before = offset_rc(&snap_lines, snap_cursor);
                 self.push_undo((*snap_lines).clone(), cursor_before);
