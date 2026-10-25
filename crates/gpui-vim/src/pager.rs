@@ -433,6 +433,20 @@ impl Pager {
         }
     }
 
+    /// Join this pager to a shared-globals session (vimcore 0.3): one
+    /// register file and macro table with every other panel sharing
+    /// `globals` (a merge view's editable result pane, sibling pagers), so
+    /// a yank here pastes there. The pager keeps its own buffer.
+    pub fn share_globals(&mut self, globals: &vimcore::state::SharedGlobals) {
+        self.vim.share_globals(globals);
+    }
+
+    /// The session this pager belongs to (hand to another panel's
+    /// [`Pager::share_globals`] or `VimEdit::share_globals`).
+    pub fn shared_globals(&self) -> vimcore::state::SharedGlobals {
+        self.vim.shared_globals()
+    }
+
     pub fn set_cursor(&mut self, offset: usize) {
         // The offset from the host's hit test may land mid multi-byte char
         // (same reason as the engine's set_cursor_offset): clamp into the
@@ -491,6 +505,8 @@ impl Pager {
         }
         self.vim
             .registers
+            .lock()
+            .unwrap()
             .get(UNNAMED)
             .map(|reg| reg.text.clone())
             .filter(|text| !text.is_empty())

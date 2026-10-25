@@ -18,7 +18,7 @@
 //!   the host after construction via [`crate::config::load_layers`]
 //!   (loaded later, same-key overrides, strict actions).
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::ops::Range;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -173,7 +173,9 @@ impl VimBuffer for LinesBuf {
         let mut rem = offset;
         for line in lines.iter() {
             if rem < line.len() {
-                return line.is_char_boundary(rem).then(|| line[rem..].chars().next())?;
+                return line
+                    .is_char_boundary(rem)
+                    .then(|| line[rem..].chars().next())?;
             }
             if rem == line.len() {
                 // line-end separator byte: offset < len guarantees a following line
@@ -298,22 +300,55 @@ impl LinesBuf {
     }
 }
 
-// ---------- component-local text undo stack ----------
+// ---------- undo home ----------
 
-/// Snapshot-style undo state for `VimEdit`: two stacks of
-/// `(text snapshot, (line, col) cursor)`.
+/// The undo history a [`VimEdit`] answers from. The component ships a
+/// snapshot-style default ([`TextUndo`]); a host with its OWN unified
+/// history (a merge view folding "decision + text" entries into one stack)
+/// overrides it via [`VimEdit::set_undo_home`] — the component then records,
+/// undoes and redoes through the host's stack and keeps none of its own.
+///
+/// Coordinates are `(line, grapheme column)` pairs, the same model the
+/// component uses for its cursor bookkeeping.
+pub trait UndoHome {
+    /// A restore point: the text BEFORE a change and where the cursor was.
+    /// Recording invalidates the redo branch (vim's undo tree rule).
+    fn record(&mut self, before: Vec<String>, cursor_before: (usize, usize));
+
+    /// Undo one entry: receives the CURRENT text + cursor (to park on the
+    /// redo branch) and returns the state to restore, or `None` when the
+    /// history is exhausted.
+    fn undo(
+        &mut self,
+        current: Vec<String>,
+        cursor: (usize, usize),
+    ) -> Option<(Vec<String>, (usize, usize))>;
+
+    /// Redo one entry: the mirror of [`UndoHome::undo`].
+    fn redo(
+        &mut self,
+        current: Vec<String>,
+        cursor: (usize, usize),
+    ) -> Option<(Vec<String>, (usize, usize))>;
+
+    /// Drop the whole history (content replaced wholesale).
+    fn clear(&mut self);
+}
+
+/// Snapshot-style undo state: two stacks of `(text snapshot, (line, col)
+/// cursor)`.
 ///
 /// Extracted as a plain struct because `VimEdit::new` needs a gpui `App`
 /// (focus handle) and cannot be built headless — semantic tests hit
 /// `TextUndo` directly. The rule matches vim: a new snapshot invalidates
 /// the redo branch.
 #[derive(Default)]
-struct TextUndo {
+pub struct TextUndo {
     undo: Vec<(Vec<String>, (usize, usize))>,
     redo: Vec<(Vec<String>, (usize, usize))>,
 }
 
-impl TextUndo {
+impl UndoHome for TextUndo {
     /// Record the pre-change state as a restore point, dropping the redo
     /// branch — a new edit after an undo must invalidate redo, otherwise one
     /// redo would overwrite the fresh edits with the old text.
@@ -365,6 +400,14 @@ pub struct EditHost {
     pub pending_status: Option<String>,
     pub save_requested: bool,
     pub close_requested: bool,
+    /// The undo history the engine's `u`/`<C-r>` (direct keys AND macro
+    /// replay) answers from. `None` until [`VimEdit`] installs its undo
+    /// home — see [`VimEdit::set_undo_home`].
+    pub undo_home: Option<Rc<RefCell<dyn UndoHome>>>,
+    /// The engine cursor as `(line, col)`, published before every key so an
+    /// engine-driven undo (macro replay) can park the CURRENT cursor on the
+    /// redo branch without reaching back into the view.
+    pub last_cursor_rc: (usize, usize),
 }
 
 impl EditHost {
@@ -382,6 +425,8 @@ impl EditHost {
             pending_status: None,
             save_requested: false,
             close_requested: false,
+            undo_home: None,
+            last_cursor_rc: (0, 0),
         }
     }
 
@@ -431,11 +476,34 @@ impl VimHost for EditHost {
             self.open_group = None;
         }
     }
+    // The engine's u/<C-r> (direct key or macro replay): swap the storage
+    // through the undo home and hand back the restored cursor offset. With
+    // no home installed there is no history — the old "handled by the
+    // view-local undo stack" None.
     fn undo(&mut self) -> Option<usize> {
-        None // handled by the view-local undo stack
+        let home = self.undo_home.clone()?;
+        let current: Vec<String> = self.storage.get().as_ref().clone();
+        let (text, (row, col)) = home.borrow_mut().undo(current, self.last_cursor_rc)?;
+        let lines = Arc::new(text);
+        let offset = rc_offset(&lines, row, col);
+        self.storage.set(lines);
+        Some(offset)
     }
     fn redo(&mut self) -> Option<usize> {
-        None
+        let home = self.undo_home.clone()?;
+        let current: Vec<String> = self.storage.get().as_ref().clone();
+        let (text, (row, col)) = home.borrow_mut().redo(current, self.last_cursor_rc)?;
+        let lines = Arc::new(text);
+        let offset = rc_offset(&lines, row, col);
+        self.storage.set(lines);
+        Some(offset)
+    }
+    // A home that can answer undo is replay-safe by construction (the
+    // engine gates macro-replay undo on this declaration).
+    fn capabilities(&self) -> vimcore::host::HostCapabilities {
+        vimcore::host::HostCapabilities {
+            macro_host_undo: self.undo_home.is_some(),
+        }
     }
     fn save(&mut self) {
         self.save_requested = true;
@@ -491,7 +559,9 @@ pub struct VimEdit {
     pub vim: VimState,
     /// Visual parameters (hosts inject their theme after construction; see [`VimEditStyle`]).
     pub style: VimEditStyle,
-    text_undo: TextUndo,
+    /// The undo history this instance answers from (default: the built-in
+    /// [`TextUndo`]); see [`VimEdit::set_undo_home`].
+    undo_home: Rc<RefCell<dyn UndoHome>>,
     pub scroll: ScrollHandle,
     pub marked_range: Option<Range<usize>>,
     /// Visible row count in multi-line mode (estimate, used for viewport reporting)
@@ -504,6 +574,12 @@ pub struct VimEdit {
     pub area: std::rc::Rc<Cell<gpui::Bounds<gpui::Pixels>>>,
     /// Mouse drag-selecting (set on mousedown, cleared on mouseup)
     pub mouse_selecting: bool,
+    /// Tab-completion state for the engine's `:` prompt (see
+    /// [`crate::cmdline`]). Reset when the prompt closes.
+    pub cmdline_edit: crate::cmdline::CmdlineEdit,
+    /// Built-in Ex names merged into Tab completion (the engine registry
+    /// holds host commands; the built-in spellings are the widget's list).
+    pub builtin_ex_names: Vec<String>,
     /// Placeholder text rendered when the buffer is empty (not buffer
     /// content, display-only; see [`VimEdit::placeholder_text`]).
     pub placeholder: Option<String>,
@@ -556,7 +632,7 @@ impl VimEdit {
             host: EditHost::new(storage),
             vim: VimState::new(),
             style: VimEditStyle::default(),
-            text_undo: TextUndo::default(),
+            undo_home: Rc::new(RefCell::new(TextUndo::default())),
             scroll: ScrollHandle::new(),
             marked_range: None,
             visible_rows: if single_line { 1 } else { 12 },
@@ -565,6 +641,8 @@ impl VimEdit {
             pending_events: Vec::new(),
             area: std::rc::Rc::new(Cell::new(gpui::Bounds::default())),
             mouse_selecting: false,
+            cmdline_edit: crate::cmdline::CmdlineEdit::default(),
+            builtin_ex_names: Vec::new(),
             placeholder: None,
         };
         // vimrc layering: only the cross-app user layer ~/.vimcorerc is
@@ -573,11 +651,46 @@ impl VimEdit {
         // construction:
         // `config::load_layers(&mut edit, &Layers { user: None, host: Some(...) })`
         // (loaded later, same-key overrides, strict actions).
+        // the default undo home (the built-in TextUndo) is visible to the
+        // host so engine-driven u/<C-r> (incl. macro replay) can answer it
+        editor_self.host.undo_home = Some(Rc::clone(&editor_self.undo_home));
         crate::config::load_layers(
             &mut editor_self,
             &crate::config::Layers::with_default_user(),
         );
         editor_self
+    }
+
+    /// Replace the undo history this instance answers from (a host folding
+    /// its own entries — e.g. a merge view's "decision + text" stack — into
+    /// one history). The component stops using its built-in [`TextUndo`]
+    /// entirely; the home is shared with [`EditHost`], so the engine's own
+    /// `u`/`<C-r>` path (direct keys and macro replay) answers from it too.
+    pub fn set_undo_home(&mut self, home: Rc<RefCell<dyn UndoHome>>) {
+        self.host.undo_home = Some(Rc::clone(&home));
+        self.undo_home = home;
+    }
+
+    /// A handle to this instance's undo home (for hosts that push their own
+    /// entries alongside the component's, e.g. a decision entry recorded
+    /// outside the engine pipeline).
+    pub fn undo_home(&self) -> Rc<RefCell<dyn UndoHome>> {
+        Rc::clone(&self.undo_home)
+    }
+
+    /// Join this instance to a shared-globals session (vimcore 0.3): one
+    /// register file and macro table across every panel sharing `globals`,
+    /// while this instance keeps its own buffer, undo history and options.
+    /// Call at construction time — the instance's current registers/macros
+    /// are replaced by the session's.
+    pub fn share_globals(&mut self, globals: &vimcore::state::SharedGlobals) {
+        self.vim.share_globals(globals);
+    }
+
+    /// The shared-globals session this instance belongs to (hand to another
+    /// instance's [`VimEdit::share_globals`]).
+    pub fn shared_globals(&self) -> vimcore::state::SharedGlobals {
+        self.vim.shared_globals()
     }
 
     pub fn text(&self) -> String {
@@ -607,7 +720,7 @@ impl VimEdit {
         self.buf.0.set(self.lines.clone());
         reset_engine_for_new_text(&mut self.vim);
         self.modified = false;
-        self.text_undo.clear();
+        self.undo_home.borrow_mut().clear();
     }
 
     pub fn drain_events(&mut self) -> Vec<VimEditEvent> {
@@ -640,23 +753,36 @@ impl VimEdit {
             return false;
         }
         let key = crate::to_core_key(ks);
-        let mode = self.vim.mode;
 
-        // Undo/redo (normal mode + engine idle, local stack). The is_idle
-        // gate is essential: the `u` after `gu` and the trailing key of `guu`
-        // are part of a pending engine command — intercepting them early
-        // swallows them into a local undo and breaks gu/guw/guu/gugu entirely.
-        if mode == Mode::Normal && self.vim.is_idle() {
-            if let KeyKind::Char('u') = &key.kind {
-                if !key.modifiers.control {
-                    self.undo();
+        // u/<C-r> go THROUGH the engine now: the engine's own dispatch
+        // keeps pending-command prefixes intact (the `u` of `gu` is part of
+        // the operator, not an undo) and asks the host's undo home, which
+        // also makes undo inside macro replays work when the home answers.
+
+        // Tab in the `:` prompt completes (the engine's cmdline swallows
+        // Tab; completion is UI business — see crate::cmdline)
+        if let (KeyKind::Named(name), true) = (
+            &key.kind,
+            matches!(self.vim.mode, Mode::CommandLine { prompt: ':' }),
+        ) {
+            if name == "tab" && key.modifiers.is_plain() {
+                let extra: Vec<&str> = self.builtin_ex_names.iter().map(|s| s.as_str()).collect();
+                if let Some((line, cursor)) =
+                    crate::cmdline::apply_tab(&self.vim, &mut self.cmdline_edit, false, &extra)
+                {
+                    self.vim.cmdline.buffer = line;
+                    self.vim.cmdline.cursor = cursor;
                     cx.notify();
                     return true;
                 }
             }
-            if let KeyKind::Char('r') = &key.kind {
-                if key.modifiers.control {
-                    self.redo();
+            if name == "tab" && key.modifiers.shift && key.modifiers.is_plain() {
+                let extra: Vec<&str> = self.builtin_ex_names.iter().map(|s| s.as_str()).collect();
+                if let Some((line, cursor)) =
+                    crate::cmdline::apply_tab(&self.vim, &mut self.cmdline_edit, true, &extra)
+                {
+                    self.vim.cmdline.buffer = line;
+                    self.vim.cmdline.cursor = cursor;
                     cx.notify();
                     return true;
                 }
@@ -665,6 +791,7 @@ impl VimEdit {
 
         let before = self.lines.clone();
         self.host.viewport = (0, self.visible_rows.saturating_sub(1));
+        self.host.last_cursor_rc = offset_rc(&self.lines, self.vim.cursor.offset);
         self.buf.0.set(before.clone());
         let result = {
             let mut ctx = Ctx {
@@ -745,31 +872,7 @@ impl VimEdit {
         if before == *self.lines {
             return;
         }
-        self.text_undo.record(before, cursor_before);
-    }
-
-    fn undo(&mut self) {
-        let Some((before, cursor_before)) =
-            self.text_undo.undo(self.lines.as_ref().clone(), self.cursor_rc())
-        else {
-            return;
-        };
-        self.lines = Arc::new(before);
-        self.buf.0.set(self.lines.clone());
-        self.vim.mode = Mode::Normal;
-        self.set_cursor_rc(cursor_before);
-    }
-
-    fn redo(&mut self) {
-        let Some((after, cursor_after)) =
-            self.text_undo.redo(self.lines.as_ref().clone(), self.cursor_rc())
-        else {
-            return;
-        };
-        self.lines = Arc::new(after);
-        self.buf.0.set(self.lines.clone());
-        self.vim.mode = Mode::Normal;
-        self.set_cursor_rc(cursor_after);
+        self.undo_home.borrow_mut().record(before, cursor_before);
     }
 
     fn cursor_rc(&self) -> (usize, usize) {
@@ -966,7 +1069,11 @@ impl VimEdit {
                     |col: usize| -> f32 { display_width_before(line, col) as f32 * char_width_f };
                 // Placeholder: when the whole buffer is empty, draw gray text
                 // on the first line (not buffer content, display-only)
-                let ph = if ix == 0 { placeholder_text(&self.lines, &self.placeholder) } else { None };
+                let ph = if ix == 0 {
+                    placeholder_text(&self.lines, &self.placeholder)
+                } else {
+                    None
+                };
                 let mut row = div()
                     .h(line_h)
                     .w_full()
@@ -1369,8 +1476,7 @@ impl EntityInputHandler for VimEdit {
         let scroll_y = -f32::from(self.scroll.offset().y);
         let origin = Point::new(
             element_bounds.origin.x + gpui::px(x + 6.0),
-            element_bounds.origin.y
-                + gpui::px(row as f32 * self.style.line_height - scroll_y),
+            element_bounds.origin.y + gpui::px(row as f32 * self.style.line_height - scroll_y),
         );
         Some(gpui::Bounds::new(
             origin,
@@ -1448,18 +1554,18 @@ mod multiline_tests {
     #[test]
     fn engine_reset_for_new_text_keeps_options_and_mappings() {
         let (_, mut buf, mut host, mut vim) = setup();
-        vim.keymaps_mut().map_str_noremap(
-            vimcore::keymap::ModeClass::Insert,
-            "jk",
-            "<Esc>",
-            true,
-        );
+        vim.keymaps_mut()
+            .map_str_noremap(vimcore::keymap::ModeClass::Insert, "jk", "<Esc>", true);
         vim.options.number = true; // default false, so the assertion isn't vacuously green
         vim.mode = Mode::Insert;
         vim.cursor.offset = 3;
 
         reset_engine_for_new_text(&mut vim);
-        assert_eq!(vim.mode, Mode::Normal, "transient mode resets with new content");
+        assert_eq!(
+            vim.mode,
+            Mode::Normal,
+            "transient mode resets with new content"
+        );
         assert_eq!(vim.cursor.offset, 0, "cursor resets with new content");
         assert!(vim.options.number, "user options must survive");
 
@@ -1490,6 +1596,110 @@ mod multiline_tests {
         (storage, buf, host, VimState::new())
     }
 
+    // ---- the engine's u/<C-r> answering from the undo home (headless) ----
+
+    /// The engine's undo group closed (end_undo_group): record the staged
+    /// snapshot into the home, mirroring what VimEdit::flush does after a
+    /// key (the view-level half of the contract).
+    fn flush_undo(host: &mut EditHost, home: &Rc<RefCell<dyn UndoHome>>) {
+        if host.open_group.is_none() {
+            if let Some((snap_lines, snap_cursor)) = host.take_group_snapshot() {
+                let cursor_before = offset_rc(&snap_lines, snap_cursor);
+                home.borrow_mut()
+                    .record((*snap_lines).clone(), cursor_before);
+            }
+        }
+    }
+
+    /// A headless stand-in for `VimEdit::process_key` + `flush`: publish the
+    /// cursor, feed the key, land the printable the engine leaves to the
+    /// host, and record the closed undo group into the home.
+    fn feed_and_flush(
+        vim: &mut VimState,
+        buf: &mut LinesBuf,
+        host: &mut EditHost,
+        home: &Rc<RefCell<dyn UndoHome>>,
+        key: Key,
+    ) -> KeyResult {
+        host.last_cursor_rc = offset_rc(&host.storage.get(), vim.cursor.offset);
+        let result = {
+            let mut ctx = Ctx {
+                buf: &mut *buf,
+                host: &mut *host,
+            };
+            vim.handle_key(&mut ctx, key.clone())
+        };
+        if result == KeyResult::Unknown && matches!(vim.mode, Mode::Insert | Mode::Replace) {
+            if let Some(c) = key.printable_char() {
+                let mut ctx = Ctx {
+                    buf: &mut *buf,
+                    host: &mut *host,
+                };
+                vim.insert_text_at_cursor(&mut ctx, &c.to_string());
+            }
+        }
+        flush_undo(host, home);
+        result
+    }
+
+    /// `iZ<esc>` then `u` THROUGH THE ENGINE: the engine asks
+    /// EditHost::undo, the home swaps the storage, the engine restores the
+    /// cursor. This is the path macro replays take too.
+    #[test]
+    fn engine_undo_swaps_storage_through_the_home() {
+        let (_, mut buf, mut host, mut vim) = setup();
+        let home: Rc<RefCell<dyn UndoHome>> = Rc::new(RefCell::new(TextUndo::default()));
+        host.undo_home = Some(Rc::clone(&home));
+
+        feed_and_flush(&mut vim, &mut buf, &mut host, &home, Key::char('i'));
+        feed_and_flush(&mut vim, &mut buf, &mut host, &home, Key::char('Z'));
+        feed_and_flush(&mut vim, &mut buf, &mut host, &home, Key::named("escape"));
+        assert_eq!(host.storage.get().as_ref(), &vec!["Z".to_string()]);
+
+        // `u` — the engine path (no view interception anywhere)
+        feed_and_flush(&mut vim, &mut buf, &mut host, &home, Key::char('u'));
+        assert_eq!(
+            host.storage.get().as_ref(),
+            &vec![String::new()],
+            "the home swapped the text back"
+        );
+        assert_eq!(vim.cursor.offset, 0, "the engine restored the cursor");
+    }
+
+    /// A macro replaying `u` works because EditHost declares
+    /// MACRO_HOST_UNDO as soon as a home is installed.
+    #[test]
+    fn macro_replay_undo_reaches_the_home() {
+        let (_, mut buf, mut host, mut vim) = setup();
+        let home: Rc<RefCell<dyn UndoHome>> = Rc::new(RefCell::new(TextUndo::default()));
+        host.undo_home = Some(Rc::clone(&home));
+
+        // record "xu" into macro a on real text
+        buf.0.set(Arc::new(vec!["ab".to_string()]));
+        host.storage = buf.0.clone();
+        for k in [
+            Key::char('q'),
+            Key::char('a'),
+            Key::char('x'),
+            Key::char('u'),
+            Key::char('q'),
+        ] {
+            feed_and_flush(&mut vim, &mut buf, &mut host, &home, k);
+        }
+        assert_eq!(host.storage.get().as_ref(), &vec!["ab".to_string()]);
+        // an edit so the replay has something to undo
+        feed_and_flush(&mut vim, &mut buf, &mut host, &home, Key::char('x'));
+        assert_eq!(host.storage.get().as_ref(), &vec!["b".to_string()]);
+        // replay: x applies, u asks the home mid-replay
+        feed_and_flush(&mut vim, &mut buf, &mut host, &home, Key::char('@'));
+        feed_and_flush(&mut vim, &mut buf, &mut host, &home, Key::char('a'));
+        assert_eq!(
+            host.storage.get().as_ref(),
+            &vec!["ab".to_string()],
+            "the replayed undo restored the text through the home"
+        );
+    }
+
     // ---- TextUndo (headless semantic tests; VimEdit needs an App to construct) ----
 
     fn rc(row: usize, col: usize) -> (usize, usize) {
@@ -1518,7 +1728,10 @@ mod multiline_tests {
         u.record(a, rc(0, 0));
         assert!(u.undo(b.clone(), rc(0, 1)).is_some());
         u.record(c, rc(0, 1)); // a fresh edit after the undo
-        assert!(u.redo(b, rc(0, 1)).is_none(), "the redo branch must be invalidated");
+        assert!(
+            u.redo(b, rc(0, 1)).is_none(),
+            "the redo branch must be invalidated"
+        );
     }
 
     #[test]
@@ -1539,7 +1752,11 @@ mod multiline_tests {
         // implementation panicked directly on line[..1]
         let lines = vec!["中文".to_string(), "ab".to_string()];
         assert_eq!(offset_rc(&lines, 1), (0, 0), "mid-char floors to boundary");
-        assert_eq!(offset_rc(&lines, 4), (0, 1), "mid-char within 文 floors to its start");
+        assert_eq!(
+            offset_rc(&lines, 4),
+            (0, 1),
+            "mid-char within 文 floors to its start"
+        );
         assert_eq!(offset_rc(&lines, 0), (0, 0));
         assert_eq!(offset_rc(&lines, 6), (0, 2), "line end is a valid boundary");
         assert_eq!(offset_rc(&lines, 7), (1, 0), "start of next line");
@@ -1566,11 +1783,23 @@ mod multiline_tests {
         assert_eq!(b.char_at(7), Some('d'), "last content byte");
         assert_eq!(b.char_at(8), None, "at len is None");
 
-        assert_eq!(b.prev_char_offset(3), Some(2), "line start: the \\n before it");
-        assert_eq!(b.prev_char_offset(6), Some(3), "steps back over the wide char");
+        assert_eq!(
+            b.prev_char_offset(3),
+            Some(2),
+            "line start: the \\n before it"
+        );
+        assert_eq!(
+            b.prev_char_offset(6),
+            Some(3),
+            "steps back over the wide char"
+        );
         assert_eq!(b.prev_char_offset(0), None);
         assert_eq!(b.prev_char_offset(2), Some(1));
-        assert_eq!(b.prev_char_offset(8), Some(7), "buffer end steps to last char");
+        assert_eq!(
+            b.prev_char_offset(8),
+            Some(7),
+            "buffer end steps to last char"
+        );
         // Empty-line separator: in "a\n\nb" the byte before a line start is
         // the empty line's own '\n'
         let b = buf("a\n\nb");
@@ -1612,7 +1841,11 @@ mod multiline_tests {
         assert_eq!(host.search_status(), Some((2, 3)));
 
         host.current_highlight = None;
-        assert_eq!(host.search_status(), None, "incsearch with no current match yet");
+        assert_eq!(
+            host.search_status(),
+            None,
+            "incsearch with no current match yet"
+        );
 
         // The current match is not in the published list (a stale value
         // between engine publishes): return None rather than a wrong index
@@ -1684,7 +1917,10 @@ mod multiline_tests {
         );
         let lines = buf.0.get();
         assert_eq!(*lines, vec!["hello".to_string(), String::new()]);
-        assert!(matches!(vim.mode, Mode::Insert), "o should enter insert mode");
+        assert!(
+            matches!(vim.mode, Mode::Insert),
+            "o should enter insert mode"
+        );
     }
 
     /// Regression: with a multi-byte (CJK) char at the line end, enter used

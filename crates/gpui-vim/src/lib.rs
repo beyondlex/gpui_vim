@@ -26,6 +26,7 @@
 
 use gpui::{App, Context, Entity, KeyContext, Keystroke, Subscription, WeakEntity, Window};
 
+pub mod cmdline;
 pub mod config;
 pub mod edit;
 pub mod pager;

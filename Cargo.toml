@@ -17,7 +17,7 @@ unicode-width = "0.2"
 # override with a path dependency (cargo does not prefer local directories on
 # its own):
 #   [patch.crates-io] vimcore = { path = "../vimcore" }
-vimcore = "0.2"
+vimcore = "0.3"
 
 [profile.dev]
 opt-level = 1
