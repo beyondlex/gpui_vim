@@ -326,8 +326,16 @@ impl VimBuffer for PagerBuf {
 }
 
 impl VimBufferMut for PagerBuf {
-    fn insert_text(&mut self, _offset: usize, _text: &str) {}
-    fn delete_range(&mut self, _range: Range<usize>) {}
+    // Read-only by construction: the pager refuses every write so the
+    // engine's 'modifiable' gate reports E21 itself (vimcore 0.2 contract —
+    // `false` means "nothing happened", the engine leaves stored offsets
+    // alone).
+    fn insert_text(&mut self, _offset: usize, _text: &str) -> bool {
+        false
+    }
+    fn delete_range(&mut self, _range: Range<usize>) -> bool {
+        false
+    }
 }
 
 // ---------- selection read-back ----------

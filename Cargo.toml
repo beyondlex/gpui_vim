@@ -12,15 +12,17 @@ repository = "https://github.com/beyondlex/gpui_vim"
 [workspace.dependencies]
 ropey = "1"
 unicode-width = "0.2"
-# Single source for the engine: the crates.io registry (latest 0.1.30, 2026-10-09).
+# Single source for the engine: the crates.io registry 0.2 line (followed to
+# 0.2.3, 2026-10-26; the migrations: 0.2.0's write primitives return bool,
+# 0.2.3's end_undo_group close signal).
 # To iterate on the engine locally, temporarily override with a path dependency
 # (cargo does not prefer local directories on its own):
 #   [patch.crates-io] vimcore = { path = "../vimcore" }
-# ⚠️ "0.1" is only the required range; what actually takes effect is Cargo.lock: this
+# ⚠️ "0.2" is only the required range; what actually takes effect is Cargo.lock: this
 # repo once pinned the lock to 0.1.24, which shielded it from every engine behavior
 # change in between. Run cargo update -p vimcore before touching anything related to
 # engine semantics.
-vimcore = "0.1"
+vimcore = "0.2"
 
 [profile.dev]
 opt-level = 1

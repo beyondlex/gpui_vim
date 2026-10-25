@@ -247,7 +247,7 @@ impl VimBufferMut for LinesBuf {
     // flush (judging by content line count would misread a multi-line
     // editor's initial one-line state as single-line mode and replace every
     // enter/o '\n' with a space)
-    fn insert_text(&mut self, offset: usize, text: &str) {
+    fn insert_text(&mut self, offset: usize, text: &str) -> bool {
         let lines = self.0.get();
         let text = text.replace('\r', "");
         let mut vec = lines.as_ref().clone();
@@ -258,8 +258,9 @@ impl VimBufferMut for LinesBuf {
         joined.insert_str(at, &text);
         vec = joined.split('\n').map(String::from).collect();
         self.0.set(Arc::new(vec));
+        true
     }
-    fn delete_range(&mut self, range: Range<usize>) {
+    fn delete_range(&mut self, range: Range<usize>) -> bool {
         let lines = self.0.get();
         let mut joined = lines.join("\n");
         let a = range.start.min(joined.len());
@@ -269,6 +270,7 @@ impl VimBufferMut for LinesBuf {
         }
         let vec: Vec<String> = joined.split('\n').map(String::from).collect();
         self.0.set(Arc::new(vec));
+        true
     }
 }
 
@@ -419,6 +421,14 @@ impl VimHost for EditHost {
         if self.open_group != Some(id) {
             self.group_snapshot = Some((self.storage.get(), cursor_offset));
             self.open_group = Some(id);
+        }
+    }
+    // The engine's deterministic close signal (vimcore 0.2.3): only clears
+    // open_group; the staged group_snapshot stays for flush to take over.
+    // "The group is closed" is expressed by open_group == None.
+    fn end_undo_group(&mut self, id: u64) {
+        if self.open_group == Some(id) {
+            self.open_group = None;
         }
     }
     fn undo(&mut self) -> Option<usize> {
@@ -686,7 +696,12 @@ impl VimEdit {
             self.modified = true;
             self.pending_events.push(VimEditEvent::Changed);
         }
-        if !matches!(self.vim.mode, Mode::Insert | Mode::Replace) {
+        // Push once the engine closed the group — its end_undo_group signal
+        // (vimcore 0.2.3) cleared open_group, a fact rather than the old
+        // mode inference. During an insert session the group stays open;
+        // take_group_snapshot is idempotent, and push_undo already skips
+        // before == after (an edit-less group lands no empty step).
+        if self.host.open_group.is_none() {
             if let Some((snap_lines, snap_cursor)) = self.host.take_group_snapshot() {
                 let cursor_before = offset_rc(&snap_lines, snap_cursor);
                 self.push_undo((*snap_lines).clone(), cursor_before);
