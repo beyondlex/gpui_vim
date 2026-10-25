@@ -277,19 +277,25 @@ mod tests {
         // The rc chain: main rc → source ~/sourced.rc → :set expandtab.
         // Regression: only top-level layer paths were tilde-expanded, so the
         // sourced file silently failed to load.
-        with_fake_home(&[
-            (".vimcorerc", "set number\nsource ~/sourced.rc\n"),
-            ("sourced.rc", "set expandtab\n"),
-        ], |dir| {
-            let mut editor = editor();
-            let layers = Layers {
-                user: Some(dir.join(".vimcorerc")),
-                host: None,
-            };
-            let stats = load_layers(&mut editor, &layers);
-            assert_eq!(stats.files, 1, "files counts top-level layers only");
-            assert!(editor.vim.options.expandtab, "option from the sourced file is live");
-        });
+        with_fake_home(
+            &[
+                (".vimcorerc", "set number\nsource ~/sourced.rc\n"),
+                ("sourced.rc", "set expandtab\n"),
+            ],
+            |dir| {
+                let mut editor = editor();
+                let layers = Layers {
+                    user: Some(dir.join(".vimcorerc")),
+                    host: None,
+                };
+                let stats = load_layers(&mut editor, &layers);
+                assert_eq!(stats.files, 1, "files counts top-level layers only");
+                assert!(
+                    editor.vim.options.expandtab,
+                    "option from the sourced file is live"
+                );
+            },
+        );
     }
 
     #[test]
@@ -309,18 +315,21 @@ mod tests {
 
     #[test]
     fn host_layer_overrides_user_layer_same_key() {
-        with_fake_home(&[
-            (".vimcorerc", "set relativenumber\n"),
-            (".config/app/vimrc", "set norelativenumber\n"),
-        ], |dir| {
-            let mut editor = editor();
-            let layers = Layers {
-                user: Some(dir.join(".vimcorerc")),
-                host: Some(dir.join(".config/app/vimrc")),
-            };
-            load_layers(&mut editor, &layers);
-            assert!(!editor.vim.options.relativenumber, "host layer wins");
-        });
+        with_fake_home(
+            &[
+                (".vimcorerc", "set relativenumber\n"),
+                (".config/app/vimrc", "set norelativenumber\n"),
+            ],
+            |dir| {
+                let mut editor = editor();
+                let layers = Layers {
+                    user: Some(dir.join(".vimcorerc")),
+                    host: Some(dir.join(".config/app/vimrc")),
+                };
+                load_layers(&mut editor, &layers);
+                assert!(!editor.vim.options.relativenumber, "host layer wins");
+            },
+        );
     }
 
     #[test]
@@ -328,15 +337,24 @@ mod tests {
         // Regression: Windows editors commonly write a BOM; when it is glued
         // to the first line's start the engine's parser can't recognize
         // `\u{feff}set`, so the loading layer must strip it first.
-        with_fake_home(&[(".vimcorerc", "\u{feff}set number\nset expandtab\n")], |dir| {
-            let mut editor = editor();
-            let layers = Layers {
-                user: Some(dir.join(".vimcorerc")),
-                host: None,
-            };
-            load_layers(&mut editor, &layers);
-            assert!(editor.vim.options.number, "first directive after the BOM is live");
-            assert!(editor.vim.options.expandtab, "later directives were never affected");
-        });
+        with_fake_home(
+            &[(".vimcorerc", "\u{feff}set number\nset expandtab\n")],
+            |dir| {
+                let mut editor = editor();
+                let layers = Layers {
+                    user: Some(dir.join(".vimcorerc")),
+                    host: None,
+                };
+                load_layers(&mut editor, &layers);
+                assert!(
+                    editor.vim.options.number,
+                    "first directive after the BOM is live"
+                );
+                assert!(
+                    editor.vim.options.expandtab,
+                    "later directives were never affected"
+                );
+            },
+        );
     }
 }
