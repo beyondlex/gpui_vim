@@ -1,6 +1,6 @@
 [package]
 name = "gpui-vim-x"
-version = "0.3.0"
+version = "0.3.1"
 description = "gpui integration for the vimcore engine: keystroke interception and mode UI state."
 edition.workspace = true
 license.workspace = true
