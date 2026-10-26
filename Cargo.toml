@@ -22,7 +22,7 @@ unicode-width = "0.2"
 # repo once pinned the lock to 0.1.24, which shielded it from every engine behavior
 # change in between. Run cargo update -p vimcore before touching anything related to
 # engine semantics.
-vimcore = "0.3"
+vimcore = "0.4"
 
 [profile.dev]
 opt-level = 1

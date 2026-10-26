@@ -468,12 +468,25 @@ impl VimHost for EditHost {
             self.open_group = Some(id);
         }
     }
-    // The engine's deterministic close signal (vimcore 0.2.3): only clears
-    // open_group; the staged group_snapshot stays for flush to take over.
-    // "The group is closed" is expressed by open_group == None.
-    fn end_undo_group(&mut self, id: u64) {
-        if self.open_group == Some(id) {
-            self.open_group = None;
+    // The engine's deterministic close signal: push the unit NOW, not at
+    // flush. A macro replay runs several commands inside one handle_key —
+    // each closing its group — and waiting for flush would lose every unit
+    // but the last while a replayed u lands on the wrong entry. The empty
+    // check skips an edit-less closure (i<esc>) without an undo step.
+    fn end_undo_group(&mut self, id: u64, _cursor_offset: usize) {
+        if self.open_group != Some(id) {
+            return;
+        }
+        self.open_group = None;
+        let Some(home) = self.undo_home.clone() else {
+            return;
+        };
+        if let Some((snap_lines, snap_cursor)) = self.take_group_snapshot() {
+            if *snap_lines != *self.storage.get() {
+                let cursor_before = offset_rc(&snap_lines, snap_cursor);
+                home.borrow_mut()
+                    .record((*snap_lines).clone(), cursor_before);
+            }
         }
     }
     // The engine's u/<C-r> (direct key or macro replay): swap the storage
@@ -823,17 +836,10 @@ impl VimEdit {
             self.modified = true;
             self.pending_events.push(VimEditEvent::Changed);
         }
-        // Push once the engine closed the group — its end_undo_group signal
-        // (vimcore 0.2.3) cleared open_group, a fact rather than the old
-        // mode inference. During an insert session the group stays open;
-        // take_group_snapshot is idempotent, and push_undo already skips
-        // before == after (an edit-less group lands no empty step).
-        if self.host.open_group.is_none() {
-            if let Some((snap_lines, snap_cursor)) = self.host.take_group_snapshot() {
-                let cursor_before = offset_rc(&snap_lines, snap_cursor);
-                self.push_undo((*snap_lines).clone(), cursor_before);
-            }
-        }
+        // Undo entries are pushed by EditHost::end_undo_group at CLOSURE
+        // (not here): a macro replay runs several commands inside one
+        // handle_key, and closure-time pushes are what keep every unit on
+        // the stack in the right order.
         if let Some(text) = self.host.pending_clipboard.take() {
             self.host.clipboard = Some(text.clone());
             cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
@@ -1598,18 +1604,10 @@ mod multiline_tests {
 
     // ---- the engine's u/<C-r> answering from the undo home (headless) ----
 
-    /// The engine's undo group closed (end_undo_group): record the staged
-    /// snapshot into the home, mirroring what VimEdit::flush does after a
-    /// key (the view-level half of the contract).
-    fn flush_undo(host: &mut EditHost, home: &Rc<RefCell<dyn UndoHome>>) {
-        if host.open_group.is_none() {
-            if let Some((snap_lines, snap_cursor)) = host.take_group_snapshot() {
-                let cursor_before = offset_rc(&snap_lines, snap_cursor);
-                home.borrow_mut()
-                    .record((*snap_lines).clone(), cursor_before);
-            }
-        }
-    }
+    /// Nothing to do any more: the hook pushes at closure directly into the
+    /// home (installed on the host). Kept as a named no-op so the test
+    /// bodies read the same.
+    fn flush_undo(_host: &mut EditHost, _home: &Rc<RefCell<dyn UndoHome>>) {}
 
     /// A headless stand-in for `VimEdit::process_key` + `flush`: publish the
     /// cursor, feed the key, land the printable the engine leaves to the
@@ -1690,14 +1688,18 @@ mod multiline_tests {
         // an edit so the replay has something to undo
         feed_and_flush(&mut vim, &mut buf, &mut host, &home, Key::char('x'));
         assert_eq!(host.storage.get().as_ref(), &vec!["b".to_string()]);
-        // replay: x applies, u asks the home mid-replay
+        // replay: x applies, and the replayed u undoes THE MACRO'S OWN x
+        // (closure-time pushes put the unit on the stack before the u runs)
         feed_and_flush(&mut vim, &mut buf, &mut host, &home, Key::char('@'));
         feed_and_flush(&mut vim, &mut buf, &mut host, &home, Key::char('a'));
         assert_eq!(
             host.storage.get().as_ref(),
-            &vec!["ab".to_string()],
-            "the replayed undo restored the text through the home"
+            &vec!["b".to_string()],
+            "the macro nets out against the pre-replay state"
         );
+        // one more u: the real x's entry is still there
+        feed_and_flush(&mut vim, &mut buf, &mut host, &home, Key::char('u'));
+        assert_eq!(host.storage.get().as_ref(), &vec!["ab".to_string()]);
     }
 
     // ---- TextUndo (headless semantic tests; VimEdit needs an App to construct) ----
